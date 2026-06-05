@@ -1,0 +1,54 @@
+.env
+.env.*
+!.env.example
+.DS_Store
+outputs/
+
+# Python / Node / desktop build outputs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+node_modules/
+dist/
+build/
+out/
+release/
+*.log
+
+# Local media and generated outputs
+cache/*
+!cache/README.md
+
+原片/*
+!原片/README.md
+
+口红/*
+!口红/README.md
+
+气垫/*
+!气垫/README.md
+
+# Local model/runtime installs and external research clones
+GPT-SoVITS/
+_research/*
+!_research/README.md
+ohmycrab/*
+!ohmycrab/README.md
+
+# Large media files should stay in local workspace or artifact storage
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.flv
+*.wmv
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.aiff
+*.flac
