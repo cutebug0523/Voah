@@ -11,7 +11,10 @@ Voah 是当前项目里的带货混剪工程管线：素材入库、文案、TTS
 3. `docs/00-overview/Voah工程总览与管线.md`
 4. `docs/00-overview/Voah系列工程化底座.md`
 5. `docs/00-overview/Voah桌面应用架构.md`
-6. `docs/00-overview/Voah仓库范围与发布约定.md`
+6. `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
+7. `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
+8. `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
+9. `docs/00-overview/Voah仓库范围与发布约定.md`
 
 ## 核心原则
 
@@ -65,6 +68,9 @@ GPT-SoVITS/            本地 TTS 回退环境，不作为当前主线默认 TTS
 - `docs/00-overview/Voah工程总览与管线.md`
 - `docs/00-overview/Voah系列工程化底座.md`
 - `docs/00-overview/Voah桌面应用架构.md`
+- `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
+- `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
+- `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
 - `docs/00-overview/Voah仓库范围与发布约定.md`
 - `docs/10-video-intake/Voah单素材分段方法论.md`
 - `docs/20-copy-and-planning/混剪编排策略-文案与素材顺序.md`

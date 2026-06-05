@@ -31,6 +31,9 @@
 - `00-overview/Voah工程总览与管线.md`
 - `00-overview/Voah系列工程化底座.md`
 - `00-overview/Voah桌面应用架构.md`
+- `00-overview/Voah桌面应用模块与产物流转设计.md`
+- `00-overview/Voah桌面应用数据模型与任务状态机.md`
+- `00-overview/Voah桌面应用服务边界与Worker合同.md`
 - `00-overview/Voah仓库范围与发布约定.md`
 - `00-overview/混剪工作台技术方案.md`
 

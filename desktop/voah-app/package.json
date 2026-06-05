@@ -1,0 +1,26 @@
+{
+  "name": "voah-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "electron": "electron .",
+    "electron:local": "\"/Users/noah/writing-ide/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron\" .",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "verify:library": "node scripts/verify-library-contracts.mjs"
+  },
+  "dependencies": {
+    "electron": "^35.2.1",
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.4"
+  }
+}

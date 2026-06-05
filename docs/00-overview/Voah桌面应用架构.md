@@ -4,6 +4,14 @@
 
 Voah 后续不把桌面版做成“调用 agent skill 的壳”。桌面版应该把已经验证的方法论固化为本地流程，让员工通过界面操作产品、素材、任务、预览和导出。
 
+当前阶段只做架构设计，不急着落代码，不做界面设计。后续真正开工前，先 review 这几份细化文档：
+
+```text
+Voah桌面应用模块与产物流转设计.md
+Voah桌面应用数据模型与任务状态机.md
+Voah桌面应用服务边界与Worker合同.md
+```
+
 推荐 V1 技术栈：
 
 ```text
@@ -191,3 +199,23 @@ configurable Voah workspace root
 ```
 
 API key 存本机私有配置或系统 keychain，不写进仓库、文档、manifest。
+
+## 11. 当前设计文档
+
+模块与产物流转：
+
+```text
+docs/00-overview/Voah桌面应用模块与产物流转设计.md
+```
+
+数据模型与任务状态机：
+
+```text
+docs/00-overview/Voah桌面应用数据模型与任务状态机.md
+```
+
+服务边界与 worker 合同：
+
+```text
+docs/00-overview/Voah桌面应用服务边界与Worker合同.md
+```

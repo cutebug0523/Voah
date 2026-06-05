@@ -9,6 +9,17 @@
 - 不上传 `.codex/skills`、`.agents/skills`、素材、cache 产物、本地模型环境或外部调研源码。
 - 运行命令前优先使用 `rg` / `rg --files` 搜索。
 - 在中国大陆网络环境下，依赖安装、文档访问、CDN 选择优先考虑可用镜像。
+- 当用户说“拆 issues”“拆 issue”“落 issues”时，默认含义是创建/整理 GitHub Issues，而不是只在本地 Markdown 写任务清单。
+  - 如需先本地梳理，只能作为 issue 草案，并且要明确说明尚未落到 GitHub。
+  - 创建 GitHub Issues 前先确认仓库范围；Voah 仓库范围遵循 `docs/00-overview/Voah仓库范围与发布约定.md`。
+- 当用户要求“按 issues 开工/落地/实现”时，默认流程是：
+  1. 先评估 GitHub Issues 之间的依赖关系，标出可并行、需串行、互相阻塞的部分。
+  2. 对可并行的 issue 或子任务，优先拉子 agent / 独立线程处理，减少主线程上下文压力。
+  3. 子 agent 的返回只是候选实现或分析，不等于完成；主 agent 必须做 review。
+  4. review 必须覆盖代码质量、架构一致性、测试/构建结果、issue 需求与验收标准是否全量满足。
+  5. 禁止“做了一部分就说完成”；只有 issue 的所有验收项都有证据证明通过，才算完成。
+  6. 全量通过后，由主 agent 统一 commit、push，并关闭对应 GitHub Issues。
+  7. 如某 issue 未全量通过，不得关闭；需说明缺口、阻塞或继续拆子任务。
 
 ## Voah 项目入口
 
@@ -19,8 +30,11 @@
 3. `docs/00-overview/Voah工程总览与管线.md`
 4. `docs/00-overview/Voah系列工程化底座.md`
 5. `docs/00-overview/Voah桌面应用架构.md`
-6. `docs/00-overview/Voah仓库范围与发布约定.md`
-7. 当前要执行阶段对应的 `voah-*` skill 或 worker 文档
+6. `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
+7. `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
+8. `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
+9. `docs/00-overview/Voah仓库范围与发布约定.md`
+10. 当前要执行阶段对应的 `voah-*` skill 或 worker 文档
 
 ## Voah 总管线
 
@@ -136,6 +150,9 @@ cache/voah_tasks/fangshai-qidian/20260605_175355_full_pipeline_regression_v1/
 - `docs/00-overview/Voah工程总览与管线.md`
 - `docs/00-overview/Voah系列工程化底座.md`
 - `docs/00-overview/Voah桌面应用架构.md`
+- `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
+- `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
+- `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
 - `docs/00-overview/Voah仓库范围与发布约定.md`
 - `docs/10-video-intake/Voah单素材分段方法论.md`
 - `docs/20-copy-and-planning/混剪编排策略-文案与素材顺序.md`
