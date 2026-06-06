@@ -445,6 +445,10 @@ QA
 - 读取素材库 `shot_index.json`。
 - 按每段 voice_text / intention_copy / required_visual 召回素材。
 - 做产品过滤、语义 rerank、视觉 rerank、时长适配。
+- `required_visual` 中的硬画面词必须进入选片优先级，优先于普通复用惩罚。
+- 选中 story unit 后，填充阶段必须在其 `child_physical_shots` 内定位实际画面；输出 `child_physical_shot_id`、`source_start_offset_s`、`source_end_offset_s`。
+- 如果单个 child physical shot 不够覆盖当前 audio section，从命中的 child 开始连续取同 story unit 内后续 child；仍不足再拼同语义候选。
+- 每次任务产物需记录 intake boundary contract，确认入库片段来自 `[start,end)` 半开裁切并带末帧 QA 字段。
 - 允许人工锁定、替换或禁用素材。
 - 输出无字幕预览。
 
@@ -453,6 +457,7 @@ QA
 ```text
 candidate_sections.json
 selection_overrides.json
+timeline_selection.json
 timeline_fill.json
 preview_no_subtitles.mp4
 timeline_fill_clips/

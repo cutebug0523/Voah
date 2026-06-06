@@ -35,12 +35,18 @@ DOMAIN_TERMS = [
     "纸巾",
     "海边",
     "海滩",
+    "海景",
+    "沙滩",
+    "湿发",
+    "水珠",
+    "浴巾",
     "户外",
     "持妆",
     "通勤",
     "上班",
     "车里",
     "车内",
+    "车内补妆",
     "出去玩",
     "气色",
     "快速",
@@ -70,8 +76,10 @@ TERM_ALIASES = {
     "防晒": ["防晒值", "防晒力"],
     "遇水": ["泼水", "防水"],
     "出汗": ["汗", "高温"],
-    "海边": ["海滩"],
-    "车里": ["车内", "车上"],
+    "海边": ["海滩", "沙滩", "海景"],
+    "湿发": ["水珠", "浴巾"],
+    "车里": ["车内", "车上", "车内补妆"],
+    "车内": ["车里", "车上", "车内补妆"],
     "出去玩": ["户外", "出游"],
     "气色": ["素颜", "带妆"],
     "礼盒": ["套装"],
@@ -176,12 +184,22 @@ def safe_filename(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z_.-]+", "_", value or "").strip("_") or "clip"
 
 
+def safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def text_blob(record: dict[str, Any]) -> str:
     parts = [
         record.get("label", ""),
         record.get("visual_summary", ""),
         record.get("source_meaning", ""),
+        str(record.get("source_asr", "")),
+        " ".join(str(item) for item in record.get("source_ocr") or []),
         " ".join(record.get("selling_points") or []),
+        " ".join(record.get("visual_actions") or []),
         " ".join(record.get("timeline_roles") or []),
         record.get("shot_type", ""),
     ]
@@ -255,6 +273,147 @@ def term_hit_info(record: dict[str, Any], section: dict[str, Any]) -> list[dict[
     return hits
 
 
+def source_run_dir_from_index(index: dict[str, Any], index_path: Path) -> Path:
+    source = str(index.get("source_run_dir") or "").strip()
+    return as_abs(source) if source else index_path.parent
+
+
+def shot_id_of(record: dict[str, Any]) -> str:
+    return str(record.get("shot_id") or record.get("id") or "")
+
+
+def time_range_of(record: dict[str, Any]) -> list[float]:
+    raw = record.get("time_range")
+    if isinstance(raw, list) and len(raw) >= 2:
+        return [safe_float(raw[0]), safe_float(raw[1])]
+    start = safe_float(record.get("start_s") if record.get("start_s") is not None else record.get("start_time"))
+    end = safe_float(record.get("end_s") if record.get("end_s") is not None else record.get("end_time"), start)
+    return [start, end]
+
+
+def usable_range_of(record: dict[str, Any]) -> list[float]:
+    raw = record.get("usable_range")
+    if isinstance(raw, list) and len(raw) >= 2:
+        return [safe_float(raw[0]), safe_float(raw[1])]
+    start, end = time_range_of(record)
+    usable_start = safe_float(record.get("usable_start"), start)
+    usable_end = safe_float(record.get("usable_end"), end)
+    return [usable_start, usable_end]
+
+
+def normalize_child_physical_shot(record: dict[str, Any]) -> dict[str, Any]:
+    start, end = time_range_of(record)
+    usable_start, usable_end = usable_range_of(record)
+    return {
+        "shot_id": shot_id_of(record),
+        "parent_shot_id": str(record.get("parent_shot_id") or record.get("story_unit_id") or record.get("semantic_shot_id") or ""),
+        "story_unit_id": str(record.get("story_unit_id") or record.get("parent_shot_id") or record.get("semantic_shot_id") or ""),
+        "asset_id": str(record.get("asset_id") or ""),
+        "label": str(record.get("label") or ""),
+        "time_range": [start, end],
+        "usable_range": [usable_start, usable_end],
+        "duration_s": round(max(0.0, usable_end - usable_start), 3),
+        "clip_actual_duration_s": record.get("clip_actual_duration_s"),
+        "clip_frames": record.get("clip_frames"),
+        "trim_end_epsilon_s": record.get("trim_end_epsilon_s"),
+        "visual_summary": str(record.get("visual_summary") or ""),
+        "source_meaning": str(record.get("source_meaning") or ""),
+        "source_asr": record.get("source_asr") or "",
+        "source_ocr": record.get("source_ocr") or [],
+        "selling_points": record.get("selling_points") or [],
+        "visual_actions": record.get("visual_actions") or [],
+        "shot_type": str(record.get("shot_type") or record.get("shot_type_hint") or ""),
+        "hard_subtitle_risk": record.get("hard_subtitle_risk"),
+        "voiceover_fit": record.get("voiceover_fit"),
+        "can_standalone": bool(record.get("can_standalone")),
+        "trimmed_clip_path": str(record.get("trimmed_clip_path") or record.get("source_clip_path") or ""),
+        "trimmed_oss_url": str(record.get("trimmed_oss_url") or ""),
+    }
+
+
+def load_physical_rows(source_run_dir: Path) -> list[dict[str, Any]]:
+    path = source_run_dir / "physical_shots.json"
+    if not path.exists():
+        return []
+    rows = load_json(path)
+    if isinstance(rows, dict):
+        rows = rows.get("physical_shots") or rows.get("shots") or rows.get("records") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def ensure_child_physical_shots(index: dict[str, Any], index_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_run_dir = source_run_dir_from_index(index, index_path)
+    physical_rows = load_physical_rows(source_run_dir)
+    physical_by_parent: dict[str, list[dict[str, Any]]] = {}
+    physical_by_id: dict[str, dict[str, Any]] = {}
+    for row in physical_rows:
+        child = normalize_child_physical_shot(row)
+        child_id = child.get("shot_id")
+        if not child_id:
+            continue
+        physical_by_id[child_id] = child
+        parent_id = str(child.get("parent_shot_id") or child.get("story_unit_id") or "")
+        if parent_id:
+            physical_by_parent.setdefault(parent_id, []).append(child)
+    for children in physical_by_parent.values():
+        children.sort(key=lambda item: safe_float((item.get("time_range") or [0, 0])[0]))
+
+    for record in index.get("records", []):
+        if not isinstance(record, dict):
+            continue
+        children = record.get("child_physical_shots") or []
+        normalized_children = [normalize_child_physical_shot(item) for item in children if isinstance(item, dict)]
+        if not normalized_children:
+            child_ids = [str(item) for item in record.get("child_physical_shot_ids") or []]
+            normalized_children = [physical_by_id[item] for item in child_ids if item in physical_by_id]
+        if not normalized_children:
+            normalized_children = physical_by_parent.get(str(record.get("shot_id") or ""), [])
+        record["child_physical_shots"] = normalized_children
+        if normalized_children:
+            record["child_physical_shot_ids"] = [str(item.get("shot_id")) for item in normalized_children if item.get("shot_id")]
+            record["child_clip_paths"] = [
+                str(item.get("trimmed_clip_path"))
+                for item in normalized_children
+                if item.get("trimmed_clip_path")
+            ]
+    contract = boundary_contract(index, source_run_dir, physical_rows)
+    return index, contract
+
+
+def boundary_contract(index: dict[str, Any], source_run_dir: Path, physical_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(physical_rows)
+    with_epsilon = sum(1 for item in physical_rows if item.get("trim_end_epsilon_s") not in (None, ""))
+    with_frames = sum(1 for item in physical_rows if item.get("clip_frames") not in (None, ""))
+    with_duration = sum(1 for item in physical_rows if item.get("clip_actual_duration_s") not in (None, ""))
+    story_records = [item for item in index.get("records", []) if item.get("planning_granularity") == "story_unit"]
+    story_with_children = sum(1 for item in story_records if item.get("child_physical_shots"))
+    warnings: list[str] = []
+    if total == 0:
+        warnings.append("intake 缺少 physical_shots.json，无法保证半开裁切和子镜头定位")
+    else:
+        if with_epsilon < total:
+            warnings.append(f"physical_shots 中 {total - with_epsilon}/{total} 条缺少 trim_end_epsilon_s")
+        if with_frames < total:
+            warnings.append(f"physical_shots 中 {total - with_frames}/{total} 条缺少 clip_frames")
+        if with_duration < total:
+            warnings.append(f"physical_shots 中 {total - with_duration}/{total} 条缺少 clip_actual_duration_s")
+    if story_records and story_with_children < len(story_records):
+        warnings.append(f"story unit 中 {len(story_records) - story_with_children}/{len(story_records)} 条缺少 child_physical_shots")
+    return {
+        "source_run_dir": str(source_run_dir),
+        "physical_shot_count": total,
+        "physical_with_trim_end_epsilon": with_epsilon,
+        "physical_with_clip_frames": with_frames,
+        "physical_with_clip_actual_duration": with_duration,
+        "story_unit_count": len(story_records),
+        "story_units_with_children": story_with_children,
+        "trim_interval": "[start,end)",
+        "end_epsilon_policy": "1/fps when available",
+        "status": "ok" if not warnings else "manual_review",
+        "warnings": warnings,
+    }
+
+
 def candidate_ids(candidates: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("shot_id")) for item in candidates if item.get("shot_id")]
 
@@ -287,6 +446,33 @@ def local_keyword_bonus(record: dict[str, Any], section: dict[str, Any]) -> floa
 
 def keyword_hits(record: dict[str, Any], section: dict[str, Any]) -> list[str]:
     return [item["term"] for item in term_hit_info(record, section)]
+
+
+def required_visual_terms(section: dict[str, Any]) -> list[str]:
+    value = str(section.get("required_visual") or "")
+    terms: list[str] = []
+    for term in DOMAIN_TERMS:
+        if term in value and term not in terms:
+            terms.append(term)
+    for token in split_query_terms(value):
+        if token not in terms:
+            terms.append(token)
+    return terms
+
+
+def term_in_blob(term: str, blob: str) -> bool:
+    return any(normalized(variant) in blob for variant in term_variants(term))
+
+
+def required_visual_hits(record: dict[str, Any], section: dict[str, Any]) -> list[str]:
+    terms = required_visual_terms(section)
+    blob = normalized(text_blob(record))
+    return [term for term in terms if term_in_blob(term, blob)]
+
+
+def required_visual_score(record: dict[str, Any], section: dict[str, Any]) -> float:
+    hits = required_visual_hits(record, section)
+    return round(sum(1.25 if term in DOMAIN_TERMS else 0.8 for term in hits), 3)
 
 
 def semantic_match_bonus(record: dict[str, Any], section: dict[str, Any]) -> tuple[float, list[str]]:
@@ -324,11 +510,320 @@ def candidate_duration(candidate: dict[str, Any]) -> float:
         return 0.0
 
 
+def candidate_renderable(candidate: dict[str, Any]) -> bool:
+    if candidate.get("trimmed_clip_path") or candidate.get("source_clip_path"):
+        return candidate_duration(candidate) > 0
+    return any(
+        isinstance(child, dict) and is_child_renderable(child)
+        for child in candidate.get("child_physical_shots") or []
+    )
+
+
 def candidate_score(candidate: dict[str, Any]) -> float:
     try:
         return float(candidate.get("adjusted_score") if candidate.get("adjusted_score") is not None else candidate.get("score") or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def child_text_blob(child: dict[str, Any]) -> str:
+    parts = [
+        child.get("label", ""),
+        child.get("visual_summary", ""),
+        child.get("source_meaning", ""),
+        str(child.get("source_asr", "")),
+        " ".join(str(item) for item in child.get("source_ocr") or []),
+        " ".join(str(item) for item in child.get("selling_points") or []),
+        " ".join(str(item) for item in child.get("visual_actions") or []),
+        child.get("shot_type", ""),
+    ]
+    return " ".join(str(part) for part in parts if part)
+
+
+def child_term_hit_info(child: dict[str, Any], section: dict[str, Any]) -> list[dict[str, Any]]:
+    blob = normalized(child_text_blob(child))
+    hits: list[dict[str, Any]] = []
+    for term, weight in section_terms(section):
+        variants = term_variants(term)
+        if any(normalized(variant) in blob for variant in variants):
+            hits.append({"term": term, "weight": weight})
+    return hits
+
+
+def child_semantic_weight(child: dict[str, Any], section: dict[str, Any]) -> float:
+    return sum(float(item["weight"]) for item in child_term_hit_info(child, section))
+
+
+def term_positions_in_text(text: str, terms: list[str]) -> dict[str, float]:
+    if not text:
+        return {}
+    positions: dict[str, float] = {}
+    text_len = max(1, len(text))
+    for term in terms:
+        candidates = term_variants(term)
+        indexes = [text.find(variant) for variant in candidates if variant and text.find(variant) >= 0]
+        if indexes:
+            positions[term] = min(indexes) / text_len
+    return positions
+
+
+def section_term_positions(candidate: dict[str, Any], section: dict[str, Any], terms: list[str]) -> dict[str, float]:
+    story_text = text_blob(candidate)
+    return term_positions_in_text(story_text, terms)
+
+
+def child_order_hint_score(child_index: int, child_count: int, term_positions: dict[str, float], hits: list[str]) -> float:
+    if child_count <= 1 or not term_positions:
+        return 0.0
+    center = (child_index + 0.5) / child_count
+    target_positions = [pos for term, pos in term_positions.items() if not hits or term in hits or any(alias in hits for alias in TERM_ALIASES.get(term, []))]
+    if not target_positions:
+        target_positions = list(term_positions.values())
+    target = sum(target_positions) / len(target_positions)
+    return max(0.0, 0.42 - abs(center - target)) * 0.45
+
+
+def hard_visual_terms(section: dict[str, Any]) -> list[str]:
+    value = " ".join(
+        str(section.get(field) or "")
+        for field in ("required_visual", "required_meaning", "voice_text", "intention_copy")
+    )
+    terms: list[str] = []
+    for term in DOMAIN_TERMS:
+        if term in value and term not in terms:
+            terms.append(term)
+    for keyword in section.get("keywords") or []:
+        text = str(keyword).strip()
+        if text and text not in terms:
+            terms.append(text)
+    return terms
+
+
+def is_child_renderable(child: dict[str, Any]) -> bool:
+    return bool(child.get("trimmed_clip_path") or child.get("source_clip_path")) and child_duration(child) > 0
+
+
+def child_duration(child: dict[str, Any]) -> float:
+    try:
+        return max(
+            0.0,
+            float(
+                child.get("clip_actual_duration_s")
+                or child.get("duration_s")
+                or child.get("source_duration_s")
+                or 0
+            ),
+        )
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, Any]) -> tuple[list[tuple[float, int, dict[str, Any], list[str]]], dict[str, float], list[str]]:
+    children = [
+        child
+        for child in candidate.get("child_physical_shots") or []
+        if isinstance(child, dict) and is_child_renderable(child)
+    ]
+    target_terms = hard_visual_terms(section)
+    term_positions = section_term_positions(candidate, section, target_terms)
+    scored: list[tuple[float, int, dict[str, Any], list[str]]] = []
+    target_duration = float(section.get("audio_duration_s") or 0)
+    for child_index, child in enumerate(children):
+        hit_info = child_term_hit_info(child, section)
+        hits = [str(item["term"]) for item in hit_info]
+        score = child_semantic_weight(child, section)
+        score += child_order_hint_score(child_index, len(children), term_positions, hits)
+        duration = child_duration(child)
+        if target_duration > 0:
+            score += duration_score(duration, min(target_duration, max(duration, 0.1))) * 0.35
+        if child.get("hard_subtitle_risk") == "high":
+            score -= 0.35
+        elif child.get("hard_subtitle_risk") == "medium":
+            score -= 0.12
+        scored.append((score, child_index, child, hits))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored, term_positions, target_terms
+
+
+def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any]) -> dict[str, Any]:
+    scored, term_positions, target_terms = ranked_child_physical_shots(candidate, section)
+    if not scored:
+        return {
+            "mode": "story_unit_clip",
+            "child_physical_shot_id": "",
+            "target_visual_terms": target_terms,
+            "semantic_hits": candidate.get("semantic_hits") or keyword_hits(candidate, section),
+            "semantic_score": candidate_semantic_score(candidate),
+            "reason": "候选没有可渲染 child physical shot，回退到 story unit 片段",
+            "source_clip_path": candidate.get("trimmed_clip_path") or candidate.get("source_clip_path") or "",
+            "source_duration_s": candidate_duration(candidate),
+            "source_start_offset_s": 0.0,
+            "source_end_offset_s": candidate_duration(candidate),
+            "visual_summary": candidate.get("visual_summary"),
+            "source_meaning": candidate.get("source_meaning"),
+            "hard_subtitle_risk": candidate.get("hard_subtitle_risk"),
+            "voiceover_fit": candidate.get("voiceover_fit"),
+            "requires_review": bool(target_terms),
+        }
+
+    best_score, _child_index, best_child, hits = scored[0]
+    source_duration = child_duration(best_child)
+    source_path = best_child.get("trimmed_clip_path") or best_child.get("source_clip_path") or ""
+    if not source_path:
+        source_path = candidate.get("trimmed_clip_path") or candidate.get("source_clip_path") or ""
+        source_duration = candidate_duration(candidate)
+    missing_terms = [
+        term
+        for term in target_terms
+        if term not in hits and not any(alias in hits for alias in TERM_ALIASES.get(term, []))
+    ]
+    requires_review = bool(target_terms and not hits)
+    return {
+        "mode": "child_physical_shot",
+        "child_physical_shot_id": best_child.get("shot_id") or "",
+        "target_visual_terms": target_terms,
+        "semantic_hits": hits,
+        "semantic_score": round(best_score, 3),
+        "missing_target_terms": missing_terms,
+        "reason": (
+            f"story unit 内子镜头匹配：{best_child.get('shot_id')}；命中 "
+            f"{'、'.join(hits) if hits else '无硬视觉词'}"
+            f"{'；使用 story 文本顺序定位' if term_positions else ''}"
+        ),
+        "source_clip_path": source_path,
+        "source_duration_s": source_duration,
+        "source_start_offset_s": 0.0,
+        "source_end_offset_s": source_duration,
+        "visual_summary": best_child.get("visual_summary") or candidate.get("visual_summary"),
+        "source_meaning": best_child.get("source_meaning") or candidate.get("source_meaning"),
+        "hard_subtitle_risk": best_child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
+        "voiceover_fit": best_child.get("voiceover_fit") or candidate.get("voiceover_fit"),
+        "requires_review": requires_review,
+    }
+
+
+def child_selection_start(candidate: dict[str, Any], section: dict[str, Any]) -> dict[str, Any]:
+    selected = select_child_physical_shot(candidate, section)
+    child_id = str(selected.get("child_physical_shot_id") or "")
+    children = [
+        child
+        for child in candidate.get("child_physical_shots") or []
+        if isinstance(child, dict) and is_child_renderable(child)
+    ]
+    start_index = 0
+    for index, child in enumerate(children):
+        if str(child.get("shot_id") or "") == child_id:
+            start_index = index
+            break
+    selected["children"] = children
+    selected["start_index"] = start_index
+    return selected
+
+
+def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], max_duration: float) -> list[dict[str, Any]]:
+    if max_duration <= 0:
+        return []
+    intra = child_selection_start(candidate, section)
+    children = intra.get("children") or []
+    if not children:
+        return [clip_segment_from_intra(candidate, intra, max_duration)]
+    segments: list[dict[str, Any]] = []
+    remaining = max_duration
+    start_index = int(intra.get("start_index") or 0)
+    ordered_children = children[start_index:]
+    for child in ordered_children:
+        duration = child_duration(child)
+        if duration <= 0:
+            continue
+        child_intra = select_child_metadata_from_child(candidate, section, child, intra)
+        planned = min(duration, remaining)
+        segments.append(clip_segment_from_intra(candidate, child_intra, planned))
+        remaining = max(0.0, remaining - planned)
+        if remaining <= 0.03:
+            break
+    return segments
+
+
+def select_child_metadata_from_child(
+    candidate: dict[str, Any],
+    section: dict[str, Any],
+    child: dict[str, Any],
+    base_intra: dict[str, Any],
+) -> dict[str, Any]:
+    hit_info = child_term_hit_info(child, section)
+    hits = [str(item["term"]) for item in hit_info]
+    score = child_semantic_weight(child, section)
+    target_terms = base_intra.get("target_visual_terms") or hard_visual_terms(section)
+    missing_terms = [
+        term
+        for term in target_terms
+        if term not in hits and not any(alias in hits for alias in TERM_ALIASES.get(term, []))
+    ]
+    duration = child_duration(child)
+    return {
+        "mode": "child_physical_shot",
+        "child_physical_shot_id": child.get("shot_id") or "",
+        "target_visual_terms": target_terms,
+        "semantic_hits": hits,
+        "semantic_score": round(score, 3),
+        "missing_target_terms": missing_terms,
+        "reason": (
+            f"story unit 内连续子镜头：{child.get('shot_id')}；命中 "
+            f"{'、'.join(hits) if hits else '无硬视觉词'}"
+        ),
+        "source_clip_path": child.get("trimmed_clip_path") or child.get("source_clip_path") or "",
+        "source_duration_s": duration,
+        "source_start_offset_s": 0.0,
+        "source_end_offset_s": duration,
+        "visual_summary": child.get("visual_summary") or candidate.get("visual_summary"),
+        "source_meaning": child.get("source_meaning") or candidate.get("source_meaning"),
+        "hard_subtitle_risk": child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
+        "voiceover_fit": child.get("voiceover_fit") or candidate.get("voiceover_fit"),
+        "requires_review": bool(target_terms and not hits),
+    }
+
+
+def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], planned_duration: float) -> dict[str, Any]:
+    source_duration = float(intra.get("source_duration_s") or candidate_duration(candidate))
+    planned = min(max(0.0, planned_duration), source_duration) if source_duration > 0 else max(0.0, planned_duration)
+    source_start_offset = float(intra.get("source_start_offset_s") or 0.0)
+    source_end_offset = source_start_offset + planned
+    selection_reasons = list(candidate.get("fill_reasons", []))
+    if intra.get("reason"):
+        selection_reasons.append(str(intra.get("reason")))
+    selection_risks = list(candidate.get("fill_risks", []))
+    if intra.get("requires_review"):
+        selection_risks.append("目标视觉词未能在 child physical shot 文本中明确命中，需抽帧或 Omni 复核")
+    return {
+        "shot_id": candidate.get("shot_id"),
+        "story_unit_id": candidate.get("story_unit_id") or candidate.get("shot_id"),
+        "child_physical_shot_id": intra.get("child_physical_shot_id", ""),
+        "intra_clip_selection_mode": intra.get("mode"),
+        "intra_clip_selection_reason": intra.get("reason"),
+        "target_visual_terms": intra.get("target_visual_terms", []),
+        "missing_target_terms": intra.get("missing_target_terms", []),
+        "asset_id": candidate.get("asset_id"),
+        "label": candidate.get("label"),
+        "score": candidate.get("score"),
+        "adjusted_score": candidate.get("adjusted_score"),
+        "source_clip_path": intra.get("source_clip_path") or candidate.get("trimmed_clip_path") or candidate.get("source_clip_path") or "",
+        "source_duration_s": round(source_duration, 3),
+        "source_start_offset_s": round(source_start_offset, 3),
+        "source_end_offset_s": round(source_end_offset, 3),
+        "planned_duration_s": round(planned, 3),
+        "allow_loop": False,
+        "loop_policy": "disabled_by_default",
+        "visual_summary": intra.get("visual_summary") or candidate.get("visual_summary"),
+        "source_meaning": intra.get("source_meaning") or candidate.get("source_meaning"),
+        "selling_points": candidate.get("selling_points", []),
+        "hard_subtitle_risk": intra.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
+        "voiceover_fit": intra.get("voiceover_fit") or candidate.get("voiceover_fit"),
+        "selection_reasons": selection_reasons,
+        "selection_risks": selection_risks,
+        "semantic_hits": intra.get("semantic_hits") or candidate.get("semantic_hits", []),
+        "semantic_score": intra.get("semantic_score") if intra.get("semantic_score") is not None else candidate.get("semantic_score"),
+        "requires_visual_review": bool(intra.get("requires_review")),
+    }
 
 
 def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_counts: dict[str, int]) -> dict[str, Any]:
@@ -346,13 +841,20 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
         risks.append(f"素材短于口播段 {duration:.3f}s < {target:.3f}s")
     bonus, semantic_terms = semantic_match_bonus(candidate, section)
     semantic_score = semantic_hit_weight(candidate, section)
+    visual_hits = required_visual_hits(candidate, section)
+    visual_score = required_visual_score(candidate, section)
+    if visual_hits:
+        visual_bonus = min(0.42, visual_score * 0.075)
+        score += visual_bonus
+        reasons.append(f"required_visual 硬词命中：{'、'.join(visual_hits[:8])}")
     if bonus > 0:
         score += bonus
         reasons.append(f"口播/意图与素材字段命中：{'、'.join(semantic_terms)}")
     elif section.get("role") in ("proof", "product", "cta"):
         score -= 0.08
         risks.append("未命中本段必要语义/视觉术语")
-    reuse_penalty = used_counts.get(shot_id, 0) * 0.42 + used_counts.get(asset_id, 0) * 0.035
+    reuse_scale = 0.35 if visual_score >= 3.0 else 0.65 if visual_score >= 1.25 else 1.0
+    reuse_penalty = (used_counts.get(shot_id, 0) * 0.42 + used_counts.get(asset_id, 0) * 0.035) * reuse_scale
     if reuse_penalty:
         score -= reuse_penalty
         risks.append(f"复用惩罚 {reuse_penalty:.3f}")
@@ -368,6 +870,8 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
     output["fill_risks"] = risks
     output["semantic_hits"] = semantic_terms
     output["semantic_score"] = round(semantic_score, 3)
+    output["required_visual_hits"] = visual_hits
+    output["required_visual_score"] = visual_score
     return output
 
 
@@ -403,6 +907,9 @@ def candidate_from_index_record(record: dict[str, Any], section: dict[str, Any])
         "source_ocr": record.get("source_ocr", []),
         "trimmed_clip_path": record.get("trimmed_clip_path", ""),
         "trimmed_oss_url": record.get("trimmed_oss_url", ""),
+        "child_physical_shot_ids": record.get("child_physical_shot_ids", []),
+        "child_physical_shots": record.get("child_physical_shots", []),
+        "child_clip_paths": record.get("child_clip_paths", []),
         "adjusted_score": None,
         "fill_reasons": ["final selection override: semantic/visual fit is better than raw top score"],
         "fill_risks": [],
@@ -442,50 +949,85 @@ def apply_selection_overrides(
     return selected
 
 
-def selected_clip_plan(candidate: dict[str, Any], section: dict[str, Any], clip_order: int, planned_duration: float) -> dict[str, Any]:
-    return {
-        "clip_order": clip_order,
-        "shot_id": candidate.get("shot_id"),
-        "asset_id": candidate.get("asset_id"),
-        "label": candidate.get("label"),
-        "score": candidate.get("score"),
-        "adjusted_score": candidate.get("adjusted_score"),
-        "source_clip_path": candidate.get("trimmed_clip_path") or candidate.get("source_clip_path") or "",
-        "source_duration_s": round(candidate_duration(candidate), 3),
-        "planned_duration_s": round(max(0.0, planned_duration), 3),
-        "allow_loop": False,
-        "loop_policy": "disabled_by_default",
-        "visual_summary": candidate.get("visual_summary"),
-        "source_meaning": candidate.get("source_meaning"),
-        "selling_points": candidate.get("selling_points", []),
-        "hard_subtitle_risk": candidate.get("hard_subtitle_risk"),
-        "voiceover_fit": candidate.get("voiceover_fit"),
-        "selection_reasons": candidate.get("fill_reasons", []),
-        "selection_risks": candidate.get("fill_risks", []),
-        "semantic_hits": candidate.get("semantic_hits", []),
-        "semantic_score": candidate.get("semantic_score"),
-    }
-
-
 def allocate_clip_plan(selected: list[dict[str, Any]], section: dict[str, Any]) -> tuple[list[dict[str, Any]], float, float]:
     target = float(section.get("audio_duration_s") or 0)
     remaining = target
     plans: list[dict[str, Any]] = []
     total_source = 0.0
-    for clip_order, item in enumerate(selected, start=1):
-        source_duration = candidate_duration(item)
-        total_source += source_duration
-        planned_duration = min(source_duration, remaining) if remaining > 0 else 0.0
-        plans.append(selected_clip_plan(item, section, clip_order, planned_duration))
-        remaining = max(0.0, remaining - planned_duration)
+    clip_order = 1
+    for item in selected:
+        if remaining <= 0.03:
+            break
+        segments = candidate_clip_segments(item, section, remaining)
+        if not segments:
+            continue
+        for segment in segments:
+            source_duration = float(segment.get("source_duration_s") or 0)
+            planned_duration = float(segment.get("planned_duration_s") or 0)
+            if planned_duration <= 0:
+                continue
+            total_source += source_duration
+            segment["clip_order"] = clip_order
+            plans.append(segment)
+            clip_order += 1
+            remaining = max(0.0, remaining - planned_duration)
+            if remaining <= 0.03:
+                break
     return plans, round(total_source, 3), round(max(0.0, remaining), 3)
+
+
+def candidates_compatible(seed: dict[str, Any] | None, item: dict[str, Any], section: dict[str, Any]) -> bool:
+    if seed is None:
+        return True
+    seed_hits = set(keyword_hits(seed, section))
+    item_hits = set(keyword_hits(item, section))
+    if seed_hits and item_hits and seed_hits.intersection(item_hits):
+        return True
+    required_hits = set(required_visual_hits(item, section))
+    if required_hits:
+        return True
+    if str(seed.get("asset_id") or "") == str(item.get("asset_id") or ""):
+        return True
+    return False
+
+
+def top_up_selection(
+    selected: list[dict[str, Any]],
+    adjusted: list[dict[str, Any]],
+    section: dict[str, Any],
+    max_clips_per_section: int,
+) -> tuple[list[dict[str, Any]], str]:
+    selected = list(selected)
+    note = ""
+    selected_ids = {str(item.get("shot_id") or "") for item in selected}
+    selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
+    seed = selected[0] if selected else None
+    while missing_duration_s > 0.08 and len(selected) < max_clips_per_section:
+        next_item = None
+        for item in adjusted:
+            shot_id = str(item.get("shot_id") or "")
+            if not shot_id or shot_id in selected_ids:
+                continue
+            if not candidate_renderable(item):
+                continue
+            if not candidates_compatible(seed, item, section):
+                continue
+            next_item = item
+            break
+        if next_item is None:
+            break
+        selected.append(next_item)
+        selected_ids.add(str(next_item.get("shot_id") or ""))
+        selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
+        note = "；命中 story unit 内连续 child 不足时，追加同语义候选补齐"
+    return selected, note
 
 
 def reject_reason(candidate: dict[str, Any], section: dict[str, Any], selected_ids: set[str], target: float) -> str:
     shot_id = str(candidate.get("shot_id") or "")
     if shot_id in selected_ids:
         return "已被选中"
-    if not candidate.get("trimmed_clip_path") and not candidate.get("source_clip_path"):
+    if not candidate_renderable(candidate):
         return "缺少可渲染素材路径"
     duration = candidate_duration(candidate)
     hits = keyword_hits(candidate, section)
@@ -580,16 +1122,26 @@ def build_selection_section(
         usable = [
             item
             for item in adjusted
-            if (item.get("trimmed_clip_path") or item.get("source_clip_path")) and candidate_duration(item) > 0
+            if candidate_renderable(item)
         ]
         long_enough = [item for item in usable if candidate_duration(item) >= target - 0.03]
         strong_semantic = [item for item in usable if candidate_semantic_score(item) >= 1.6]
+        if long_enough:
+            long_enough.sort(
+                key=lambda item: (
+                    float(item.get("required_visual_score") or 0),
+                    candidate_semantic_score(item),
+                    candidate_score(item),
+                ),
+                reverse=True,
+            )
         best_long = long_enough[0] if long_enough else None
         best_long_is_semantic = best_long is not None and candidate_semantic_score(best_long) >= 1.6
-        if best_long and (best_long_is_semantic or not strong_semantic):
-            selected = [long_enough[0]]
+        best_long_visual_score = float(best_long.get("required_visual_score") or 0) if best_long else 0.0
+        if best_long and (best_long_visual_score >= 2.5 or best_long_is_semantic or not strong_semantic):
+            selected = [best_long]
             strategy = "single_story_unit_trim_to_audio"
-            selection_reason = "优先选择单条足够长的 story unit，渲染时按口播时长裁切。"
+            selection_reason = "优先选择 required_visual/语义命中且足够长的 story unit，并在内部 child physical shots 连续裁切。"
         else:
             selected = []
             selected_assets: set[str] = set()
@@ -620,6 +1172,11 @@ def build_selection_section(
             strategy = "multi_story_unit_semantic_fill"
             selection_reason = f"单条长素材语义命中不足或不存在，改用最多 {max_clips_per_section} 条同语义候选拼接。"
 
+    if selected_override is None:
+        selected, top_up_note = top_up_selection(selected, adjusted, section, max_clips_per_section)
+        if top_up_note and top_up_note not in selection_reason:
+            selection_reason += top_up_note
+
     selected_clips, selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
     if not selected_clips:
         message = f"{section.get('section_id')}: 没有可用候选，缺口 {target:.3f}s"
@@ -642,6 +1199,14 @@ def build_selection_section(
         message = f"{section.get('section_id')}: 已选素材存在 hard_subtitle_risk=medium，建议人工复核"
         warnings.append(message)
         manual_reviews.append(message)
+    for item in selected_clips:
+        if item.get("requires_visual_review"):
+            message = (
+                f"{section.get('section_id')}/{item.get('shot_id')}: "
+                "child physical shot 未明确命中目标视觉词，需抽帧或 Omni 复核"
+            )
+            warnings.append(message)
+            manual_reviews.append(message)
 
     requires_review = bool(manual_reviews)
     confidence = confidence_for_selection(selected, section, missing_duration_s, strategy, has_override)
@@ -677,14 +1242,17 @@ def render_clip(
     height: int,
     fps: int,
     preset: str,
+    start_offset: float = 0.0,
 ) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     source_duration = probe_duration(source)
     if source_duration is None:
         raise RuntimeError(f"cannot probe source duration: {source}")
-    if source_duration + 0.04 < duration:
-        duration = source_duration
-        warnings.append(f"source shorter than requested; rendered natural length {source_duration:.3f}s; loop disabled")
+    start_offset = max(0.0, min(float(start_offset or 0.0), source_duration))
+    available_duration = max(0.0, source_duration - start_offset)
+    if available_duration + 0.04 < duration:
+        duration = available_duration
+        warnings.append(f"source shorter than requested after offset; rendered natural length {available_duration:.3f}s; loop disabled")
 
     frames = max(1, int(math.ceil(duration * fps)))
     vf = (
@@ -695,6 +1263,8 @@ def render_clip(
     command = [
         "ffmpeg",
         "-y",
+        "-ss",
+        str(start_offset),
         "-i",
         str(source),
         "-an",
@@ -718,6 +1288,8 @@ def render_clip(
     rendered_duration = probe_duration(output)
     return {
         "source_duration_s": source_duration,
+        "source_start_offset_s": round(start_offset, 3),
+        "source_end_offset_s": round(start_offset + duration, 3),
         "requested_duration_s": round(duration, 3),
         "rendered_duration_s": rendered_duration,
         "rendered_clip_path": str(output),
@@ -794,6 +1366,7 @@ def main() -> int:
 
     audio_sections = load_json(audio_sections_path)
     index = load_json(index_path)
+    index, intake_boundary_contract = ensure_child_physical_shots(index, index_path)
     records_by_id = {str(record.get("shot_id")): record for record in index.get("records", [])}
     selection_overrides = load_json(as_abs(args.selection_overrides)) if args.selection_overrides else {}
     sections = audio_sections.get("sections") or []
@@ -856,11 +1429,13 @@ def main() -> int:
             "retrieval_unit": index.get("planning_granularity", "story_unit"),
             "prefer_long_material": True,
             "loop_default": False,
+            "intra_story_unit_selection": "child_physical_shot_text_and_order_v1",
         },
         "sections": candidate_sections,
         "qa": {
-            "status": "ok",
-            "warnings": [],
+            "status": intake_boundary_contract.get("status", "ok"),
+            "warnings": intake_boundary_contract.get("warnings", []),
+            "intake_boundary_contract": intake_boundary_contract,
         },
         "next_consumers": ["voah-timeline-selection"],
     }
@@ -868,8 +1443,8 @@ def main() -> int:
 
     sections_by_id = {str(item.get("section_id") or ""): item for item in sections}
     selection_sections: list[dict[str, Any]] = []
-    selection_warnings: list[str] = []
-    selection_manual_reviews: list[str] = []
+    selection_warnings: list[str] = list(intake_boundary_contract.get("warnings") or [])
+    selection_manual_reviews: list[str] = list(intake_boundary_contract.get("warnings") or [])
     used_counts: dict[str, int] = {}
 
     for candidate_section in candidate_payload.get("sections") or []:
@@ -917,11 +1492,18 @@ def main() -> int:
             "max_clips_per_section": args.max_clips_per_section,
             "loop_default": False,
             "material_shortage_action": "manual_review",
+            "intra_story_unit_selection": "child_physical_shot_text_and_order_v1",
         },
         "sections": selection_sections,
         "summary": {
             "section_count": len(selection_sections),
             "selected_clip_count": sum(len(item.get("selected_clips") or []) for item in selection_sections),
+            "selected_child_physical_clip_count": sum(
+                1
+                for section in selection_sections
+                for item in section.get("selected_clips") or []
+                if item.get("child_physical_shot_id")
+            ),
             "requires_review_count": sum(1 for item in selection_sections if item.get("requires_review")),
             "missing_duration_s": round(sum(float(item.get("missing_duration_s") or 0) for item in selection_sections), 3),
         },
@@ -929,6 +1511,7 @@ def main() -> int:
             "status": qa_status_from(selection_warnings, selection_manual_reviews),
             "warnings": selection_warnings,
             "manual_review": selection_manual_reviews,
+            "intake_boundary_contract": intake_boundary_contract,
         },
         "next_consumers": ["voah-video-fill"],
     }
@@ -955,6 +1538,7 @@ def main() -> int:
                 fill_manual_reviews.append(f"{section.get('section_id')}/{selected_item.get('shot_id')}: planned duration is 0")
                 continue
             out_clip = work_dir / f"{section_index:03d}_{clip_index:02d}_{safe_filename(str(selected_item.get('shot_id') or 'shot'))}.mp4"
+            source_start_offset = float(selected_item.get("source_start_offset_s") or 0.0)
             probe, render_item_warnings = render_clip(
                 source=source,
                 output=out_clip,
@@ -963,6 +1547,7 @@ def main() -> int:
                 height=args.height,
                 fps=args.fps,
                 preset=args.preset,
+                start_offset=source_start_offset,
             )
             fill_warnings.extend([f"{section.get('section_id')}/{selected_item.get('shot_id')}: {warning}" for warning in render_item_warnings])
             if render_item_warnings:
@@ -975,11 +1560,20 @@ def main() -> int:
                 {
                     "clip_order": clip_index,
                     "shot_id": selected_item.get("shot_id"),
+                    "story_unit_id": selected_item.get("story_unit_id"),
+                    "child_physical_shot_id": selected_item.get("child_physical_shot_id"),
+                    "intra_clip_selection_mode": selected_item.get("intra_clip_selection_mode"),
+                    "intra_clip_selection_reason": selected_item.get("intra_clip_selection_reason"),
+                    "target_visual_terms": selected_item.get("target_visual_terms", []),
+                    "missing_target_terms": selected_item.get("missing_target_terms", []),
                     "asset_id": selected_item.get("asset_id"),
                     "label": selected_item.get("label"),
                     "score": selected_item.get("score"),
                     "adjusted_score": selected_item.get("adjusted_score"),
                     "source_clip_path": str(source),
+                    "planned_source_start_offset_s": selected_item.get("source_start_offset_s"),
+                    "planned_source_end_offset_s": selected_item.get("source_end_offset_s"),
+                    "planned_duration_s": selected_item.get("planned_duration_s"),
                     "visual_summary": selected_item.get("visual_summary"),
                     "source_meaning": selected_item.get("source_meaning"),
                     "selling_points": selected_item.get("selling_points", []),
@@ -987,6 +1581,9 @@ def main() -> int:
                     "voiceover_fit": selected_item.get("voiceover_fit"),
                     "selection_reasons": selected_item.get("selection_reasons", []),
                     "selection_risks": selected_item.get("selection_risks", []),
+                    "semantic_hits": selected_item.get("semantic_hits", []),
+                    "semantic_score": selected_item.get("semantic_score"),
+                    "requires_visual_review": bool(selected_item.get("requires_visual_review")),
                     "allow_loop": False,
                     "loop_policy": "disabled_by_default",
                     **probe,
@@ -1053,6 +1650,12 @@ def main() -> int:
             "preview_duration_s": preview_duration,
             "render_policy": "execute_timeline_selection_trim_or_concat_no_loop",
             "selected_clip_count": sum(len(item.get("clips") or []) for item in timeline_sections),
+            "selected_child_physical_clip_count": sum(
+                1
+                for section in timeline_sections
+                for item in section.get("clips") or []
+                if item.get("child_physical_shot_id")
+            ),
             "missing_duration_s": round(sum(float(item.get("missing_duration_s") or 0) for item in timeline_sections), 3),
         },
         "timeline": timeline_sections,
@@ -1061,6 +1664,7 @@ def main() -> int:
             "status": qa_status_from(fill_warnings, fill_manual_reviews),
             "warnings": fill_warnings,
             "manual_review": fill_manual_reviews,
+            "intake_boundary_contract": intake_boundary_contract,
         },
         "next_consumers": ["voah-caption-plan", "hyperframes-subtitle-burn"],
     }

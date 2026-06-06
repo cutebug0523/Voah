@@ -247,6 +247,10 @@ audio_sections.json
 - 默认以 `story_units` 作为主规划单位，`physical_shots` 作为子裁切单位。
 - 用规则 rerank 守住产品、语义、卖点、时长、字幕风险、配音适配度。
 - 用 Omni/VLM 或规则做 temporal rerank，输出真正可用的 start/end。
+- `required_visual` 里的硬画面词优先级高于普通相似度和复用惩罚；不能因为某条素材更长或更少复用，就压过“车内”“海边”“泼水”等明确画面需求。
+- 选中 story unit 后不能默认从 story unit 开头裁；必须落到 `child_physical_shot_id` 或 `source_start_offset_s/source_end_offset_s`。
+- 若一个 audio section 需要的时长超过单个 child physical shot，优先从命中 child 开始连续使用同一 story unit 内的后续 child；仍不足时再找同语义/同维度候选拼接，不默认 loop。
+- `candidate_sections.json`、`timeline_selection.json`、`timeline_fill.json` 必须写入 intake boundary contract，确认 `physical_shots.json`、`trim_end_epsilon_s`、`clip_frames`、`clip_actual_duration_s` 可用。
 
 核心产物：
 
@@ -265,6 +269,7 @@ preview_no_subtitles.mp4
 短素材优先找同语义/同维度片段拼接。
 不要因为“只差一点点”就默认循环凑够。
 原素材音轨默认丢弃，只使用 voice.wav。
+story unit 是规划单位，实际渲染窗口必须能追溯到 child physical shot / offset。
 ```
 
 ### 4.7 字幕计划与烧录

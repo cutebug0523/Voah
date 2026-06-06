@@ -566,6 +566,15 @@ voah_create_hyperframes_subtitle_project.py
 voah_write_full_pipeline_manifest.py
 ```
 
+`voah_retrieve_fill_from_audio_sections.py` 的桌面端合同：
+
+- 输入必须是 TTS 后的 `audio_sections.json`、`voice.wav` 和素材库 `shot_index.json`。
+- 读取 `shot_index.json` 后要校验 intake boundary contract：`physical_shots.json`、`trim_end_epsilon_s`、`clip_frames`、`clip_actual_duration_s`。
+- `candidate_sections.json` 保留 story unit 候选和 child physical shot 元数据。
+- `timeline_selection.json` 必须写明每段选中的 `child_physical_shot_id` 或 offset 依据。
+- `timeline_fill.json` 必须记录实际渲染的 `source_clip_path`、`source_start_offset_s`、`source_end_offset_s`、`rendered_clip_path`。
+- 默认不 loop；素材不足时走同语义拼接或 manual_review。
+
 原因：
 
 - 它们覆盖任务层主线。
