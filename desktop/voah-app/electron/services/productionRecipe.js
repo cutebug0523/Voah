@@ -779,6 +779,8 @@ export class ProductionRecipe {
         "36",
         "--max-clips-per-section",
         "3",
+        "--selection-planner",
+        "auto",
         "--width",
         "720",
         "--height",
@@ -839,6 +841,12 @@ export class ProductionRecipe {
       ]
     });
     await this.prepareHyperframesBaseVideo({ task, jobId, projectDir });
+    const hyperframesTimeoutEnv = {
+      PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS: "300000",
+      PRODUCER_PLAYER_READY_TIMEOUT_MS: "120000",
+      PRODUCER_PAGE_NAVIGATION_TIMEOUT_MS: "180000",
+      PRODUCER_LOW_MEMORY_MODE: "false"
+    };
     await this.runCommand({
       task,
       jobId,
@@ -850,8 +858,9 @@ export class ProductionRecipe {
       task,
       jobId,
       command: "npx",
-      args: ["hyperframes", "inspect", ".", "--samples", "12", "--json"],
-      cwd: projectDir
+      args: ["hyperframes", "inspect", ".", "--samples", "12", "--json", "--browser-timeout", "180"],
+      cwd: projectDir,
+      env: hyperframesTimeoutEnv
     });
     await this.renderHyperframesWithRetry({ task, jobId, projectDir });
     const manifestPath = path.join(projectDir, "hyperframes_subtitle_burn_manifest.json");
@@ -912,12 +921,21 @@ export class ProductionRecipe {
       "--fps",
       "30",
       "--workers",
-      "1"
+      "1",
+      "--no-browser-gpu",
+      "--browser-timeout",
+      "180",
+      "--protocol-timeout",
+      "300000",
+      "--player-ready-timeout",
+      "120000",
+      "--no-low-memory-mode"
     ];
     const env = {
       PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS: "300000",
       PRODUCER_PLAYER_READY_TIMEOUT_MS: "120000",
-      PRODUCER_PAGE_NAVIGATION_TIMEOUT_MS: "120000"
+      PRODUCER_PAGE_NAVIGATION_TIMEOUT_MS: "180000",
+      PRODUCER_LOW_MEMORY_MODE: "false"
     };
     try {
       await this.runCommand({
@@ -1148,7 +1166,7 @@ export class ProductionRecipe {
     if (!this.modelKeyService) {
       return;
     }
-    const missing = await this.modelKeyService.missingModules(["material_retrieval", "tts_primary"]);
+    const missing = await this.modelKeyService.missingModules(["material_retrieval", "selection_planner", "tts_primary"]);
     if (!missing.length) {
       return;
     }

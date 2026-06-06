@@ -571,6 +571,9 @@ voah_write_full_pipeline_manifest.py
 - 输入必须是 TTS 后的 `audio_sections.json`、`voice.wav` 和素材库 `shot_index.json`。
 - 读取 `shot_index.json` 后要校验 intake boundary contract：`physical_shots.json`、`trim_end_epsilon_s`、`clip_frames`、`clip_actual_duration_s`。
 - `candidate_sections.json` 保留 story unit 候选和 child physical shot 元数据。
+- `candidate_sections.json -> timeline_selection.json` 默认走 MiniMax M3 文本 planner：embedding 给候选区间，LLM 在候选池内选片、解释和控制复用多样性。
+- MiniMax M3 planner 只读结构化文本候选，不默认多模态；产品过滤、可渲染性、child physical shot 连续取片、不 loop、时长补齐和半开裁切仍由代码硬校验。
+- LLM 调用失败或输出无效时，必须回退 `rules_text_planner_v1` 并在 `timeline_selection.json.policy.llm_fallback_reason` 与 `llm_selection_plan.safe.json` 写明原因。
 - `timeline_selection.json` 必须写明每段选中的 `child_physical_shot_id` 或 offset 依据。
 - `timeline_fill.json` 必须记录实际渲染的 `source_clip_path`、`source_start_offset_s`、`source_end_offset_s`、`rendered_clip_path`。
 - 默认不 loop；素材不足时走同语义拼接或 manual_review。

@@ -7,8 +7,10 @@ import argparse
 import importlib.util
 import json
 import math
+import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -125,7 +127,9 @@ def write_text(path: Path, text: str) -> None:
         f.write(text)
 
 
-def run_command(command: list[str]) -> subprocess.CompletedProcess:
+def run_command(command: list[str], input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
+    if input_bytes is not None:
+        return subprocess.run(command, input=input_bytes, check=False, capture_output=True)
     return subprocess.run(command, check=False, capture_output=True, text=True)
 
 
@@ -646,6 +650,20 @@ def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, An
 
 
 def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any]) -> dict[str, Any]:
+    preferred_child_ids = [str(item) for item in candidate.get("llm_preferred_child_physical_shot_ids") or []]
+    if preferred_child_ids:
+        for child in candidate.get("child_physical_shots") or []:
+            if not isinstance(child, dict) or not is_child_renderable(child):
+                continue
+            if str(child.get("shot_id") or "") in preferred_child_ids:
+                base = {
+                    "target_visual_terms": hard_visual_terms(section),
+                    "semantic_hits": [str(item["term"]) for item in child_term_hit_info(child, section)],
+                    "semantic_score": round(child_semantic_weight(child, section), 3),
+                    "reason": f"MiniMax M3 指定 child physical shot 起点：{child.get('shot_id')}",
+                }
+                return select_child_metadata_from_child(candidate, section, child, base)
+
     scored, term_positions, target_terms = ranked_child_physical_shots(candidate, section)
     if not scored:
         return {
@@ -1072,6 +1090,492 @@ def build_rejected_candidates(
     return rejected
 
 
+def compact_child_for_llm(child: dict[str, Any], index: int, section: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "order": index + 1,
+        "id": child.get("shot_id") or "",
+        "duration_s": round(child_duration(child), 3),
+        "visual": str(child.get("visual_summary") or "")[:72],
+        "meaning": str(child.get("source_meaning") or "")[:72],
+        "hits": [str(item["term"]) for item in child_term_hit_info(child, section)[:8]],
+        "subtitle_risk": child.get("hard_subtitle_risk"),
+        "renderable": is_child_renderable(child),
+    }
+
+
+def compact_candidate_for_llm(candidate: dict[str, Any], rank: int, section: dict[str, Any]) -> dict[str, Any]:
+    children = [
+        compact_child_for_llm(child, index, section)
+        for index, child in enumerate(candidate.get("child_physical_shots") or [])
+        if isinstance(child, dict)
+    ]
+    return {
+        "rank": rank,
+        "id": candidate.get("shot_id"),
+        "asset_id": candidate.get("asset_id"),
+        "duration_s": round(candidate_duration(candidate), 3),
+        "adjusted_score": candidate.get("adjusted_score"),
+        "semantic_score": candidate.get("semantic_score"),
+        "semantic_hits": candidate.get("semantic_hits") or [],
+        "visual_hits": candidate.get("required_visual_hits") or [],
+        "visual": str(candidate.get("visual_summary") or "")[:110],
+        "meaning": str(candidate.get("source_meaning") or "")[:110],
+        "subtitle_risk": candidate.get("hard_subtitle_risk"),
+        "renderable": candidate_renderable(candidate),
+        "children": children[:3],
+    }
+
+
+def compact_section_for_llm(section: dict[str, Any], candidate_section: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "section_id": section.get("section_id"),
+        "timeline_order": section.get("timeline_order"),
+        "role": section.get("role"),
+        "audio_duration_s": float(section.get("audio_duration_s") or candidate_section.get("audio_duration_s") or 0),
+        "voice_text": str(section.get("voice_text") or "")[:120],
+        "required_meaning": str(section.get("required_meaning") or "")[:100],
+        "required_visual": str(section.get("required_visual") or "")[:100],
+        "keywords": section.get("keywords") or [],
+        "candidates": [compact_candidate_for_llm(candidate, rank + 1, section) for rank, candidate in enumerate(candidates[:5])],
+    }
+
+
+def compact_previous_selection_for_llm(raw_section: dict[str, Any], candidate_section: dict[str, Any]) -> dict[str, Any]:
+    selected_ids = raw_section.get("selected_shot_ids") or raw_section.get("selected_story_unit_ids") or []
+    if isinstance(selected_ids, str):
+        selected_ids = [selected_ids]
+    child_ids = raw_section.get("preferred_child_physical_shot_ids") or raw_section.get("selected_child_physical_shot_ids") or []
+    if isinstance(child_ids, str):
+        child_ids = [child_ids]
+    candidates_by_id: dict[str, dict[str, Any]] = {}
+    for candidate in candidate_section.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        for key in (candidate.get("shot_id"), candidate.get("story_unit_id"), candidate.get("parent_shot_id")):
+            if key:
+                candidates_by_id[str(key)] = candidate
+    selected_candidates = []
+    for selected_id in selected_ids:
+        candidate = candidates_by_id.get(str(selected_id))
+        if not candidate:
+            continue
+        selected_candidates.append(
+            {
+                "id": candidate.get("shot_id") or selected_id,
+                "asset_id": candidate.get("asset_id"),
+                "visual": str(candidate.get("visual_summary") or "")[:72],
+                "meaning": str(candidate.get("source_meaning") or "")[:72],
+            }
+        )
+    return {
+        "section_id": raw_section.get("section_id") or candidate_section.get("section_id"),
+        "selected_shot_ids": [str(item) for item in selected_ids if str(item or "").strip()],
+        "preferred_child_physical_shot_ids": [str(item) for item in child_ids if str(item or "").strip()],
+        "selected_candidates": selected_candidates,
+    }
+
+
+def build_llm_planner_prompt(
+    audio_sections: dict[str, Any],
+    candidate_payload: dict[str, Any],
+    sections_by_id: dict[str, dict[str, Any]],
+    max_clips_per_section: int,
+) -> dict[str, Any]:
+    sections = []
+    for candidate_section in candidate_payload.get("sections") or []:
+        section = sections_by_id.get(str(candidate_section.get("section_id") or ""))
+        if not section:
+            continue
+        candidates = candidate_section.get("candidates") or []
+        sections.append(compact_section_for_llm(section, candidate_section, candidates))
+    return {
+        "task": "Voah 带货混剪选片。embedding 已经给出候选池，你只在候选池内选择，避免纯 topK 每次都选同一素材。",
+        "product": audio_sections.get("product") or {},
+        "global_rules": [
+            "必须优先满足 required_visual 和 required_meaning；海边、车内、测试卡、泼水等硬画面词不能错配。",
+            "素材宜长不宜短；优先选单个足够长的 story unit，短素材才拼同语义候选。",
+            "同一条成片内避免反复使用同一个 shot 或 asset；除非同一语义段内连续 child 能自然承接。",
+            "不要为了凑时长选择语义完全不相关的素材。",
+            "不要选择 renderable=false 的候选。",
+            "如果选择 story unit，尽量给出从哪个 child_physical_shot_id 开始；代码会从该 child 起连续取后续 child 并裁切。",
+            "不要输出候选池以外的 id。"
+        ],
+        "output_schema": {
+            "sections": [
+                {
+                    "section_id": "string",
+                    "selected_shot_ids": ["story_unit_or_shot_id"],
+                    "preferred_child_physical_shot_ids": ["child_id"],
+                    "strategy": "single_story_unit_trim_to_audio | multi_story_unit_semantic_fill | manual_review",
+                    "selection_reason": "中文简述",
+                    "diversity_reason": "中文简述",
+                    "manual_review_reason": "可空"
+                }
+            ]
+        },
+        "max_clips_per_section": max_clips_per_section,
+        "sections": sections,
+    }
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?", "", raw).strip()
+        raw = re.sub(r"```$", "", raw).strip()
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        parsed = json.loads(raw[start : end + 1])
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("LLM response is not a JSON object")
+
+
+def minimax_m3_enabled(mode: str) -> bool:
+    if mode == "off":
+        return False
+    if mode == "minimax-m3":
+        return True
+    return bool(os.environ.get("MINIMAX_API_KEY"))
+
+
+def call_minimax_m3(prompt_payload: dict[str, Any], timeout_s: int = 90) -> tuple[dict[str, Any], dict[str, Any]]:
+    api_key = os.environ.get("MINIMAX_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("MINIMAX_API_KEY not configured")
+    base_url = os.environ.get("MINIMAX_LLM_BASE_URL") or os.environ.get("VOAH_TEXT_LLM_BASE_URL") or "https://api.minimaxi.com/v1"
+    endpoint = os.environ.get("VOAH_SELECTION_LLM_ENDPOINT") or "/text/chatcompletion_v2"
+    model = os.environ.get("VOAH_SELECTION_LLM_MODEL") or "MiniMax-M3"
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 Voah 的带货混剪选片 planner。你只能从用户给出的候选池里选择素材，"
+                "输出严格 JSON，不要输出 Markdown。你不负责生成文案，不负责裁切；代码会校验你的选择。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(prompt_payload, ensure_ascii=False),
+        },
+    ]
+    thinking_enabled = os.environ.get("VOAH_SELECTION_LLM_THINKING", "false").lower() == "true"
+    thinking_config = {"type": "enabled"} if thinking_enabled else {"type": "disabled"}
+    if endpoint.rstrip("/").endswith("/chat/completions"):
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": float(os.environ.get("VOAH_SELECTION_LLM_TEMPERATURE") or 0.25),
+            "max_tokens": int(os.environ.get("VOAH_SELECTION_LLM_MAX_TOKENS") or 1200),
+            "thinking": thinking_config,
+        }
+    else:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": float(os.environ.get("VOAH_SELECTION_LLM_TEMPERATURE") or 0.25),
+            "max_tokens": int(os.environ.get("VOAH_SELECTION_LLM_MAX_TOKENS") or 1200),
+            "thinking": thinking_config,
+            "stream": False,
+        }
+    payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as header_file:
+        header_file.write(f'header = "Authorization: Bearer {api_key}"\n')
+        header_file.write('header = "Content-Type: application/json"\n')
+        header_file_path = header_file.name
+    try:
+        curl_proc = run_command(
+            [
+                "curl",
+                "-sS",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                str(timeout_s),
+                "--request",
+                "POST",
+                url,
+                "--config",
+                header_file_path,
+                "--data-binary",
+                "@-",
+            ],
+            input_bytes=payload_bytes,
+        )
+    finally:
+        try:
+            Path(header_file_path).unlink()
+        except OSError:
+            pass
+    if curl_proc.returncode != 0:
+        curl_error = curl_proc.stderr.decode("utf-8", errors="ignore") if isinstance(curl_proc.stderr, bytes) else str(curl_proc.stderr)
+        raise RuntimeError(f"MiniMax M3 curl request failed: {curl_error[:800]}")
+    response_body = curl_proc.stdout.decode("utf-8", errors="ignore") if isinstance(curl_proc.stdout, bytes) else str(curl_proc.stdout)
+
+    raw = json.loads(response_body)
+    if raw.get("base_resp", {}).get("status_code") not in (None, 0):
+        raise RuntimeError(f"MiniMax M3 failed: {raw.get('base_resp')}")
+    choices = raw.get("choices") or []
+    if not choices:
+        raise RuntimeError("MiniMax M3 response has no choices")
+    message = choices[0].get("message") or {}
+    content = message.get("content") or choices[0].get("text") or raw.get("reply") or ""
+    plan = extract_json_object(content)
+    safe_response = {
+        "provider": "minimax-official",
+        "model": model,
+        "base_url": base_url,
+        "endpoint": endpoint,
+        "usage": raw.get("usage") or {},
+        "finish_reason": choices[0].get("finish_reason"),
+        "content_preview": content[:1200],
+        "plan": plan,
+    }
+    return plan, safe_response
+
+
+def call_minimax_m3_for_sections(
+    audio_sections: dict[str, Any],
+    candidate_payload: dict[str, Any],
+    sections_by_id: dict[str, dict[str, Any]],
+    max_clips_per_section: int,
+    timeout_s: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    section_plans: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    previous_selections: list[dict[str, Any]] = []
+
+    def normalize_current_section_plan(raw_sections: list[Any], expected_section_id: str) -> dict[str, Any] | None:
+        current_plan = next(
+            (
+                item
+                for item in raw_sections
+                if isinstance(item, dict) and str(item.get("section_id") or "") == expected_section_id
+            ),
+            None,
+        )
+        if current_plan is None and raw_sections and isinstance(raw_sections[0], dict):
+            current_plan = raw_sections[0]
+        if current_plan is None:
+            return None
+        output = dict(current_plan)
+        output["section_id"] = expected_section_id
+        return output
+
+    for candidate_section in candidate_payload.get("sections") or []:
+        section_id = str(candidate_section.get("section_id") or "")
+        section = sections_by_id.get(section_id)
+        if not section:
+            continue
+        prompt_payload = {
+            "task": "Voah 带货混剪单段选片。embedding 已经给出候选池，你只在候选池内选择，避免纯 topK 每次都选同一素材。",
+            "product": audio_sections.get("product") or {},
+            "previous_selections": previous_selections[-8:],
+            "global_rules": [
+                "必须优先满足 required_visual 和 required_meaning；硬画面词不能错配。",
+                "素材宜长不宜短；优先选单个足够长的 story unit，短素材才拼同语义候选。",
+                "如果第一条素材足够覆盖本段音频，不要为了多样性再选择第二条。",
+                "previous_selections 是本条成片前面段落已经选过的素材；不要复用相同 story unit，除非当前 required_visual 明确需要同一场景承接。",
+                "尽量分散 asset，但硬画面词命中优先于分散 asset。",
+                "不要选择 renderable=false 的候选。",
+                "如果选择 story unit，尽量给出从哪个 child_physical_shot_id 开始。",
+                "selection_reason 和 diversity_reason 各不超过 40 个中文字符。",
+                "不要输出候选池以外的 id。"
+            ],
+            "output_schema": {
+                "sections": [
+                    {
+                        "section_id": section_id,
+                        "selected_shot_ids": ["story_unit_or_shot_id"],
+                        "preferred_child_physical_shot_ids": ["child_id"],
+                        "strategy": "single_story_unit_trim_to_audio | multi_story_unit_semantic_fill | manual_review",
+                        "selection_reason": "中文简述",
+                        "diversity_reason": "中文简述",
+                        "manual_review_reason": "可空"
+                    }
+                ]
+            },
+            "max_clips_per_section": max_clips_per_section,
+            "sections": [
+                compact_section_for_llm(section, candidate_section, candidate_section.get("candidates") or [])
+            ],
+        }
+        try:
+            raw_plan, safe_response = call_minimax_m3(prompt_payload, timeout_s=timeout_s)
+            raw_sections = raw_plan.get("sections") or []
+            if not raw_sections:
+                raise ValueError("MiniMax M3 section plan is empty")
+            current_plan = normalize_current_section_plan(raw_sections, section_id)
+            if current_plan is None:
+                raise ValueError("MiniMax M3 section plan has no object")
+            section_plans.append(current_plan)
+            previous_selections.append(compact_previous_selection_for_llm(current_plan, candidate_section))
+            calls.append(
+                {
+                    "section_id": section_id,
+                    "status": "ok",
+                    "previous_selection_count": len(previous_selections) - 1,
+                    "usage": safe_response.get("usage") or {},
+                    "finish_reason": safe_response.get("finish_reason"),
+                    "content_preview": safe_response.get("content_preview", "")[:500],
+                }
+            )
+        except Exception as exc:
+            retry_error = ""
+            try:
+                retry_payload = dict(prompt_payload)
+                retry_payload["task"] = "重试：只输出合法 JSON，不要解释。每个 reason 不超过 20 字。"
+                retry_payload["strict_output"] = "必须是一个 JSON object，形如 {\"sections\":[...]}。"
+                raw_plan, safe_response = call_minimax_m3(retry_payload, timeout_s=timeout_s)
+                raw_sections = raw_plan.get("sections") or []
+                if not raw_sections:
+                    raise ValueError("MiniMax M3 retry section plan is empty")
+                current_plan = normalize_current_section_plan(raw_sections, section_id)
+                if current_plan is None:
+                    raise ValueError("MiniMax M3 retry section plan has no object")
+                section_plans.append(current_plan)
+                previous_selections.append(compact_previous_selection_for_llm(current_plan, candidate_section))
+                calls.append(
+                    {
+                        "section_id": section_id,
+                        "status": "ok_after_retry",
+                        "first_error": str(exc),
+                        "previous_selection_count": len(previous_selections) - 1,
+                        "usage": safe_response.get("usage") or {},
+                        "finish_reason": safe_response.get("finish_reason"),
+                        "content_preview": safe_response.get("content_preview", "")[:500],
+                    }
+                )
+                continue
+            except Exception as retry_exc:
+                retry_error = str(retry_exc)
+            errors.append({"section_id": section_id, "error": str(exc), "retry_error": retry_error})
+            calls.append({"section_id": section_id, "status": "fallback", "error": str(exc), "retry_error": retry_error})
+    plan = {"sections": section_plans}
+    safe_response = {
+        "provider": "minimax-official",
+        "model": os.environ.get("VOAH_SELECTION_LLM_MODEL") or "MiniMax-M3",
+        "base_url": os.environ.get("MINIMAX_LLM_BASE_URL") or os.environ.get("VOAH_TEXT_LLM_BASE_URL") or "https://api.minimaxi.com/v1",
+        "endpoint": os.environ.get("VOAH_SELECTION_LLM_ENDPOINT") or "/text/chatcompletion_v2",
+        "calls": calls,
+        "errors": errors,
+        "usage": {
+            "total_tokens": sum(int((call.get("usage") or {}).get("total_tokens") or 0) for call in calls),
+            "prompt_tokens": sum(int((call.get("usage") or {}).get("prompt_tokens") or 0) for call in calls),
+            "completion_tokens": sum(int((call.get("usage") or {}).get("completion_tokens") or 0) for call in calls),
+        },
+        "finish_reason": "partial_fallback" if errors else "stop",
+        "plan": plan,
+    }
+    if not section_plans:
+        raise RuntimeError(f"MiniMax M3 produced no valid section plans: {errors}")
+    return plan, safe_response
+
+
+def normalize_llm_plan(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_sections = plan.get("sections") or []
+    if not isinstance(raw_sections, list):
+        raise ValueError("LLM plan.sections must be a list")
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in raw_sections:
+        if not isinstance(raw, dict):
+            continue
+        section_id = str(raw.get("section_id") or "").strip()
+        if not section_id:
+            continue
+        selected = raw.get("selected_shot_ids") or raw.get("selected_story_unit_ids") or []
+        if isinstance(selected, str):
+            selected = [selected]
+        child_ids = raw.get("preferred_child_physical_shot_ids") or raw.get("selected_child_physical_shot_ids") or []
+        if isinstance(child_ids, str):
+            child_ids = [child_ids]
+        by_id[section_id] = {
+            "selected_shot_ids": [str(item) for item in selected if str(item or "").strip()],
+            "preferred_child_physical_shot_ids": [str(item) for item in child_ids if str(item or "").strip()],
+            "strategy": str(raw.get("strategy") or "llm_candidate_pool_selection"),
+            "selection_reason": str(raw.get("selection_reason") or ""),
+            "diversity_reason": str(raw.get("diversity_reason") or ""),
+            "manual_review_reason": str(raw.get("manual_review_reason") or ""),
+        }
+    return by_id
+
+
+def apply_llm_child_preference(candidate: dict[str, Any], preferred_child_ids: list[str]) -> dict[str, Any]:
+    if not preferred_child_ids:
+        return candidate
+    preferred_set = set(preferred_child_ids)
+    existing_ids = {
+        str(child.get("shot_id") or "")
+        for child in candidate.get("child_physical_shots") or []
+        if isinstance(child, dict)
+    }
+    matched = [child_id for child_id in preferred_child_ids if child_id in existing_ids]
+    if not matched:
+        return candidate
+    output = dict(candidate)
+    output["llm_preferred_child_physical_shot_ids"] = matched
+    output.setdefault("fill_reasons", [])
+    output["fill_reasons"] = list(output.get("fill_reasons") or []) + [
+        f"MiniMax M3 指定从 child physical shot 开始：{matched[0]}"
+    ]
+    return output
+
+
+def apply_llm_selection(
+    section: dict[str, Any],
+    adjusted: list[dict[str, Any]],
+    llm_decision: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]] | None, str, str, list[str]]:
+    if not llm_decision:
+        return None, "", "", ["LLM 未返回本 section 决策"]
+    requested_ids = llm_decision.get("selected_shot_ids") or []
+    if not requested_ids:
+        return None, "", "", ["LLM 未选择候选"]
+    by_id: dict[str, dict[str, Any]] = {}
+    for item in adjusted:
+        for key in (item.get("shot_id"), item.get("story_unit_id"), item.get("parent_shot_id")):
+            if key:
+                by_id[str(key)] = item
+    selected: list[dict[str, Any]] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    preferred_child_ids = llm_decision.get("preferred_child_physical_shot_ids") or []
+    for requested_id in requested_ids:
+        item = by_id.get(str(requested_id))
+        if not item:
+            invalid.append(str(requested_id))
+            continue
+        shot_id = str(item.get("shot_id") or "")
+        if shot_id in seen:
+            continue
+        if not candidate_renderable(item):
+            invalid.append(f"{requested_id}: not renderable")
+            continue
+        selected.append(apply_llm_child_preference(item, preferred_child_ids))
+        seen.add(shot_id)
+    if invalid:
+        return None, "", "", [f"LLM 选择了无效候选：{', '.join(invalid)}"]
+    if not selected:
+        return None, "", "", ["LLM 选择结果为空"]
+    reason = llm_decision.get("selection_reason") or "MiniMax M3 在 embedding 候选池内选择素材。"
+    diversity = llm_decision.get("diversity_reason") or ""
+    strategy = llm_decision.get("strategy") or "llm_candidate_pool_selection"
+    if diversity:
+        reason = f"{reason} 多样性考虑：{diversity}"
+    manual_reason = llm_decision.get("manual_review_reason") or ""
+    notes = [manual_reason] if manual_reason else []
+    return selected, strategy, reason, notes
+
+
 def confidence_for_selection(
     selected: list[dict[str, Any]],
     section: dict[str, Any],
@@ -1105,6 +1609,7 @@ def build_selection_section(
     max_clips_per_section: int,
     records_by_id: dict[str, dict[str, Any]],
     selection_overrides: dict[str, Any],
+    llm_decision: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     warnings: list[str] = []
     manual_reviews: list[str] = []
@@ -1114,63 +1619,73 @@ def build_selection_section(
 
     selected_override = apply_selection_overrides(section, adjusted, records_by_id, selection_overrides)
     has_override = selected_override is not None
+    llm_selected: list[dict[str, Any]] | None = None
     if selected_override is not None:
         selected = [adjusted_candidate(item, section, used_counts) for item in selected_override]
         strategy = "manual_selection_override"
         selection_reason = "使用人工锁片 selection_overrides.json，脚本只校验时长和风险。"
     else:
-        usable = [
-            item
-            for item in adjusted
-            if candidate_renderable(item)
-        ]
-        long_enough = [item for item in usable if candidate_duration(item) >= target - 0.03]
-        strong_semantic = [item for item in usable if candidate_semantic_score(item) >= 1.6]
-        if long_enough:
-            long_enough.sort(
-                key=lambda item: (
-                    float(item.get("required_visual_score") or 0),
-                    candidate_semantic_score(item),
-                    candidate_score(item),
-                ),
-                reverse=True,
-            )
-        best_long = long_enough[0] if long_enough else None
-        best_long_is_semantic = best_long is not None and candidate_semantic_score(best_long) >= 1.6
-        best_long_visual_score = float(best_long.get("required_visual_score") or 0) if best_long else 0.0
-        if best_long and (best_long_visual_score >= 2.5 or best_long_is_semantic or not strong_semantic):
-            selected = [best_long]
-            strategy = "single_story_unit_trim_to_audio"
-            selection_reason = "优先选择 required_visual/语义命中且足够长的 story unit，并在内部 child physical shots 连续裁切。"
+        llm_selected, llm_strategy, llm_reason, llm_notes = apply_llm_selection(section, adjusted, llm_decision)
+        if llm_selected is not None:
+            selected = llm_selected
+            strategy = llm_strategy or "llm_candidate_pool_selection"
+            selection_reason = llm_reason
+            manual_reviews.extend(llm_notes)
         else:
-            selected = []
-            selected_assets: set[str] = set()
-            total = 0.0
-            first_hits: set[str] = set()
-            semantic_pool = strong_semantic or usable
-            for item in semantic_pool:
-                if len(selected) >= max_clips_per_section:
-                    break
-                shot_id = str(item.get("shot_id") or "")
-                if any(str(existing.get("shot_id") or "") == shot_id for existing in selected):
-                    continue
-                hits = set(keyword_hits(item, section))
-                asset_id = str(item.get("asset_id") or "")
-                if selected:
-                    same_asset = asset_id in selected_assets
-                    same_semantic = bool(hits and first_hits and hits.intersection(first_hits))
-                    same_dimension = bool(hits) and len(hits.intersection(set(split_query_terms(section_query(section))))) > 0
-                    if not (same_semantic or same_dimension or same_asset):
+            if llm_decision:
+                warnings.extend(llm_notes)
+            usable = [
+                item
+                for item in adjusted
+                if candidate_renderable(item)
+            ]
+            long_enough = [item for item in usable if candidate_duration(item) >= target - 0.03]
+            strong_semantic = [item for item in usable if candidate_semantic_score(item) >= 1.6]
+            if long_enough:
+                long_enough.sort(
+                    key=lambda item: (
+                        float(item.get("required_visual_score") or 0),
+                        candidate_semantic_score(item),
+                        candidate_score(item),
+                    ),
+                    reverse=True,
+                )
+            best_long = long_enough[0] if long_enough else None
+            best_long_is_semantic = best_long is not None and candidate_semantic_score(best_long) >= 1.6
+            best_long_visual_score = float(best_long.get("required_visual_score") or 0) if best_long else 0.0
+            if best_long and (best_long_visual_score >= 2.5 or best_long_is_semantic or not strong_semantic):
+                selected = [best_long]
+                strategy = "single_story_unit_trim_to_audio"
+                selection_reason = "优先选择 required_visual/语义命中且足够长的 story unit，并在内部 child physical shots 连续裁切。"
+            else:
+                selected = []
+                selected_assets: set[str] = set()
+                total = 0.0
+                first_hits: set[str] = set()
+                semantic_pool = strong_semantic or usable
+                for item in semantic_pool:
+                    if len(selected) >= max_clips_per_section:
+                        break
+                    shot_id = str(item.get("shot_id") or "")
+                    if any(str(existing.get("shot_id") or "") == shot_id for existing in selected):
                         continue
-                selected.append(item)
-                selected_assets.add(asset_id)
-                if not first_hits:
-                    first_hits = hits
-                total += candidate_duration(item)
-                if total >= target - 0.03:
-                    break
-            strategy = "multi_story_unit_semantic_fill"
-            selection_reason = f"单条长素材语义命中不足或不存在，改用最多 {max_clips_per_section} 条同语义候选拼接。"
+                    hits = set(keyword_hits(item, section))
+                    asset_id = str(item.get("asset_id") or "")
+                    if selected:
+                        same_asset = asset_id in selected_assets
+                        same_semantic = bool(hits and first_hits and hits.intersection(first_hits))
+                        same_dimension = bool(hits) and len(hits.intersection(set(split_query_terms(section_query(section))))) > 0
+                        if not (same_semantic or same_dimension or same_asset):
+                            continue
+                    selected.append(item)
+                    selected_assets.add(asset_id)
+                    if not first_hits:
+                        first_hits = hits
+                    total += candidate_duration(item)
+                    if total >= target - 0.03:
+                        break
+                strategy = "multi_story_unit_semantic_fill"
+                selection_reason = f"单条长素材语义命中不足或不存在，改用最多 {max_clips_per_section} 条同语义候选拼接。"
 
     if selected_override is None:
         selected, top_up_note = top_up_selection(selected, adjusted, section, max_clips_per_section)
@@ -1217,8 +1732,9 @@ def build_selection_section(
         "audio_duration_s": target,
         "query": section_query(section),
         "selection_strategy": strategy,
-        "selection_source": "manual_override" if has_override else "rules_text_planner_v1",
+        "selection_source": "manual_override" if has_override else "llm_planner" if llm_decision and llm_selected is not None else "rules_fallback",
         "selection_reason": selection_reason,
+        "llm_decision": llm_decision or {},
         "selected_shot_ids": candidate_ids(selected),
         "selected_clips": selected_clips,
         "selected_duration_s": selected_duration_s,
@@ -1342,6 +1858,8 @@ def main() -> int:
     parser.add_argument("--max-clips-per-section", type=int, default=3)
     parser.add_argument("--timeline-selection", default="timeline_selection.json")
     parser.add_argument("--selection-overrides", default="")
+    parser.add_argument("--selection-planner", default="auto", choices=["auto", "off", "minimax-m3"])
+    parser.add_argument("--llm-timeout-s", type=int, default=90)
     parser.add_argument("--width", type=int, default=720)
     parser.add_argument("--height", type=int, default=1280)
     parser.add_argument("--fps", type=int, default=30)
@@ -1446,11 +1964,81 @@ def main() -> int:
     selection_warnings: list[str] = list(intake_boundary_contract.get("warnings") or [])
     selection_manual_reviews: list[str] = list(intake_boundary_contract.get("warnings") or [])
     used_counts: dict[str, int] = {}
+    llm_plan_by_section: dict[str, dict[str, Any]] = {}
+    llm_safe_response: dict[str, Any] = {}
+    llm_planner_status = "disabled"
+    llm_fallback_reason = ""
+    llm_plan_path = task_dir / "llm_selection_plan.safe.json"
+
+    if minimax_m3_enabled(args.selection_planner):
+        llm_planner_status = "requested"
+        try:
+            raw_llm_plan, llm_safe_response = call_minimax_m3_for_sections(
+                audio_sections=audio_sections,
+                candidate_payload=candidate_payload,
+                sections_by_id=sections_by_id,
+                max_clips_per_section=args.max_clips_per_section,
+                timeout_s=args.llm_timeout_s,
+            )
+            llm_plan_by_section = normalize_llm_plan(raw_llm_plan)
+            llm_planner_status = "partial_fallback" if llm_safe_response.get("errors") else "ok"
+            if llm_safe_response.get("errors"):
+                llm_fallback_reason = f"{len(llm_safe_response.get('errors') or [])} section planner calls failed"
+                selection_warnings.append(f"MiniMax M3 planner partial fallback: {llm_fallback_reason}")
+            write_json(
+                llm_plan_path,
+                {
+                    "schema_version": "1.0.0",
+                    "stage": "voah_minimax_m3_selection_plan",
+                    "created_at": iso_now(),
+                    "inputs": {
+                        "candidate_sections": str(candidate_sections_path),
+                        "section_count": len(candidate_payload.get("sections") or []),
+                    },
+                    "provider": llm_safe_response.get("provider"),
+                    "model": llm_safe_response.get("model"),
+                    "base_url": llm_safe_response.get("base_url"),
+                    "endpoint": llm_safe_response.get("endpoint"),
+                    "usage": llm_safe_response.get("usage") or {},
+                    "finish_reason": llm_safe_response.get("finish_reason"),
+                    "calls": llm_safe_response.get("calls") or [],
+                    "errors": llm_safe_response.get("errors") or [],
+                    "plan": raw_llm_plan,
+                    "qa": {
+                        "status": "manual_review" if llm_safe_response.get("errors") else "ok",
+                        "warnings": [str(item) for item in (llm_safe_response.get("errors") or [])],
+                    },
+                },
+            )
+        except Exception as exc:
+            llm_fallback_reason = str(exc)
+            llm_planner_status = "fallback"
+            selection_warnings.append(f"MiniMax M3 planner fallback: {llm_fallback_reason}")
+            write_json(
+                llm_plan_path,
+                {
+                    "schema_version": "1.0.0",
+                    "stage": "voah_minimax_m3_selection_plan",
+                    "created_at": iso_now(),
+                    "inputs": {
+                        "candidate_sections": str(candidate_sections_path),
+                    },
+                    "provider": "minimax-official",
+                    "model": os.environ.get("VOAH_SELECTION_LLM_MODEL") or "MiniMax-M3",
+                    "status": "fallback",
+                    "fallback_reason": llm_fallback_reason,
+                    "qa": {
+                        "status": "manual_review",
+                        "warnings": [llm_fallback_reason],
+                    },
+                },
+            )
 
     for candidate_section in candidate_payload.get("sections") or []:
         section = sections_by_id.get(str(candidate_section.get("section_id") or ""))
         if section is None:
             raise RuntimeError(f"candidate section has no matching audio section: {candidate_section.get('section_id')}")
+        section_id = str(candidate_section.get("section_id") or "")
         selection_section, select_warnings, select_manual_reviews = build_selection_section(
             section=section,
             candidates=candidate_section.get("candidates") or [],
@@ -1458,6 +2046,7 @@ def main() -> int:
             max_clips_per_section=args.max_clips_per_section,
             records_by_id=records_by_id,
             selection_overrides=selection_overrides,
+            llm_decision=llm_plan_by_section.get(section_id),
         )
         selection_warnings.extend(select_warnings)
         selection_manual_reviews.extend(select_manual_reviews)
@@ -1485,8 +2074,19 @@ def main() -> int:
             "next_artifact": str(timeline_fill_path),
         },
         "policy": {
-            "planner": "rules_text_planner_v1",
-            "llm_provider": None,
+            "planner": "minimax_m3_llm_planner_v1" if llm_planner_status in ("ok", "partial_fallback") else "rules_text_planner_v1",
+            "planner_status": llm_planner_status,
+            "llm_provider": "minimax-official" if llm_planner_status in ("ok", "partial_fallback", "fallback", "requested") else None,
+            "llm_model": os.environ.get("VOAH_SELECTION_LLM_MODEL") or "MiniMax-M3",
+            "llm_plan_safe_path": str(llm_plan_path) if llm_plan_path.exists() else "",
+            "llm_fallback_reason": llm_fallback_reason,
+            "embedding_candidate_pool": {
+                "enabled": True,
+                "model": "qwen3-vl-embedding",
+                "top_k": args.top_k,
+                "pool_k": args.pool_k,
+                "candidate_sections": str(candidate_sections_path),
+            },
             "multimodal_llm_default": False,
             "prefer_single_long_story_unit": True,
             "max_clips_per_section": args.max_clips_per_section,

@@ -245,8 +245,10 @@ audio_sections.json
 - 对每个 `audio_sections[].intention_copy / voice_text / required_meaning` 做多通道召回。
 - 产品名做 metadata filter。
 - 默认以 `story_units` 作为主规划单位，`physical_shots` 作为子裁切单位。
-- 用规则 rerank 守住产品、语义、卖点、时长、字幕风险、配音适配度。
-- 用 Omni/VLM 或规则做 temporal rerank，输出真正可用的 start/end。
+- embedding 只负责给出候选区间，不能把单 query `topK` 当最终选择。
+- 用 MiniMax M3 在 `candidate_sections.json` 候选池内做选片 planner，处理多样性、上下文承接和“不要同一文案永远召回同一素材”的问题。
+- 用代码规则守住产品、语义、卖点、时长、字幕风险、配音适配度，并校验 LLM 输出。
+- 用 child physical shot 文本、顺序和代码规则做 temporal rerank，输出真正可用的 start/end。
 - `required_visual` 里的硬画面词优先级高于普通相似度和复用惩罚；不能因为某条素材更长或更少复用，就压过“车内”“海边”“泼水”等明确画面需求。
 - 选中 story unit 后不能默认从 story unit 开头裁；必须落到 `child_physical_shot_id` 或 `source_start_offset_s/source_end_offset_s`。
 - 若一个 audio section 需要的时长超过单个 child physical shot，优先从命中 child 开始连续使用同一 story unit 内的后续 child；仍不足时再找同语义/同维度候选拼接，不默认 loop。
@@ -257,6 +259,8 @@ audio_sections.json
 ```text
 shot_index.json
 candidate_sections.json
+llm_selection_plan.safe.json
+timeline_selection.json
 timeline_fill.json
 preview_no_subtitles.mp4
 ```

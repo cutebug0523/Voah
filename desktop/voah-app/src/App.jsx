@@ -22,8 +22,8 @@ const browserPreviewModelModules = [
   { id: "material_understanding", module: "素材理解", model: "qwen3.5-omni-plus" },
   { id: "material_vectorization", module: "素材向量化", model: "qwen3-vl-embedding" },
   { id: "material_retrieval", module: "素材召回", model: "qwen3-vl-embedding" },
-  { id: "copy_generation", module: "文案生成", model: "待定文本 LLM" },
-  { id: "selection_planner", module: "选片计划", model: "待定文本 LLM" },
+  { id: "copy_generation", module: "文案生成", model: "MiniMax-M3" },
+  { id: "selection_planner", module: "选片计划", model: "MiniMax-M3" },
   { id: "tts_primary", module: "TTS", model: "speech-2.8-hd" },
   { id: "tts_fallback", module: "TTS备用", model: "speech-2.8-hd" }
 ];

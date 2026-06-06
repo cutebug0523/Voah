@@ -61,30 +61,42 @@ export const MODEL_MODULES = [
   {
     id: MODEL_MODULE_IDS.COPY_GENERATION,
     module: "文案生成",
-    model: "待定文本 LLM",
-    envKey: "VOAH_TEXT_LLM_API_KEY",
-    provider: "text-llm-pending",
-    baseUrl: "voah://pending/text-llm",
-    endpoint: "/chat/completions",
+    model: "MiniMax-M3",
+    envKey: "MINIMAX_API_KEY",
+    provider: "minimax-official",
+    baseUrl: "https://api.minimaxi.com/v1",
+    endpoint: "/text/chatcompletion_v2",
     runtimeEnv: {
-      VOAH_TEXT_LLM_BASE_URL: "voah://pending/text-llm",
-      VOAH_COPY_LLM_MODEL: "待定文本 LLM"
+      VOAH_TEXT_LLM_BASE_URL: "https://api.minimaxi.com/v1",
+      VOAH_COPY_LLM_PROVIDER: "minimax-official",
+      VOAH_COPY_LLM_MODEL: "MiniMax-M3",
+      VOAH_COPY_LLM_ENDPOINT: "/text/chatcompletion_v2"
     },
-    defaultParams: {}
+    defaultParams: {
+      temperature: 0.4
+    }
   },
   {
     id: MODEL_MODULE_IDS.SELECTION_PLANNER,
     module: "选片计划",
-    model: "待定文本 LLM",
-    envKey: "VOAH_TEXT_LLM_API_KEY",
-    provider: "text-llm-pending",
-    baseUrl: "voah://pending/text-llm",
-    endpoint: "/chat/completions",
+    model: "MiniMax-M3",
+    envKey: "MINIMAX_API_KEY",
+    provider: "minimax-official",
+    baseUrl: "https://api.minimaxi.com/v1",
+    endpoint: "/text/chatcompletion_v2",
     runtimeEnv: {
-      VOAH_TEXT_LLM_BASE_URL: "voah://pending/text-llm",
-      VOAH_SELECTION_LLM_MODEL: "待定文本 LLM"
+      MINIMAX_LLM_BASE_URL: "https://api.minimaxi.com/v1",
+      VOAH_SELECTION_LLM_PROVIDER: "minimax-official",
+      VOAH_SELECTION_LLM_MODEL: "MiniMax-M3",
+      VOAH_SELECTION_LLM_ENDPOINT: "/text/chatcompletion_v2"
     },
-    defaultParams: {}
+    defaultParams: {
+      temperature: 0.25,
+      max_tokens: 1200,
+      thinking: {
+        type: "disabled"
+      }
+    }
   },
   {
     id: MODEL_MODULE_IDS.TTS_PRIMARY,

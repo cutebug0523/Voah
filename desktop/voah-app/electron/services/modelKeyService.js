@@ -152,7 +152,15 @@ export class ModelKeyService {
     const resolvedModuleIds = this.moduleIdsOrAll(moduleIds);
     const secrets = await this.readSecrets();
     const modules = MODEL_MODULES.filter((item) => resolvedModuleIds.includes(item.id));
-    const missing = modules.filter((item) => !secrets[item.envKey]).map(({ id, module, model }) => ({ id, module, model }));
+    const seenEnvKeys = new Set();
+    const missing = [];
+    for (const item of modules) {
+      if (secrets[item.envKey] || seenEnvKeys.has(item.envKey)) {
+        continue;
+      }
+      seenEnvKeys.add(item.envKey);
+      missing.push({ id: item.id, module: item.module, model: item.model });
+    }
     return {
       ok: missing.length === 0,
       missing
