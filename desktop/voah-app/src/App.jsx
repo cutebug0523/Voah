@@ -201,6 +201,11 @@ function App() {
     }
   }
 
+  async function revealPath(targetPath) {
+    if (!window.voah || !targetPath) return;
+    await window.voah.revealPath(targetPath);
+  }
+
   if (loading || !state) {
     return <div className="boot">正在打开 Voah 生产工作台...</div>;
   }
@@ -278,10 +283,11 @@ function App() {
             selectedTask={selectedTask}
             setSelectedTaskId={setSelectedTaskId}
             retryTask={retryTask}
+            revealPath={revealPath}
             busy={busy}
           />
         ) : null}
-        {active === "outputs" ? <Outputs state={state} /> : null}
+        {active === "outputs" ? <Outputs state={state} revealPath={revealPath} /> : null}
         {active === "settings" ? <Settings state={state} /> : null}
       </main>
     </div>
@@ -470,7 +476,7 @@ function Products({ products, selectedProduct, brief, setBrief, setSelectedProdu
   );
 }
 
-function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, busy }) {
+function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, revealPath, busy }) {
   const taskJobs = state.jobs.filter((job) => job.task_id === selectedTask?.id);
   const taskArtifacts = state.artifacts.filter((artifact) => artifact.task_id === selectedTask?.id);
   const qa = state.qa_reports.find((report) => report.task_id === selectedTask?.id);
@@ -507,6 +513,11 @@ function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, busy }) {
                   <p>当前阶段：{selectedTask.current_stage}</p>
                 </div>
                 <Badge status={selectedTask.status}>{statusText(selectedTask.status)}</Badge>
+              </div>
+              <div className="action-row compact">
+                <button type="button" onClick={() => revealPath(selectedTask.task_dir)}>
+                  打开任务目录
+                </button>
               </div>
 
               {selectedTask.human_error ? (
@@ -572,7 +583,7 @@ function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, busy }) {
   );
 }
 
-function Outputs({ state }) {
+function Outputs({ state, revealPath }) {
   const outputTasks = state.tasks.filter((task) => ["completed", "qa_warning"].includes(task.status));
   return (
     <section className="page">
@@ -585,12 +596,18 @@ function Outputs({ state }) {
           <div className="output-grid">
             {outputTasks.map((task) => {
               const qa = state.qa_reports.find((report) => report.task_id === task.id);
+              const exportArtifact = state.artifacts.find((artifact) => artifact.task_id === task.id && artifact.kind === "export_record");
+              const finalPath = task.task_dir ? `${task.task_dir}/hyperframes_subtitle_burn/final_subtitled.mp4` : "";
               return (
                 <article key={task.id} className="output-card">
                   <div className="output-thumb">45s</div>
                   <h3>{task.title}</h3>
                   <p>{qa?.summary || "等待 QA"}</p>
                   <Badge status={qa?.status || task.status}>{qa?.status || statusText(task.status)}</Badge>
+                  <small>{finalPath || exportArtifact?.path || "未登记最终视频"}</small>
+                  <button type="button" onClick={() => revealPath(finalPath || exportArtifact?.path)}>
+                    打开成片
+                  </button>
                 </article>
               );
             })}

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
 import subprocess
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -135,7 +137,7 @@ def build_payload(text: str, args: argparse.Namespace) -> dict[str, Any]:
         "text": text,
         "stream": False,
         "language_boost": "Chinese",
-        "output_format": "hex",
+        "output_format": args.output_format,
         "voice_setting": {
             "voice_id": voice_id,
             "speed": speed,
@@ -182,19 +184,40 @@ def sanitize_response(response: dict[str, Any]) -> dict[str, Any]:
     return scrub(response)
 
 
+def parse_minimax_response_bytes(raw: bytes) -> dict[str, Any]:
+    return json.loads(raw.decode("utf-8"))
+
+
 def call_minimax(endpoint: str, api_key: str, payload: dict[str, Any], timeout_s: int) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Connection": "close",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                return parse_minimax_response_bytes(resp.read())
+        except http.client.IncompleteRead as exc:
+            last_error = exc
+            partial = bytes(exc.partial or b"")
+            if partial:
+                try:
+                    return parse_minimax_response_bytes(partial)
+                except json.JSONDecodeError:
+                    pass
+        except Exception as exc:
+            last_error = exc
+        if attempt < 3:
+            time.sleep(1.2 * attempt)
+    raise RuntimeError(f"MiniMax request failed after retries: {last_error}")
 
 
 def extract_audio_hex(response: dict[str, Any]) -> str:
@@ -202,6 +225,41 @@ def extract_audio_hex(response: dict[str, Any]) -> str:
     if not isinstance(audio, str) or not audio.strip():
         raise RuntimeError("MiniMax response did not include data.audio")
     return audio.strip()
+
+
+def extract_audio_value(response: dict[str, Any]) -> str:
+    audio = (response.get("data") or {}).get("audio")
+    if not isinstance(audio, str) or not audio.strip():
+        raise RuntimeError("MiniMax response did not include data.audio")
+    return audio.strip()
+
+
+def save_audio_response(audio_value: str, mp3_path: Path, output_format: str) -> None:
+    if output_format == "url" or audio_value.startswith("http://") or audio_value.startswith("https://"):
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(audio_value, timeout=180) as resp, mp3_path.open("wb") as f:
+                    while True:
+                        chunk = resp.read(1024 * 256)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                if mp3_path.exists() and mp3_path.stat().st_size > 0:
+                    return
+            except http.client.IncompleteRead as exc:
+                last_error = exc
+                with mp3_path.open("ab") as f:
+                    f.write(bytes(exc.partial or b""))
+                if mp3_path.exists() and mp3_path.stat().st_size > 0:
+                    return
+            except Exception as exc:
+                last_error = exc
+            if attempt < 3:
+                time.sleep(1.2 * attempt)
+        raise RuntimeError(f"failed to download MiniMax audio: {last_error}")
+        return
+    mp3_path.write_bytes(bytes.fromhex(audio_value))
 
 
 def check_response_ok(response: dict[str, Any]) -> None:
@@ -560,6 +618,7 @@ def main() -> int:
     parser.add_argument("--modify-timbre", type=int, default=None)
     parser.add_argument("--subtitle-enable", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--subtitle-type", default="sentence", choices=["sentence", "word"])
+    parser.add_argument("--output-format", default="url", choices=["url", "hex"])
     parser.add_argument("--timeout-s", type=int, default=300)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -611,10 +670,10 @@ def main() -> int:
             raise
 
     write_json(task_dir / "minimax_oneshot_response.safe.json", sanitize_response(response))
-    audio_hex = extract_audio_hex(response)
+    audio_value = extract_audio_value(response)
     mp3_path = task_dir / "voice_minimax_oneshot.mp3"
     wav_path = task_dir / "voice.wav"
-    mp3_path.write_bytes(bytes.fromhex(audio_hex))
+    save_audio_response(audio_value, mp3_path, args.output_format)
     convert_to_wav(mp3_path, wav_path)
     duration_s = probe_duration(wav_path)
     if duration_s is None:

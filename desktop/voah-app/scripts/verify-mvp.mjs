@@ -32,7 +32,7 @@ try {
   });
 
   assert.equal(tasks.length, 2, "should create requested tasks");
-  await recipe.runTask(tasks[0].id);
+  await recipe.runTask(tasks[0].id, { dryRun: true });
 
   let current = await store.read();
   const finishedTask = current.tasks.find((task) => task.id === tasks[0].id);
@@ -59,7 +59,7 @@ try {
       main_claim: "失败重试验证"
     }
   });
-  await recipe.runTask(failedTasks[0].id, { failStage: "tts_audio" });
+  await recipe.runTask(failedTasks[0].id, { dryRun: true, failStage: "tts_audio" });
   current = await store.read();
   const failedTask = current.tasks.find((task) => task.id === failedTasks[0].id);
   assert.equal(failedTask.status, "failed", "should record simulated failure");

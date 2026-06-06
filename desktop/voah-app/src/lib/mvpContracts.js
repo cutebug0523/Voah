@@ -44,7 +44,7 @@ export const RECIPE_STAGES = [
     label: "生成语音主轴",
     artifactKind: "tts_audio",
     outputFile: "tts_audio.json",
-    description: "记录 TTS 参数和音频时长，MVP 使用 dry-run。"
+    description: "调用 MiniMax TTS，生成 voice.wav、tts_audio 和音频语义段。"
   },
   {
     id: "audio_sections",
@@ -66,6 +66,13 @@ export const RECIPE_STAGES = [
     artifactKind: "caption_plan",
     outputFile: "caption_plan.json",
     description: "字幕文本来自口播原文断句。"
+  },
+  {
+    id: "subtitle_burn",
+    label: "烧录字幕成片",
+    artifactKind: "subtitle_burn",
+    outputFile: "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json",
+    description: "创建 HyperFrames 字幕工程并渲染 final_subtitled.mp4。"
   },
   {
     id: "qa_gate",
