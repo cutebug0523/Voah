@@ -1,23 +1,33 @@
-import { app, BrowserWindow, ipcMain } from "electron";
-import { mkdir, writeFile } from "node:fs/promises";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  buildIntakeRunDir,
-  createIntakeJobRecord,
-  createIntakeJobRequest
-} from "../src/lib/jobContracts.js";
-import { runIntakeDryRunJob } from "./services/workerRunner.js";
+import { StoreService } from "./services/storeService.js";
+import { ProductionRecipe } from "./services/productionRecipe.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = path.resolve(__dirname, "../../..");
+
+let storeService;
+let productionRecipe;
+
+function getServices() {
+  if (!storeService) {
+    storeService = new StoreService({
+      appDataDir: app.getPath("userData"),
+      workspaceRoot
+    });
+    productionRecipe = new ProductionRecipe({ storeService });
+  }
+  return { storeService, productionRecipe };
+}
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
     height: 920,
-    minWidth: 1120,
-    minHeight: 760,
-    title: "Voah 工作台",
+    minWidth: 1100,
+    minHeight: 720,
+    title: "Voah 生产工作台",
     backgroundColor: "#f6f7f8",
     titleBarStyle: "hiddenInset",
     webPreferences: {
@@ -34,72 +44,41 @@ function createWindow() {
   }
 }
 
-ipcMain.handle("products:saveProfile", async (_event, productProfile) => {
-  const slug = String(productProfile?.slug || "").trim();
-  if (!slug) {
-    throw new TypeError("productProfile.slug is required");
-  }
-
-  const productDir = path.join(app.getPath("userData"), "products", slug);
-  const profilePath = path.join(productDir, "product_profile.json");
-  await mkdir(productDir, { recursive: true });
-  await writeFile(
-    profilePath,
-    `${JSON.stringify(
-      {
-        schema_version: "voah-product-profile.v1",
-        saved_at: new Date().toISOString(),
-        product: productProfile
-      },
-      null,
-      2
-    )}\n`,
-    "utf8"
-  );
-
+ipcMain.handle("voah:getState", async () => {
+  const { storeService: store } = getServices();
+  const data = await store.read();
   return {
-    schema_version: "voah-product-save-result.v1",
-    status: "saved",
-    persisted: true,
-    product_slug: slug,
-    product_profile_path: profilePath,
-    message: "产品资料已保存到本机 userData。"
+    ...data,
+    paths: store.getPaths()
   };
 });
 
-ipcMain.handle("intake:createRun", async (_event, payload) => {
-  const request = createIntakeJobRequest(payload);
-  const timestamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "").slice(0, 14);
-  const productSlug = request.product_id.replace(/^product_/, "").replaceAll("_", "-");
-  const runDir = buildIntakeRunDir({
-    cache_root: "cache",
-    product_slug: productSlug,
-    timestamp,
-    run_label: request.run_label
-  });
-  const job = createIntakeJobRecord(request, {
-    job_id: `intake_${timestamp}`,
-    intake_run_id: `${productSlug}:${timestamp}_${request.run_label}`
-  });
-  const workerResult = await runIntakeDryRunJob({
-    appDataDir: app.getPath("userData"),
-    request,
-    job,
-    workspaceRoot: app.getPath("home"),
-    cacheRoot: "cache",
-    runDir
-  });
+ipcMain.handle("voah:createBatch", async (_event, payload) => {
+  const { productionRecipe: recipe } = getServices();
+  const tasks = await recipe.createBatch(payload);
+  return { schema_version: "voah-create-batch-response.v1", tasks };
+});
 
-  return {
-    schema_version: "voah-intake-create-run-response.v1",
-    accepted: workerResult.status === "succeeded",
-    job,
-    ...workerResult,
-    note: "当前原型执行 dry-run worker，不调用模型、ffmpeg 或真实素材。"
-  };
+ipcMain.handle("voah:runTask", async (_event, payload) => {
+  const { productionRecipe: recipe } = getServices();
+  return recipe.runTask(payload.task_id, { failStage: payload.fail_stage || null });
+});
+
+ipcMain.handle("voah:retryTask", async (_event, payload) => {
+  const { productionRecipe: recipe } = getServices();
+  return recipe.retryFailedTask(payload.task_id);
+});
+
+ipcMain.handle("voah:revealPath", async (_event, targetPath) => {
+  if (!targetPath) {
+    return { ok: false };
+  }
+  await shell.showItemInFolder(targetPath);
+  return { ok: true };
 });
 
 app.whenReady().then(() => {
+  getServices();
   createWindow();
 
   app.on("activate", () => {

@@ -1,14 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("voah", {
-  products: {
-    saveProfile(productProfile) {
-      return ipcRenderer.invoke("products:saveProfile", productProfile);
-    }
-  },
-  intake: {
-    createRun(payload) {
-      return ipcRenderer.invoke("intake:createRun", payload);
-    }
-  }
+  getState: () => ipcRenderer.invoke("voah:getState"),
+  createBatch: (payload) => ipcRenderer.invoke("voah:createBatch", payload),
+  runTask: (payload) => ipcRenderer.invoke("voah:runTask", payload),
+  retryTask: (payload) => ipcRenderer.invoke("voah:retryTask", payload),
+  revealPath: (path) => ipcRenderer.invoke("voah:revealPath", path)
 });

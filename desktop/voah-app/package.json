@@ -1,26 +1,29 @@
 {
   "name": "voah-app",
-  "version": "0.1.0",
   "private": true,
+  "version": "0.0.0",
   "type": "module",
-  "main": "electron/main.js",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "electron": "electron .",
     "electron:local": "\"/Users/noah/writing-ide/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron\" .",
     "build": "vite build",
+    "lint": "eslint .",
     "preview": "vite preview --host 127.0.0.1",
-    "verify:library": "node scripts/verify-library-contracts.mjs"
+    "verify:mvp": "node scripts/verify-mvp.mjs"
   },
   "dependencies": {
-    "electron": "^35.2.1",
-    "lucide-react": "^0.511.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^5.1.4"
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "vite": "^8.0.12"
   }
 }
