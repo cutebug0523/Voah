@@ -86,6 +86,31 @@
 最近主线回归：
 
 ```text
+../cache/voah_tasks/huaxizi-qidian/20260607_023341_selected6_full_pipeline_v1/
+```
+
+这轮使用 `原片/气垫/` 选 6 条素材，从入库、向量化、M3 文案、MiniMax TTS、按口播语义召回填充、HyperFrames 字幕烧录到最终 Omni 成片对齐 QA 全链路通过。
+
+先读该目录下：
+
+```text
+full_pipeline_manifest.json
+voice_script.json
+audio_sections.json
+timeline_fill.json
+caption_plan.json
+qa_omni_alignment_final/OMNI_ALIGNMENT_QA_REPORT.md
+```
+
+最终成片：
+
+```text
+hyperframes_subtitle_burn/final_subtitled.mp4
+```
+
+上一轮防晒气垫主线回归：
+
+```text
 ../cache/voah_tasks/fangshai-qidian/20260605_202301_mainline_tts_semantic_v1/
 ```
 

@@ -109,7 +109,36 @@ schema_version
 
 ## 最近主线回归
 
-2026-06-05 从已有防晒气垫入库素材跑通了一次当前主线闭环：
+2026-06-07 用 `原片/气垫/` 选 6 条素材跑通当前桌面应用对齐后的主线闭环，并通过最终 Omni 成片对齐 QA：
+
+```text
+cache/voah_tasks/huaxizi-qidian/20260607_023341_selected6_full_pipeline_v1/
+```
+
+先读：
+
+```text
+full_pipeline_manifest.json
+voice_script.json
+audio_sections.json
+timeline_fill.json
+caption_plan.json
+qa_omni_alignment_final/OMNI_ALIGNMENT_QA_REPORT.md
+```
+
+最终成片：
+
+```text
+hyperframes_subtitle_burn/final_subtitled.mp4
+```
+
+对应可用入库素材库：
+
+```text
+cache/voah_video_intake/huaxizi-qidian/20260607_013444_selected6_scene_candidates_v1/
+```
+
+2026-06-05 从已有防晒气垫入库素材跑通了一次上一轮主线闭环：
 
 ```text
 cache/voah_tasks/fangshai-qidian/20260605_202301_mainline_tts_semantic_v1/

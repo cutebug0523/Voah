@@ -559,12 +559,24 @@ app data dir
 第一批适配：
 
 ```text
+voah_generate_copy_with_m3.py
 voah_run_oneshot_minimax_tts.py
 voah_retrieve_fill_from_audio_sections.py
 voah_build_caption_plan.py
 voah_create_hyperframes_subtitle_project.py
+HyperFrames CLI: lint / inspect / render
+voah_omni_alignment_qa.py
 voah_write_full_pipeline_manifest.py
 ```
+
+`voah_generate_copy_with_m3.py` 的桌面端合同：
+
+- 输入必须是 `task_brief.json`。
+- 输出 `copy_brief.json` 和 `voice_script.json`。
+- 文案阶段只定销售逻辑、连续口播、`required_meaning`、`required_visual`，不绑定具体 shot。
+- `voice_script.full_voice_text` 是 TTS 与字幕文本真源。
+- `required_visual` 只能写产品、粉扑、上脸、妆效、测试、陈列等可泛化画面需求；禁止把未证实的办公室、海边、车内等硬场景词作为正向召回目标。
+- 如最终 Omni QA 给出 minor/major，允许生成一个结构化 copy calibration job：只改 `voice_script.json` 与 section 语义，让文案回到真实素材能支撑的范围；校准后必须从 TTS 重新往下跑。
 
 `voah_retrieve_fill_from_audio_sections.py` 的桌面端合同：
 
@@ -577,6 +589,18 @@ voah_write_full_pipeline_manifest.py
 - `timeline_selection.json` 必须写明每段选中的 `child_physical_shot_id` 或 offset 依据。
 - `timeline_fill.json` 必须记录实际渲染的 `source_clip_path`、`source_start_offset_s`、`source_end_offset_s`、`rendered_clip_path`。
 - 默认不 loop；素材不足时走同语义拼接或 manual_review。
+- worker 必须加载本地私有 env 并由 `SecretService` 注入 `MINIMAX_API_KEY`/`DASHSCOPE_API_KEY`；不得因为 key 未注入而静默退回规则 planner，除非产物里明确写 fallback reason。
+- `parent_context_only` child 的父级命中只作为弱证据；如果 child 自身未验证硬画面词，必须标记 `requires_visual_review`，等待最终 Omni QA 复核。
+
+`voah_omni_alignment_qa.py` 的桌面端合同：
+
+- 输入必须是待验视频、`audio_sections.json`、`timeline_fill.json`。
+- 每个 audio section 裁成小视频后调用 Qwen Omni 判断 `audio_caption_match`、`visual_match`、`overall`。
+- DashScope OSS 上传结果必须使用完整 OSS URL 拼接逻辑；compatible API 调用必须带 `X-DashScope-OssResourceResolve: enable`。
+- 输出 `qa_omni_alignment_*/omni_alignment_results.json` 和 `OMNI_ALIGNMENT_QA_REPORT.md`。
+- 最终字幕版 Omni QA 是导出 gate：只有 `qa.status=ok` 才能自动标记可导出。
+- 如果最终字幕版 Omni QA 通过，中间 `timeline_selection/timeline_fill` 的 child visual-review warning 可以归入 `resolved_warnings`，不能继续把任务标成失败。
+- 如果出现 `major_review` 或 `fail`，桌面端优先提供两个重试入口：`rerank_material` 从召回重跑，`rewrite_copy` 从文案校准重跑。
 
 原因：
 

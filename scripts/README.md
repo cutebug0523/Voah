@@ -20,6 +20,13 @@
 
 ### TTS / 音频主轴
 
+- `voah_generate_copy_with_m3.py`
+  - 读取 `task_brief.json`。
+  - 调用 MiniMax M3 生成 `copy_brief.json` 和 `voice_script.json`。
+  - 只负责销售逻辑和连续口播，不绑定具体 shot。
+  - `voice_script.full_voice_text` 是 TTS 与字幕文本真源。
+  - 会限制 `required_visual` 只能使用产品、粉扑、上脸、妆效、测试、陈列等可泛化画面需求，避免办公室、海边、车内等素材未证实硬场景词污染召回。
+
 - `voah_run_oneshot_minimax_tts.py`
   - 读取 `voice_script.json`。
   - 调用 MiniMax 一次性 TTS。
@@ -35,9 +42,12 @@
 - `voah_retrieve_fill_from_audio_sections.py`
   - 读取 `audio_sections.json` 和入库索引。
   - 按每段口播语义召回候选素材，并生成最终选片计划。
-  - 默认不使用多模态 LLM；`selection_overrides.json` 只作为人工锁片输入。
+  - 默认使用文本 LLM MiniMax M3 在 embedding 候选池内选片；embedding 只负责粗召回，不直接等于最终选片。
+  - worker 会读取本地 `.env` / `~/.voah/video_intake/.env` 注入 `MINIMAX_API_KEY` 和 `DASHSCOPE_API_KEY`，不把 key 写入产物。
+  - `selection_overrides.json` 只作为人工锁片输入。
   - 输出 `candidate_sections.json`、`timeline_selection.json`、`timeline_fill.json`、`preview_no_subtitles.mp4`。
   - 默认禁止 loop；素材不足时记录 `missing_duration_s` 并进入人工复核。
+  - 对 `parent_context_only` child，父级 context hit 只是弱证据；若 child 本身未验证硬画面词，会标记 `requires_visual_review`，等待 Omni 或人工复核。
 
 - `voah_fill_video_from_audio_sections.py`
   - legacy/回归工具。
@@ -55,21 +65,32 @@
 
 ### Manifest / QA
 
+- `voah_omni_alignment_qa.py`
+  - 读取 `preview_no_subtitles.mp4` 或最终字幕视频、`audio_sections.json`、`timeline_fill.json`。
+  - 按 audio section 裁切小视频，上传 DashScope OSS，调用 `qwen3.5-omni-plus` 检查音频/字幕/画面是否匹配。
+  - DashScope compatible API 必须带 `X-DashScope-OssResourceResolve: enable`，并且 OSS URL 要使用多行拼接逻辑，避免截断导致 `Resource.AccessDenied`。
+  - 输出 `qa_omni_alignment_*/omni_alignment_results.json` 和 `OMNI_ALIGNMENT_QA_REPORT.md`。
+  - 最终字幕版 QA `status=ok` 时，可以把中间的 child visual-review warning 视为已复核 resolved。
+
 - `voah_write_full_pipeline_manifest.py`
   - 汇总任务目录里的核心产物、媒体探测和 QA。
   - 输出 `full_pipeline_manifest.json`。
+  - 会读取 `qa_omni_alignment_final/omni_alignment_results.json`；最终 Omni QA 通过时，中间 `child physical shot 未明确命中目标视觉词` warning 归入 `resolved_warnings`。
 
 ## 当前主线脚本顺序
 
 ```text
-voah_run_oneshot_minimax_tts.py
+voah_generate_copy_with_m3.py
+  -> voah_run_oneshot_minimax_tts.py
   -> voah_retrieve_fill_from_audio_sections.py
      -> candidate_sections.json
      -> timeline_selection.json
      -> timeline_fill.json
   -> voah_build_caption_plan.py
   -> voah_create_hyperframes_subtitle_project.py
+  -> hyperframes render
+  -> voah_omni_alignment_qa.py
   -> voah_write_full_pipeline_manifest.py
 ```
 
-文案阶段目前仍主要由文档/skill 规则和人工校准承接，后续桌面化时应补稳定 worker。
+文案阶段允许在 Omni QA 后做一次结构化校准：只调整 `voice_script.json` 中口播与 `required_visual/required_meaning`，目标是让文案回到真实素材能支撑的范围；校准后必须从 TTS 重新往下跑。

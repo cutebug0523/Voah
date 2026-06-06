@@ -127,6 +127,21 @@ def write_text(path: Path, text: str) -> None:
         f.write(text)
 
 
+def load_env_files(paths: list[Path]) -> None:
+    for path in paths:
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
 def run_command(command: list[str], input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
     if input_bytes is not None:
         return subprocess.run(command, input=input_bytes, check=False, capture_output=True)
@@ -324,9 +339,20 @@ def normalize_child_physical_shot(record: dict[str, Any]) -> dict[str, Any]:
         "source_meaning": str(record.get("source_meaning") or ""),
         "source_asr": record.get("source_asr") or "",
         "source_ocr": record.get("source_ocr") or [],
+        "parent_visual_summary": str(record.get("parent_visual_summary") or ""),
+        "parent_source_meaning": str(record.get("parent_source_meaning") or ""),
+        "parent_source_asr": record.get("parent_source_asr") or "",
+        "parent_source_ocr": record.get("parent_source_ocr") or [],
+        "child_metadata_precision": str(record.get("child_metadata_precision") or record.get("metadata_source") or ""),
+        "metadata_source": str(record.get("metadata_source") or record.get("child_metadata_precision") or ""),
+        "text_embedding_policy": str(record.get("text_embedding_policy") or ""),
+        "needs_vlm_refine": bool(record.get("needs_vlm_refine")),
         "selling_points": record.get("selling_points") or [],
+        "parent_selling_points": record.get("parent_selling_points") or [],
         "visual_actions": record.get("visual_actions") or [],
+        "parent_visual_actions": record.get("parent_visual_actions") or [],
         "shot_type": str(record.get("shot_type") or record.get("shot_type_hint") or ""),
+        "parent_shot_type": str(record.get("parent_shot_type") or ""),
         "hard_subtitle_risk": record.get("hard_subtitle_risk"),
         "voiceover_fit": record.get("voiceover_fit"),
         "can_standalone": bool(record.get("can_standalone")),
@@ -530,7 +556,43 @@ def candidate_score(candidate: dict[str, Any]) -> float:
         return 0.0
 
 
+def child_metadata_precision(child: dict[str, Any]) -> str:
+    return str(child.get("child_metadata_precision") or child.get("metadata_source") or "").strip()
+
+
+def child_text_is_verified(child: dict[str, Any]) -> bool:
+    precision = child_metadata_precision(child)
+    policy = str(child.get("text_embedding_policy") or "").strip()
+    if precision in {"parent_context_only", "parent_story_unit_inherited"}:
+        return False
+    if policy == "video_only_until_child_vlm_refine":
+        return False
+    if child.get("needs_vlm_refine") and precision not in {
+        "child_vlm_refined",
+        "child_verified",
+        "highlight_overlap",
+        "story_unit_exact",
+    }:
+        return False
+    return True
+
+
+def child_parent_context_blob(child: dict[str, Any]) -> str:
+    parts = [
+        child.get("parent_visual_summary", ""),
+        child.get("parent_source_meaning", ""),
+        str(child.get("parent_source_asr", "")),
+        " ".join(str(item) for item in child.get("parent_source_ocr") or []),
+        " ".join(str(item) for item in child.get("parent_selling_points") or []),
+        " ".join(str(item) for item in child.get("parent_visual_actions") or []),
+        child.get("parent_shot_type", ""),
+    ]
+    return " ".join(str(part) for part in parts if part)
+
+
 def child_text_blob(child: dict[str, Any]) -> str:
+    if not child_text_is_verified(child):
+        return ""
     parts = [
         child.get("label", ""),
         child.get("visual_summary", ""),
@@ -556,6 +618,17 @@ def child_term_hit_info(child: dict[str, Any], section: dict[str, Any]) -> list[
 
 def child_semantic_weight(child: dict[str, Any], section: dict[str, Any]) -> float:
     return sum(float(item["weight"]) for item in child_term_hit_info(child, section))
+
+
+def child_parent_context_hits(child: dict[str, Any], section: dict[str, Any]) -> list[str]:
+    blob = normalized(child_parent_context_blob(child))
+    if not blob:
+        return []
+    hits: list[str] = []
+    for term, _weight in section_terms(section):
+        if any(normalized(variant) in blob for variant in term_variants(term)):
+            hits.append(term)
+    return hits
 
 
 def term_positions_in_text(text: str, terms: list[str]) -> dict[str, float]:
@@ -635,8 +708,13 @@ def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, An
     for child_index, child in enumerate(children):
         hit_info = child_term_hit_info(child, section)
         hits = [str(item["term"]) for item in hit_info]
+        parent_hits = child_parent_context_hits(child, section)
         score = child_semantic_weight(child, section)
         score += child_order_hint_score(child_index, len(children), term_positions, hits)
+        if parent_hits and not hits:
+            score -= 0.28
+        if not child_text_is_verified(child):
+            score -= 0.08
         duration = child_duration(child)
         if target_duration > 0:
             score += duration_score(duration, min(target_duration, max(duration, 0.1))) * 0.35
@@ -656,11 +734,20 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
             if not isinstance(child, dict) or not is_child_renderable(child):
                 continue
             if str(child.get("shot_id") or "") in preferred_child_ids:
+                target_terms = hard_visual_terms(section)
+                hits = [str(item["term"]) for item in child_term_hit_info(child, section)]
+                parent_hits = child_parent_context_hits(child, section)
+                inherited_only = bool(target_terms and parent_hits and not hits)
                 base = {
-                    "target_visual_terms": hard_visual_terms(section),
-                    "semantic_hits": [str(item["term"]) for item in child_term_hit_info(child, section)],
+                    "target_visual_terms": target_terms,
+                    "semantic_hits": hits,
                     "semantic_score": round(child_semantic_weight(child, section), 3),
-                    "reason": f"MiniMax M3 指定 child physical shot 起点：{child.get('shot_id')}",
+                    "parent_context_hits": parent_hits,
+                    "inherited_only_hits": inherited_only,
+                    "reason": (
+                        f"MiniMax M3 指定 child physical shot 起点：{child.get('shot_id')}"
+                        + ("；但硬词只在父级上下文命中，需视觉复核" if inherited_only else "")
+                    ),
                 }
                 return select_child_metadata_from_child(candidate, section, child, base)
 
@@ -695,17 +782,22 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
         for term in target_terms
         if term not in hits and not any(alias in hits for alias in TERM_ALIASES.get(term, []))
     ]
-    requires_review = bool(target_terms and not hits)
+    parent_context_hits = child_parent_context_hits(best_child, section)
+    inherited_only_hits = bool(target_terms and parent_context_hits and not hits)
+    requires_review = bool(target_terms and (not hits or inherited_only_hits or not child_text_is_verified(best_child)))
     return {
         "mode": "child_physical_shot",
         "child_physical_shot_id": best_child.get("shot_id") or "",
         "target_visual_terms": target_terms,
         "semantic_hits": hits,
+        "parent_context_hits": parent_context_hits,
+        "child_metadata_precision": child_metadata_precision(best_child),
         "semantic_score": round(best_score, 3),
         "missing_target_terms": missing_terms,
         "reason": (
             f"story unit 内子镜头匹配：{best_child.get('shot_id')}；命中 "
             f"{'、'.join(hits) if hits else '无硬视觉词'}"
+            f"{'；硬词仅见于父级上下文：' + '、'.join(parent_context_hits[:6]) if inherited_only_hits else ''}"
             f"{'；使用 story 文本顺序定位' if term_positions else ''}"
         ),
         "source_clip_path": source_path,
@@ -770,6 +862,7 @@ def select_child_metadata_from_child(
 ) -> dict[str, Any]:
     hit_info = child_term_hit_info(child, section)
     hits = [str(item["term"]) for item in hit_info]
+    parent_context_hits = child_parent_context_hits(child, section)
     score = child_semantic_weight(child, section)
     target_terms = base_intra.get("target_visual_terms") or hard_visual_terms(section)
     missing_terms = [
@@ -778,16 +871,26 @@ def select_child_metadata_from_child(
         if term not in hits and not any(alias in hits for alias in TERM_ALIASES.get(term, []))
     ]
     duration = child_duration(child)
+    inherited_only_hits = bool(
+        base_intra.get("inherited_only_hits")
+        or (target_terms and parent_context_hits and not hits)
+    )
+    requires_review = bool(
+        target_terms and (not hits or inherited_only_hits or not child_text_is_verified(child))
+    )
     return {
         "mode": "child_physical_shot",
         "child_physical_shot_id": child.get("shot_id") or "",
         "target_visual_terms": target_terms,
         "semantic_hits": hits,
+        "parent_context_hits": parent_context_hits,
+        "child_metadata_precision": child_metadata_precision(child),
         "semantic_score": round(score, 3),
         "missing_target_terms": missing_terms,
         "reason": (
             f"story unit 内连续子镜头：{child.get('shot_id')}；命中 "
             f"{'、'.join(hits) if hits else '无硬视觉词'}"
+            f"{'；硬词仅见于父级上下文：' + '、'.join(parent_context_hits[:6]) if inherited_only_hits else ''}"
         ),
         "source_clip_path": child.get("trimmed_clip_path") or child.get("source_clip_path") or "",
         "source_duration_s": duration,
@@ -797,7 +900,7 @@ def select_child_metadata_from_child(
         "source_meaning": child.get("source_meaning") or candidate.get("source_meaning"),
         "hard_subtitle_risk": child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
         "voiceover_fit": child.get("voiceover_fit") or candidate.get("voiceover_fit"),
-        "requires_review": bool(target_terms and not hits),
+        "requires_review": requires_review,
     }
 
 
@@ -811,7 +914,10 @@ def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], pl
         selection_reasons.append(str(intra.get("reason")))
     selection_risks = list(candidate.get("fill_risks", []))
     if intra.get("requires_review"):
-        selection_risks.append("目标视觉词未能在 child physical shot 文本中明确命中，需抽帧或 Omni 复核")
+        if intra.get("parent_context_hits") and not intra.get("semantic_hits"):
+            selection_risks.append("目标视觉词只在父级 story unit 上下文命中，child 未验证，需抽帧或 Omni 复核")
+        else:
+            selection_risks.append("目标视觉词未能在 child physical shot 文本中明确命中，需抽帧或 Omni 复核")
     return {
         "shot_id": candidate.get("shot_id"),
         "story_unit_id": candidate.get("story_unit_id") or candidate.get("shot_id"),
@@ -839,6 +945,8 @@ def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], pl
         "selection_reasons": selection_reasons,
         "selection_risks": selection_risks,
         "semantic_hits": intra.get("semantic_hits") or candidate.get("semantic_hits", []),
+        "parent_context_hits": intra.get("parent_context_hits", []),
+        "child_metadata_precision": intra.get("child_metadata_precision", ""),
         "semantic_score": intra.get("semantic_score") if intra.get("semantic_score") is not None else candidate.get("semantic_score"),
         "requires_visual_review": bool(intra.get("requires_review")),
     }
@@ -1091,13 +1199,18 @@ def build_rejected_candidates(
 
 
 def compact_child_for_llm(child: dict[str, Any], index: int, section: dict[str, Any]) -> dict[str, Any]:
+    verified = child_text_is_verified(child)
+    parent_hits = child_parent_context_hits(child, section)
     return {
         "order": index + 1,
         "id": child.get("shot_id") or "",
         "duration_s": round(child_duration(child), 3),
-        "visual": str(child.get("visual_summary") or "")[:72],
-        "meaning": str(child.get("source_meaning") or "")[:72],
+        "visual": str(child.get("visual_summary") or "")[:72] if verified else "",
+        "meaning": str(child.get("source_meaning") or "")[:72] if verified else "",
         "hits": [str(item["term"]) for item in child_term_hit_info(child, section)[:8]],
+        "parent_context_hits": parent_hits[:8],
+        "metadata_precision": child_metadata_precision(child),
+        "needs_visual_review": bool(parent_hits and not verified),
         "subtitle_risk": child.get("hard_subtitle_risk"),
         "renderable": is_child_renderable(child),
     }
@@ -1193,6 +1306,7 @@ def build_llm_planner_prompt(
         "product": audio_sections.get("product") or {},
         "global_rules": [
             "必须优先满足 required_visual 和 required_meaning；海边、车内、测试卡、泼水等硬画面词不能错配。",
+            "child 的 parent_context_hits 只代表父 story unit 上下文，不代表该 child 画面真的包含这些词；不要仅凭 parent_context_hits 指定 child。",
             "素材宜长不宜短；优先选单个足够长的 story unit，短素材才拼同语义候选。",
             "同一条成片内避免反复使用同一个 shot 或 asset；除非同一语义段内连续 child 能自然承接。",
             "不要为了凑时长选择语义完全不相关的素材。",
@@ -1866,6 +1980,9 @@ def main() -> int:
     parser.add_argument("--preset", default="veryfast")
     parser.add_argument("--output", default="preview_no_subtitles.mp4")
     args = parser.parse_args()
+
+    workspace = Path(__file__).resolve().parents[1]
+    load_env_files([workspace / ".env", Path.home() / ".voah" / "video_intake" / ".env"])
 
     search_module = load_search_module()
     if not search_module.load_env():

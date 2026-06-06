@@ -63,7 +63,14 @@ function qaStatusFromPayload(payload) {
 }
 
 function statusFromQa(status) {
+  if (status === "block" || status === "blocked") {
+    return "failed";
+  }
   return status === "ok" || status === "pass" ? "succeeded" : "warning";
+}
+
+function isChildVisualReviewWarning(warning) {
+  return String(warning || "").includes("child physical shot 未明确命中目标视觉词");
 }
 
 function normalizeTargetRange(duration) {
@@ -93,127 +100,6 @@ function splitClaims(product, brief) {
     ...(String(brief.main_claim || "").split(/[、,，]/)),
     brief.offer
   ]);
-}
-
-function buildDefaultScriptSections(brief) {
-  const offer = brief.offer || "直播间福利";
-  return [
-    {
-      section_id: "opening_pain",
-      role: "opening",
-      rough_duration_s: 5,
-      intention_copy: "夏天出门底妆和防晒都要补，补妆不能越补越厚。",
-      required_meaning: "建立痛点：晒、补妆、补防晒、底妆厚重。",
-      required_visual: "户外、脸部妆效、补妆动作或产品开场，画面要有吸引力。",
-      avoid: ["不要一上来讲活动优惠", "不要用和产品无关的纯促销画面"],
-      keywords: ["夏天", "补妆", "防晒", "底妆"]
-    },
-    {
-      section_id: "product_positioning",
-      role: "product",
-      rough_duration_s: 6,
-      intention_copy: "花西子防晒气垫作为随身底妆，开盖蘸粉轻拍上脸。",
-      required_meaning: "明确产品身份和使用动作。",
-      required_visual: "产品盒、开盖、蘸粉、粉扑按压脸颊、手背试色。",
-      avoid: ["不要只出现人物口播不见产品", "不要混入其他单品"],
-      keywords: ["花西子", "防晒气垫", "开盖", "轻拍"]
-    },
-    {
-      section_id: "finish_effect",
-      role: "product",
-      rough_duration_s: 6,
-      intention_copy: "泛红暗沉被压下去，妆效是自然柔焦的干净感。",
-      required_meaning: "呈现即时妆效和自然感。",
-      required_visual: "上妆前后、泛红遮盖、面部特写、柔焦肤质。",
-      avoid: ["不要写磨皮级绝对效果", "不要把局部修饰当成主卖点"],
-      keywords: ["泛红", "暗沉", "柔焦", "干净"]
-    },
-    {
-      section_id: "multi_function",
-      role: "product",
-      rough_duration_s: 6,
-      intention_copy: "一盒覆盖底妆、定妆、补妆和防晒，减少包里东西。",
-      required_meaning: "四效合一，随身轻负担。",
-      required_visual: "产品堆叠、包内携带、补妆动作、四效合一提示画面。",
-      avoid: ["不要把四效合一说成替代所有护肤防晒", "不要提前 CTA"],
-      keywords: ["四效合一", "底妆", "定妆", "补妆", "防晒"]
-    },
-    {
-      section_id: "spf_proof",
-      role: "proof",
-      rough_duration_s: 7,
-      intention_copy: "SPF50+ PA+++，用紫外线测试卡做可视化证明。",
-      required_meaning: "防晒力要有画面证据，而不是只口头说参数。",
-      required_visual: "SPF/PA 标签、紫外线感应卡、测试卡变色。",
-      avoid: ["不要夸大成晒不黑", "不要没有测试画面却讲测试"],
-      keywords: ["SPF50+", "PA+++", "紫外线", "测试卡"]
-    },
-    {
-      section_id: "waterproof_scene",
-      role: "proof",
-      rough_duration_s: 8,
-      intention_copy: "出汗、遇水、海边场景下，妆面仍然挂得住。",
-      required_meaning: "证明持妆、防水防汗和户外场景适配。",
-      required_visual: "泼水、纸巾轻按、海边湿发、户外运动后妆面。",
-      avoid: ["不要说绝对不脱", "不要只用室内静态产品图"],
-      keywords: ["防水", "防汗", "海边", "持妆"]
-    },
-    {
-      section_id: "daily_scenarios",
-      role: "proof",
-      rough_duration_s: 6,
-      intention_copy: "赶时间上班、出去玩、车里临时补一下，都能快速拉回气色。",
-      required_meaning: "把产品落到真实使用场景。",
-      required_visual: "通勤、车内补妆、户外阳光、快速上妆对比。",
-      avoid: ["不要重复前面测试卡画面", "不要进入礼盒促销"],
-      keywords: ["上班", "出去玩", "车里", "气色"]
-    },
-    {
-      section_id: "cta_bundle",
-      role: "cta",
-      rough_duration_s: 7,
-      intention_copy: `${offer} 入手看礼盒和赠品，进直播间看福利。`,
-      required_meaning: "收束到购买理由和行动，不生硬打断前面的证明链。",
-      required_visual: "礼盒、赠品、明星周边、买赠图标、直播福利画面。",
-      avoid: ["不要虚构价格", "不要说库存和赠品必然有，除非素材明确"],
-      keywords: uniqueStrings(["618", "礼盒", "赠品", "直播间", offer])
-    }
-  ];
-}
-
-function pronounceText(text) {
-  return String(text || "")
-    .replaceAll("SPF50+", "SPF五十加")
-    .replaceAll("PA+++", "PA三个加")
-    .replaceAll("618", "六一八");
-}
-
-function buildVoiceScriptFromSections(copyBrief) {
-  const lineBySection = {
-    opening_pain: "夏天出门最麻烦的，不是只补妆，是补完妆还要记得补防晒，越拍越厚还容易斑驳。",
-    product_positioning: "这盒花西子防晒气垫，我会当随身底妆用。开盖蘸粉，粉扑轻轻拍开，早上出门和外面临时补都方便。",
-    finish_effect: "上脸不是闷白厚粉感，泛红暗沉会先被压下去，妆面是柔焦的干净感，近看也不会显得很重。",
-    multi_function: "它把底妆、定妆、补妆和防晒放在一盒里，包里不用再塞好几样，通勤和出去玩都省事。",
-    spf_proof: "防晒别只听参数，SPF50+、PA+++ 是基础，配合紫外线测试卡看，画面里能看到变化。",
-    waterproof_scene: "夏天出汗、遇水、去海边，最怕妆一下就花。泼水和纸巾轻按之后，妆面还能挂住。",
-    daily_scenarios: "上班前、下午脸色暗了，或者车里临时补一下，它都能比较快把气色拉回来，也不容易打掉防晒感。",
-    cta_bundle: "618 想入的话，建议看礼盒和赠品。想少带几样，又想妆面干净有防晒感，进直播间看这波福利。"
-  };
-  const scriptSections = (copyBrief.script_sections || []).map((section) => {
-    const voiceText = lineBySection[section.section_id] || section.intention_copy;
-    return {
-      ...section,
-      voice_text: voiceText,
-      tts_text: pronounceText(voiceText)
-    };
-  });
-  const fullVoiceText = scriptSections.map((section) => section.voice_text).join("");
-  const fullTtsText = scriptSections.map((section) => section.tts_text).join("");
-  return {
-    scriptSections,
-    fullVoiceText,
-    fullTtsText
-  };
 }
 
 function dryStagePayload({ stage, task, product, brief, sourceArtifacts, qaStatus }) {
@@ -379,16 +265,26 @@ export class ProductionRecipe {
       sourceArtifacts = [artifact];
     }
 
+    const exportRecordPath = path.join(task.task_dir, "export_record.json");
+    const exportRecord = existsSync(exportRecordPath) ? await readJson(exportRecordPath) : {};
+    const finalStatus = exportRecord.qa?.status === "block" || exportRecord.status === "blocked" ? "failed" : "qa_warning";
     store = await this.storeService.mutate(async (draft) => {
       const current = draft.tasks.find((item) => item.id === taskId);
-      current.status = "qa_warning";
-      current.current_stage = "qa_gate";
+      current.status = finalStatus;
+      current.current_stage = finalStatus === "failed" ? "export_record" : "qa_gate";
+      if (finalStatus === "failed") {
+        current.human_error = createHumanError({
+          title: task.title,
+          stageLabel: "QA",
+          message: "QA gate 阻断导出，详见 export_record.json"
+        });
+      }
       current.updated_at = nowIso();
       return draft;
     });
 
     return {
-      status: "qa_warning",
+      status: finalStatus,
       task: store.tasks.find((item) => item.id === taskId)
     };
   }
@@ -440,16 +336,26 @@ export class ProductionRecipe {
       }
     }
 
+    const exportRecordPath = path.join(task.task_dir, "export_record.json");
+    const exportRecord = existsSync(exportRecordPath) ? await readJson(exportRecordPath) : {};
+    const finalStatus = exportRecord.qa?.status === "block" || exportRecord.status === "blocked" ? "failed" : "qa_warning";
     store = await this.storeService.mutate(async (draft) => {
       const current = draft.tasks.find((item) => item.id === taskId);
-      current.status = "qa_warning";
-      current.current_stage = "qa_gate";
+      current.status = finalStatus;
+      current.current_stage = finalStatus === "failed" ? "export_record" : "qa_gate";
+      if (finalStatus === "failed") {
+        current.human_error = createHumanError({
+          title: task.title,
+          stageLabel: "QA",
+          message: "QA gate 阻断导出，详见 export_record.json"
+        });
+      }
       current.updated_at = nowIso();
       return draft;
     });
 
     return {
-      status: "qa_warning",
+      status: finalStatus,
       task: store.tasks.find((item) => item.id === taskId)
     };
   }
@@ -552,15 +458,15 @@ export class ProductionRecipe {
   async runRealStage({ stage, task, product, jobId }) {
     const handlers = {
       task_brief: () => this.writeTaskBrief({ task, product }),
-      copy_brief: () => this.writeCopyBrief({ task, product }),
-      voice_script: () => this.writeVoiceScript({ task, product }),
+      copy_brief: () => this.writeCopyBrief({ task, product, jobId }),
+      voice_script: () => this.writeVoiceScript({ task }),
       tts_audio: () => this.runTts({ task, product, jobId }),
       audio_sections: () => this.registerExistingJson({ task, stage, fileName: "audio_sections.json" }),
       timeline_selection: () => this.runRetrievalAndSelection({ task, product, jobId }),
       timeline_fill: () => this.runRetrievalAndFill({ task, stage }),
       caption_plan: () => this.runCaptionPlan({ task, jobId }),
       subtitle_burn: () => this.runSubtitleBurn({ task, jobId }),
-      qa_gate: () => this.writeQaGate({ task }),
+      qa_gate: () => this.writeQaGate({ task, jobId }),
       export_record: () => this.writeExportRecord({ task, product, jobId })
     };
     const handler = handlers[stage.id];
@@ -619,86 +525,40 @@ export class ProductionRecipe {
     return { path: taskBriefPath, payload };
   }
 
-  async writeCopyBrief({ task, product }) {
+  async writeCopyBrief({ task, product, jobId }) {
     const taskBriefPath = path.join(task.task_dir, "task_brief.json");
     const copyBriefPath = path.join(task.task_dir, "copy_brief.json");
-    const taskBrief = await readJson(taskBriefPath);
-    const sections = buildDefaultScriptSections(task.brief);
-    const payload = {
-      schema_version: "1.0.0",
-      stage: "voah_copy_brief",
-      pipeline_version: PIPELINE_VERSION,
-      created_at: nowIso(),
-      product: productMeta(product),
-      target_platform: task.target_platform,
-      target_duration_range_s: normalizeTargetRange(task.target_duration_s),
-      inputs: {
-        task_brief: taskBriefPath,
-        intake_run: taskBrief.inputs.intake_run
-      },
-      sales_logic: {
-        hook: "先抓夏天补妆和补防晒分离的痛点，不从促销开始。",
-        positioning: "把防晒气垫定位成随身底妆，而不是普通粉底或单纯防晒。",
-        proof_order: [
-          "上脸妆效和轻拍便利性",
-          "四效合一减少随身负担",
-          "SPF50+ PA+++ 与紫外线卡可视化证明",
-          "出汗遇水和海边场景下的持妆表现",
-          `${task.brief.offer || "活动"} 与直播间 CTA`
-        ],
-        cta: "福利放在卖点和证明之后，强调礼盒/赠品比单买更值得看。"
-      },
-      product_claims: taskBrief.product_claims,
-      script_sections: sections,
-      outputs: {
-        copy_brief: copyBriefPath,
-        next_artifact: path.join(task.task_dir, "voice_script.json")
-      },
-      qa: {
-        status: "ok",
-        warnings: []
-      },
-      next_consumers: ["voah-copy-final"]
-    };
+    const env = await this.buildModelEnv(["copy_generation"]);
+    await this.runCommand({
+      task,
+      jobId,
+      command: "python3",
+      args: [
+        path.join(this.storeService.workspaceRoot, "scripts", "voah_generate_copy_with_m3.py"),
+        "--task-brief",
+        taskBriefPath,
+        "--task-dir",
+        task.task_dir,
+        "--target-duration-s",
+        String(task.target_duration_s || 45),
+        "--variant",
+        task.id || "desktop"
+      ],
+      env
+    });
+    const payload = await readJson(copyBriefPath);
+    payload.pipeline_version = payload.pipeline_version || PIPELINE_VERSION;
+    payload.product = payload.product?.name ? payload.product : productMeta(product);
     await writeJson(copyBriefPath, payload);
     return { path: copyBriefPath, payload };
   }
 
-  async writeVoiceScript({ task, product }) {
-    const copyBriefPath = path.join(task.task_dir, "copy_brief.json");
+  async writeVoiceScript({ task }) {
     const voiceScriptPath = path.join(task.task_dir, "voice_script.json");
-    const copyBrief = await readJson(copyBriefPath);
-    const { scriptSections, fullVoiceText, fullTtsText } = buildVoiceScriptFromSections(copyBrief);
-    const payload = {
-      schema_version: "1.0.0",
-      stage: "voah_copy_final",
-      pipeline_version: PIPELINE_VERSION,
-      created_at: nowIso(),
-      product: productMeta(product),
-      target_duration_range_s: normalizeTargetRange(task.target_duration_s),
-      inputs: {
-        copy_brief: copyBriefPath
-      },
-      full_voice_text: fullVoiceText,
-      pronounce_text: fullTtsText,
-      subtitle_policy: "verbatim_voice_text_split",
-      script_sections: scriptSections,
-      script_stats: {
-        voice_text_characters: fullVoiceText.length,
-        pronounce_text_characters: fullTtsText.length,
-        section_count: scriptSections.length
-      },
-      outputs: {
-        voice_script: voiceScriptPath,
-        next_artifact: path.join(task.task_dir, "voice.wav")
-      },
-      qa: {
-        status: "ok",
-        warnings: []
-      },
-      next_consumers: ["voah-tts"]
-    };
-    await writeJson(voiceScriptPath, payload);
+    if (!existsSync(voiceScriptPath)) {
+      throw new Error(`文案阶段未生成 voice_script.json：${voiceScriptPath}`);
+    }
+    const payload = await readJson(voiceScriptPath);
     return { path: voiceScriptPath, payload };
   }
 
@@ -966,7 +826,7 @@ export class ProductionRecipe {
     }
   }
 
-  async writeQaGate({ task }) {
+  async writeQaGate({ task, jobId }) {
     const outputPath = path.join(task.task_dir, "qa_gate_report.json");
     const required = [
       "task_brief.json",
@@ -983,6 +843,63 @@ export class ProductionRecipe {
       "hyperframes_subtitle_burn/final_subtitled.mp4"
     ];
     const missing = required.filter((item) => !existsSync(path.join(task.task_dir, item)));
+    const omniResultsPath = path.join(task.task_dir, "qa_omni_alignment_final", "omni_alignment_results.json");
+    let omniResults = {};
+    let omniWorkerError = "";
+    if (!missing.length) {
+      const env = await this.buildModelEnv(["material_understanding"]);
+      try {
+        await this.runCommand({
+          task,
+          jobId,
+          command: "python3",
+          args: [
+            path.join(this.storeService.workspaceRoot, "scripts", "voah_omni_alignment_qa.py"),
+            "--task-dir",
+            task.task_dir,
+            "--video",
+            path.join(task.task_dir, "hyperframes_subtitle_burn", "final_subtitled.mp4"),
+            "--audio-sections",
+            path.join(task.task_dir, "audio_sections.json"),
+            "--timeline-fill",
+            path.join(task.task_dir, "timeline_fill.json"),
+            "--output-dir",
+            path.join(task.task_dir, "qa_omni_alignment_final")
+          ],
+          env
+        });
+      } catch (error) {
+        omniWorkerError = error.message || String(error);
+        if (!existsSync(omniResultsPath)) {
+          await writeJson(path.join(task.task_dir, "qa_omni_alignment_final", "omni_alignment_results.json"), {
+            schema_version: "1.0.0",
+            stage: "voah_omni_alignment_qa",
+            created_at: nowIso(),
+            inputs: {
+              task_dir: task.task_dir,
+              video: path.join(task.task_dir, "hyperframes_subtitle_burn", "final_subtitled.mp4")
+            },
+            outputs: {
+              results: omniResultsPath
+            },
+            results: [],
+            summary: {
+              section_count: 0,
+              pass_count: 0,
+              minor_review_count: 0,
+              major_review_count: 0,
+              fail_count: 0
+            },
+            qa: {
+              status: "block",
+              warnings: [`Omni QA 执行失败：${omniWorkerError}`]
+            },
+            next_consumers: ["voah-qa-gate"]
+          });
+        }
+      }
+      omniResults = existsSync(omniResultsPath) ? await readJson(omniResultsPath) : {};
+    }
     const timeline = existsSync(path.join(task.task_dir, "timeline_fill.json"))
       ? await readJson(path.join(task.task_dir, "timeline_fill.json"))
       : {};
@@ -1000,6 +917,33 @@ export class ProductionRecipe {
     if (durationStatus === "manual_review") {
       warnings.push(`成片时长 ${voiceDuration}s 与目标 ${targetDuration}s 偏差较大`);
     }
+    const omniQaStatus = omniResults.qa?.status || (missing.length ? "skipped" : "missing");
+    const omniSummary = omniResults.summary || {};
+    if (omniWorkerError) {
+      warnings.push(`Omni QA 执行异常：${omniWorkerError}`);
+    }
+    for (const warning of omniResults.qa?.warnings || []) {
+      warnings.push(`omni: ${warning}`);
+    }
+    const resolvedWarnings = [];
+    const activeWarnings =
+      omniQaStatus === "ok"
+        ? warnings.filter((warning) => {
+            if (isChildVisualReviewWarning(warning)) {
+              resolvedWarnings.push(warning);
+              return false;
+            }
+            return true;
+          })
+        : warnings;
+    const omniCheckStatus =
+      omniQaStatus === "ok"
+        ? "pass"
+        : omniQaStatus === "manual_review"
+          ? "manual_review"
+          : missing.length
+            ? "block"
+            : "block";
     const checks = [
       {
         id: "artifact",
@@ -1016,8 +960,8 @@ export class ProductionRecipe {
       {
         id: "timeline",
         label: "素材覆盖音频主轴",
-        status: warnings.length ? "manual_review" : "pass",
-        detail: warnings.length ? warnings.slice(0, 3).join("；") : "时间线已生成无字幕预览"
+        status: activeWarnings.length ? "manual_review" : "pass",
+        detail: activeWarnings.length ? activeWarnings.slice(0, 3).join("；") : "时间线已生成无字幕预览"
       },
       {
         id: "duration",
@@ -1030,6 +974,17 @@ export class ProductionRecipe {
         label: "字幕烧录成片",
         status: existsSync(path.join(task.task_dir, "hyperframes_subtitle_burn", "final_subtitled.mp4")) ? "pass" : "block",
         detail: "HyperFrames lint / inspect / render 已执行"
+      },
+      {
+        id: "omni_alignment",
+        label: "Omni 音画字幕对齐",
+        status: omniCheckStatus,
+        detail:
+          omniQaStatus === "ok"
+            ? `最终成片 ${omniSummary.pass_count || 0}/${omniSummary.section_count || 0} 段通过`
+            : missing.length
+              ? "关键产物缺失，未执行 Omni QA"
+              : `Omni QA 状态：${omniQaStatus}`
       },
       {
         id: "human_spot",
@@ -1049,7 +1004,8 @@ export class ProductionRecipe {
       checks,
       summary: status === "block" ? "存在阻塞问题，不能进入成品库。" : "真实生产闭环已跑完，建议人工抽检后发布。",
       inputs: {
-        task_dir: task.task_dir
+        task_dir: task.task_dir,
+        omni_alignment_results: omniResultsPath
       },
       outputs: {
         qa_gate_report: outputPath,
@@ -1057,7 +1013,13 @@ export class ProductionRecipe {
       },
       qa: {
         status: status === "block" ? "block" : "warning",
-        warnings
+        warnings: activeWarnings,
+        resolved_warnings: resolvedWarnings,
+        omni_alignment_final: {
+          status: omniQaStatus,
+          results: omniResultsPath,
+          summary: omniSummary
+        }
       },
       next_consumers: ["voah-export-record"]
     };
@@ -1066,6 +1028,9 @@ export class ProductionRecipe {
   }
 
   async writeExportRecord({ task, product, jobId }) {
+    const qaGatePath = path.join(task.task_dir, "qa_gate_report.json");
+    const qaGate = existsSync(qaGatePath) ? await readJson(qaGatePath) : {};
+    const qaBlocked = qaGate.status === "block" || qaGate.qa?.status === "block";
     await this.runCommand({
       task,
       jobId,
@@ -1080,9 +1045,13 @@ export class ProductionRecipe {
     const exportPath = path.join(task.task_dir, "export_record.json");
     const manifest = await readJson(manifestPath);
     const finalPath = path.join(task.task_dir, "hyperframes_subtitle_burn", "final_subtitled.mp4");
+    const finalExists = existsSync(finalPath);
+    const manifestBlocked = manifest.qa?.status === "block";
+    const exportBlocked = qaBlocked || manifestBlocked || !finalExists;
     const payload = {
       schema_version: "1.0.0",
       stage: "voah_export_record",
+      status: exportBlocked ? "blocked" : "ready_for_review",
       pipeline_version: PIPELINE_VERSION,
       created_at: nowIso(),
       product: productMeta(product),
@@ -1102,12 +1071,18 @@ export class ProductionRecipe {
         export_record: exportPath
       },
       summary: {
-        final_exists: existsSync(finalPath),
+        final_exists: finalExists,
         final_duration_s: manifest.summaries?.final_duration_s || null
       },
       qa: {
-        status: existsSync(finalPath) ? "warning" : "block",
-        warnings: existsSync(finalPath) ? ["等待人工抽检确认"] : ["最终成片不存在"]
+        status: exportBlocked ? "block" : "warning",
+        warnings: exportBlocked
+          ? [
+              ...(qaBlocked ? ["QA gate 阻断导出", ...(qaGate.qa?.warnings || [])] : []),
+              ...(manifestBlocked ? ["full_pipeline_manifest 阻断导出", ...(manifest.qa?.warnings || [])] : []),
+              ...(!finalExists ? ["最终成片不存在"] : [])
+            ]
+          : ["等待人工抽检确认"]
       },
       next_consumers: ["operator-review", "export-library"]
     };
@@ -1166,7 +1141,13 @@ export class ProductionRecipe {
     if (!this.modelKeyService) {
       return;
     }
-    const missing = await this.modelKeyService.missingModules(["material_retrieval", "selection_planner", "tts_primary"]);
+    const missing = await this.modelKeyService.missingModules([
+      "material_understanding",
+      "copy_generation",
+      "material_retrieval",
+      "selection_planner",
+      "tts_primary"
+    ]);
     if (!missing.length) {
       return;
     }
