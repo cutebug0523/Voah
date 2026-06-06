@@ -3,12 +3,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StoreService } from "./services/storeService.js";
 import { ProductionRecipe } from "./services/productionRecipe.js";
+import { ModelKeyService } from "./services/modelKeyService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(__dirname, "../../..");
 
 let storeService;
 let productionRecipe;
+let modelKeyService;
 
 function getServices() {
   if (!storeService) {
@@ -16,9 +18,10 @@ function getServices() {
       appDataDir: app.getPath("userData"),
       workspaceRoot
     });
-    productionRecipe = new ProductionRecipe({ storeService });
+    modelKeyService = new ModelKeyService({ appDataDir: app.getPath("userData") });
+    productionRecipe = new ProductionRecipe({ storeService, modelKeyService });
   }
-  return { storeService, productionRecipe };
+  return { storeService, productionRecipe, modelKeyService };
 }
 
 function createWindow() {
@@ -45,10 +48,12 @@ function createWindow() {
 }
 
 ipcMain.handle("voah:getState", async () => {
-  const { storeService: store } = getServices();
+  const { storeService: store, modelKeyService: keys } = getServices();
   const data = await store.read();
+  const modelKeys = await keys.getPublicConfig();
   return {
     ...data,
+    model_keys: modelKeys,
     paths: store.getPaths()
   };
 });
@@ -75,6 +80,21 @@ ipcMain.handle("voah:revealPath", async (_event, targetPath) => {
   }
   await shell.showItemInFolder(targetPath);
   return { ok: true };
+});
+
+ipcMain.handle("voah:saveModelKey", async (_event, payload) => {
+  const { modelKeyService: keys } = getServices();
+  return keys.saveModuleKey(payload.module_id, payload.key);
+});
+
+ipcMain.handle("voah:deleteModelKey", async (_event, payload) => {
+  const { modelKeyService: keys } = getServices();
+  return keys.deleteModuleKey(payload.module_id);
+});
+
+ipcMain.handle("voah:validateModelKeys", async (_event, payload = {}) => {
+  const { modelKeyService: keys } = getServices();
+  return keys.validateRequiredKeys(payload.module_ids || []);
 });
 
 app.whenReady().then(() => {

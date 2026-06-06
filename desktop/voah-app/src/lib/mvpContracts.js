@@ -54,11 +54,18 @@ export const RECIPE_STAGES = [
     description: "根据口播语义和时长生成素材匹配主轴。"
   },
   {
+    id: "timeline_selection",
+    label: "生成选片计划",
+    artifactKind: "timeline_selection",
+    outputFile: "timeline_selection.json",
+    description: "从候选素材里确定每段口播最终使用的片段。"
+  },
+  {
     id: "timeline_fill",
-    label: "匹配视频素材",
+    label: "填充视频时间线",
     artifactKind: "timeline_fill",
     outputFile: "timeline_fill.json",
-    description: "按每段口播语义生成素材填充计划。"
+    description: "按选片计划裁切或拼接素材生成无字幕预览。"
   },
   {
     id: "caption_plan",

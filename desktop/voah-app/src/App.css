@@ -422,6 +422,52 @@ button.primary {
   font-weight: 800;
 }
 
+.model-key-list {
+  display: grid;
+  gap: 10px;
+}
+
+.model-key-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(128px, auto) minmax(180px, 280px) 76px 76px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #dde4e0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfb;
+}
+
+.model-key-row strong,
+.model-key-row small {
+  display: block;
+}
+
+.model-key-name {
+  min-width: 0;
+}
+
+.model-key-name strong {
+  overflow-wrap: anywhere;
+}
+
+.model-key-row small {
+  color: #68746f;
+  margin-top: 4px;
+}
+
+.model-key-row input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  border: 1px solid #c8d0cc;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: #17211e;
+  font: inherit;
+}
+
 .empty {
   min-height: 150px;
   display: grid;
@@ -456,7 +502,8 @@ button.primary {
   .metric-grid,
   .detail-grid,
   .form-grid,
-  .output-grid {
+  .output-grid,
+  .model-key-row {
     grid-template-columns: 1fr;
   }
 }

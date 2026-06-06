@@ -5,5 +5,8 @@ contextBridge.exposeInMainWorld("voah", {
   createBatch: (payload) => ipcRenderer.invoke("voah:createBatch", payload),
   runTask: (payload) => ipcRenderer.invoke("voah:runTask", payload),
   retryTask: (payload) => ipcRenderer.invoke("voah:retryTask", payload),
-  revealPath: (path) => ipcRenderer.invoke("voah:revealPath", path)
+  revealPath: (path) => ipcRenderer.invoke("voah:revealPath", path),
+  saveModelKey: (payload) => ipcRenderer.invoke("voah:saveModelKey", payload),
+  deleteModelKey: (payload) => ipcRenderer.invoke("voah:deleteModelKey", payload),
+  validateModelKeys: (payload) => ipcRenderer.invoke("voah:validateModelKeys", payload)
 });

@@ -119,13 +119,26 @@ def probe_media(path: Path) -> dict[str, Any]:
     }
 
 
-def render_section_clip(source: Path, output: Path, duration: float, width: int, height: int, fps: int, preset: str) -> tuple[dict[str, Any], list[str]]:
+def qa_status_from(warnings: list[str], manual_reviews: list[str] | None = None) -> str:
+    if warnings or manual_reviews:
+        return "manual_review"
+    return "ok"
+
+
+def render_section_clip(source: Path, output: Path, duration: float, width: int, height: int, fps: int, preset: str) -> tuple[dict[str, Any], list[str], list[str]]:
     warnings: list[str] = []
+    manual_reviews: list[str] = []
     source_duration = probe_duration(source)
     if source_duration is None:
         raise RuntimeError(f"cannot probe source duration: {source}")
+    requested_duration = duration
     if source_duration + 0.05 < duration:
-        warnings.append(f"source clip {source.name} {source_duration}s shorter than audio section {duration}s; looped")
+        missing_duration = round(duration - source_duration, 3)
+        duration = source_duration
+        warnings.append(
+            f"source clip {source.name} {source_duration}s shorter than audio section {requested_duration}s; loop disabled"
+        )
+        manual_reviews.append(f"missing_duration_s={missing_duration}")
     frames = max(1, int(math.ceil(duration * fps)))
     vf = (
         "setpts=PTS-STARTPTS,"
@@ -135,8 +148,6 @@ def render_section_clip(source: Path, output: Path, duration: float, width: int,
     command = [
         "ffmpeg",
         "-y",
-        "-stream_loop",
-        "-1",
         "-i",
         str(source),
         "-an",
@@ -159,9 +170,13 @@ def render_section_clip(source: Path, output: Path, duration: float, width: int,
         raise RuntimeError((proc.stderr or proc.stdout or f"failed to render {source}").strip())
     return {
         "source_duration_s": source_duration,
+        "requested_duration_s": round(requested_duration, 3),
         "rendered_duration_s": probe_duration(output),
         "rendered_clip_path": str(output),
-    }, warnings
+        "missing_duration_s": round(max(0.0, requested_duration - source_duration), 3),
+        "allow_loop": False,
+        "loop_policy": "disabled_by_default",
+    }, warnings, manual_reviews
 
 
 def concat_video(parts: list[Path], output: Path, concat_file: Path) -> None:
@@ -225,6 +240,7 @@ def main() -> int:
     rendered_parts: list[Path] = []
     timeline: list[dict[str, Any]] = []
     warnings: list[str] = []
+    manual_reviews: list[str] = []
     for index, section in enumerate(sections, start=1):
         duration = float(section.get("audio_duration_s") or 0)
         if duration <= 0:
@@ -234,8 +250,9 @@ def main() -> int:
         if not source.exists():
             raise FileNotFoundError(f"missing video clip for section {index}: {source}")
         out_clip = work_dir / f"{index:03d}_{safe_filename(str(section.get('shot_id') or 'shot'))}.mp4"
-        render_probe, item_warnings = render_section_clip(source, out_clip, duration, args.width, args.height, args.fps, args.preset)
+        render_probe, item_warnings, item_manual_reviews = render_section_clip(source, out_clip, duration, args.width, args.height, args.fps, args.preset)
         warnings.extend([f"section {index}: {warning}" for warning in item_warnings])
+        manual_reviews.extend([f"section {index}: {warning}" for warning in item_manual_reviews])
         rendered_parts.append(out_clip)
         timeline.append(
             {
@@ -251,7 +268,7 @@ def main() -> int:
                 "timeline_end_s": section.get("timeline_end_s"),
                 "audio_duration_s": duration,
                 "source_clip_path": str(source),
-                "render_policy": "trim_or_loop_to_audio_section_duration",
+                "render_policy": "trim_to_audio_section_duration_no_loop",
                 **render_probe,
             }
         )
@@ -265,6 +282,7 @@ def main() -> int:
     preview_duration = output_probe.get("duration_s")
     if voice_duration is not None and preview_duration is not None and abs(voice_duration - preview_duration) > 0.15:
         warnings.append(f"preview duration {preview_duration}s differs from voice duration {voice_duration}s")
+        manual_reviews.append(f"preview_duration_s={preview_duration} differs from voice_duration_s={voice_duration}")
 
     manifest = {
         "schema_version": "1.0.0",
@@ -290,13 +308,15 @@ def main() -> int:
             "section_count": len(timeline),
             "voice_duration_s": voice_duration,
             "preview_duration_s": preview_duration,
-            "render_policy": "trim_or_loop_to_audio_section_duration",
+            "render_policy": "trim_to_audio_section_duration_no_loop",
+            "missing_duration_s": round(sum(float(item.get("missing_duration_s") or 0) for item in timeline), 3),
         },
         "timeline": timeline,
         "media_probe": output_probe,
         "qa": {
-            "status": "warning" if warnings else "ok",
+            "status": qa_status_from(warnings, manual_reviews),
             "warnings": warnings,
+            "manual_review": manual_reviews,
         },
         "next_consumers": ["voah-caption-plan", "hyperframes-subtitle-burn"],
     }

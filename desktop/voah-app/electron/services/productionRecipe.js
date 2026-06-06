@@ -263,8 +263,9 @@ function dryStagePayload({ stage, task, product, brief, sourceArtifacts, qaStatu
 }
 
 export class ProductionRecipe {
-  constructor({ storeService }) {
+  constructor({ storeService, modelKeyService }) {
     this.storeService = storeService;
+    this.modelKeyService = modelKeyService;
   }
 
   async createBatch({ productId, brief, count }) {
@@ -405,6 +406,11 @@ export class ProductionRecipe {
 
     await mkdir(task.task_dir, { recursive: true });
     await mkdir(path.join(task.task_dir, "logs"), { recursive: true });
+    try {
+      await this.assertRequiredModelKeys({ task });
+    } catch {
+      return { status: "failed", failed_stage: "settings" };
+    }
     await this.markTaskRunning(taskId, "starting");
 
     let sourceArtifacts = [];
@@ -550,7 +556,8 @@ export class ProductionRecipe {
       voice_script: () => this.writeVoiceScript({ task, product }),
       tts_audio: () => this.runTts({ task, product, jobId }),
       audio_sections: () => this.registerExistingJson({ task, stage, fileName: "audio_sections.json" }),
-      timeline_fill: () => this.runRetrievalAndFill({ task, product, jobId }),
+      timeline_selection: () => this.runRetrievalAndSelection({ task, product, jobId }),
+      timeline_fill: () => this.runRetrievalAndFill({ task, stage }),
       caption_plan: () => this.runCaptionPlan({ task, jobId }),
       subtitle_burn: () => this.runSubtitleBurn({ task, jobId }),
       qa_gate: () => this.writeQaGate({ task }),
@@ -697,6 +704,7 @@ export class ProductionRecipe {
 
   async runTts({ task, product, jobId }) {
     const voiceScriptPath = path.join(task.task_dir, "voice_script.json");
+    const env = await this.buildModelEnv(["tts_primary"]);
     await this.runCommand({
       task,
       jobId,
@@ -726,7 +734,8 @@ export class ProductionRecipe {
         "--subtitle-enable",
         "--subtitle-type",
         "sentence"
-      ]
+      ],
+      env
     });
     const ttsAudioPath = path.join(task.task_dir, "tts_audio.json");
     const payload = await readJson(ttsAudioPath);
@@ -744,10 +753,10 @@ export class ProductionRecipe {
     return { path: outputPath, payload: { ...payload, desktop_stage: stage.id } };
   }
 
-  async runRetrievalAndFill({ task, product, jobId }) {
+  async runRetrievalAndSelection({ task, product, jobId }) {
     const intakeRun = getIntakeRunDir(this.storeService.workspaceRoot, product);
     const shotIndex = path.join(intakeRun, "shot_index.json");
-    const selectionOverridesPath = await this.writeSelectionOverrides({ task });
+    const env = await this.buildModelEnv(["material_retrieval", "selection_planner"]);
     await this.runCommand({
       task,
       jobId,
@@ -764,8 +773,6 @@ export class ProductionRecipe {
         task.task_dir,
         "--product",
         product.name,
-        "--selection-overrides",
-        selectionOverridesPath,
         "--top-k",
         "14",
         "--pool-k",
@@ -780,40 +787,16 @@ export class ProductionRecipe {
         "30",
         "--preset",
         "veryfast"
-      ]
+      ],
+      env
     });
-    const timelinePath = path.join(task.task_dir, "timeline_fill.json");
-    const payload = await readJson(timelinePath);
-    return { path: timelinePath, payload };
+    const selectionPath = path.join(task.task_dir, "timeline_selection.json");
+    const payload = await readJson(selectionPath);
+    return { path: selectionPath, payload };
   }
 
-  async writeSelectionOverrides({ task }) {
-    const outputPath = path.join(task.task_dir, "selection_overrides.json");
-    const payload = {
-      schema_version: "1.0.0",
-      stage: "voah_selection_overrides",
-      created_at: nowIso(),
-      reason: "桌面端 MVP 复用已人工复核的防晒气垫 story unit 选择，后续可由 UI 改写为人工锁定片段。",
-      policy: {
-        script_first: true,
-        override_is_after_retrieval_review: true,
-        prefer_long_story_units: true,
-        loop_is_not_allowed_by_default: true
-      },
-      opening_pain: ["unit_46ad0a28-569a-41f9-a778-c8d007924615_4"],
-      product_positioning: ["unit_46ad0a28-569a-41f9-a778-c8d007924615_0"],
-      finish_effect: ["unit_49acd850-92d7-4195-9224-0969a3f7fc85_5"],
-      multi_function: ["unit_6b6b59aa-ef48-4957-9af0-88cd900f63d7_2"],
-      spf_proof: [
-        "unit_6b6b59aa-ef48-4957-9af0-88cd900f63d7_3",
-        "unit_46ad0a28-569a-41f9-a778-c8d007924615_3"
-      ],
-      waterproof_scene: ["unit_6b6b59aa-ef48-4957-9af0-88cd900f63d7_4"],
-      daily_scenarios: ["unit_4cdfefd9-17bf-4ada-af7f-086190b2e584_4"],
-      cta_bundle: ["unit_6b6b59aa-ef48-4957-9af0-88cd900f63d7_1"]
-    };
-    await writeJson(outputPath, payload);
-    return outputPath;
+  async runRetrievalAndFill({ task, stage }) {
+    return this.registerExistingJson({ task, stage, fileName: "timeline_fill.json" });
   }
 
   async runCaptionPlan({ task, jobId }) {
@@ -975,6 +958,7 @@ export class ProductionRecipe {
       "voice.wav",
       "audio_sections.json",
       "candidate_sections.json",
+      "timeline_selection.json",
       "timeline_fill.json",
       "preview_no_subtitles.mp4",
       "caption_plan.json",
@@ -1151,6 +1135,37 @@ export class ProductionRecipe {
         }
       });
     });
+  }
+
+  async buildModelEnv(moduleIds) {
+    if (!this.modelKeyService) {
+      return {};
+    }
+    return this.modelKeyService.buildEnv(moduleIds);
+  }
+
+  async assertRequiredModelKeys({ task }) {
+    if (!this.modelKeyService) {
+      return;
+    }
+    const missing = await this.modelKeyService.missingModules(["material_retrieval", "tts_primary"]);
+    if (!missing.length) {
+      return;
+    }
+    const names = missing.map((item) => `${item.module} / ${item.model}`).join("、");
+    await this.storeService.mutate(async (draft) => {
+      const current = draft.tasks.find((item) => item.id === task.id);
+      current.status = "failed";
+      current.current_stage = "settings";
+      current.human_error = createHumanError({
+        title: task.title,
+        stageLabel: "设置",
+        message: `模型 Key 未配置：${names}`
+      });
+      current.updated_at = nowIso();
+      return draft;
+    });
+    throw new Error(`模型 Key 未配置：${names}`);
   }
 
   async retryFailedTask(taskId) {

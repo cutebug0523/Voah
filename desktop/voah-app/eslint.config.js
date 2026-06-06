@@ -19,7 +19,7 @@ export default defineConfig([
     }
   },
   {
-    files: ["electron/**/*.js", "scripts/**/*.mjs"],
+    files: ["electron/**/*.js", "scripts/**/*.mjs", "src/lib/**/*.js"],
     extends: [js.configs.recommended],
     languageOptions: {
       globals: globals.node

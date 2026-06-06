@@ -34,12 +34,14 @@
 
 - `voah_retrieve_fill_from_audio_sections.py`
   - 读取 `audio_sections.json` 和入库索引。
-  - 按每段口播语义召回素材，支持 `selection_overrides.json`。
-  - 输出 `candidate_sections.json`、`timeline_fill.json`、`preview_no_subtitles.mp4`。
+  - 按每段口播语义召回候选素材，并生成最终选片计划。
+  - 默认不使用多模态 LLM；`selection_overrides.json` 只作为人工锁片输入。
+  - 输出 `candidate_sections.json`、`timeline_selection.json`、`timeline_fill.json`、`preview_no_subtitles.mp4`。
+  - 默认禁止 loop；素材不足时记录 `missing_duration_s` 并进入人工复核。
 
 - `voah_fill_video_from_audio_sections.py`
   - legacy/回归工具。
-  - 根据已有音频段和素材选择构造无字幕预览。
+  - 根据已有音频段和素材选择构造无字幕预览；默认不再 loop，短素材会进入人工复核。
 
 ### 字幕与 HyperFrames
 
@@ -62,6 +64,9 @@
 ```text
 voah_run_oneshot_minimax_tts.py
   -> voah_retrieve_fill_from_audio_sections.py
+     -> candidate_sections.json
+     -> timeline_selection.json
+     -> timeline_fill.json
   -> voah_build_caption_plan.py
   -> voah_create_hyperframes_subtitle_project.py
   -> voah_write_full_pipeline_manifest.py

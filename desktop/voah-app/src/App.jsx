@@ -18,6 +18,16 @@ const defaultBrief = {
   forbidden: "不夸大功效，不承诺医疗效果"
 };
 
+const browserPreviewModelModules = [
+  { id: "material_understanding", module: "素材理解", model: "qwen3.5-omni-plus" },
+  { id: "material_vectorization", module: "素材向量化", model: "qwen3-vl-embedding" },
+  { id: "material_retrieval", module: "素材召回", model: "qwen3-vl-embedding" },
+  { id: "copy_generation", module: "文案生成", model: "待定文本 LLM" },
+  { id: "selection_planner", module: "选片计划", model: "待定文本 LLM" },
+  { id: "tts_primary", module: "TTS", model: "speech-2.8-hd" },
+  { id: "tts_fallback", module: "TTS备用", model: "speech-2.8-hd" }
+];
+
 function formatTime(value) {
   if (!value) return "未记录";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -120,8 +130,10 @@ function createBrowserPreviewState() {
     settings: {
       workspace_root: "/Users/noah/混剪",
       tts_voice_preset: "MiniMax 女声 happy / speed 1.1",
-      subtitle_preset: "方案 1：底部白字关键词高亮",
-      provider_status: "Electron 中可读取真实本地配置"
+      subtitle_preset: "方案 1：底部白字关键词高亮"
+    },
+    model_keys: {
+      modules: browserPreviewModelModules.map((item) => ({ ...item, has_key: false, masked_key: "" }))
     },
     paths: {
       store_path: "浏览器预览模式不写入本地 store"
@@ -136,6 +148,7 @@ function App() {
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [brief, setBrief] = useState(defaultBrief);
   const [busy, setBusy] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
 
   const selectedProduct = useMemo(
     () => state?.products?.find((product) => product.id === selectedProductId) || state?.products?.[0],
@@ -204,6 +217,34 @@ function App() {
   async function revealPath(targetPath) {
     if (!window.voah || !targetPath) return;
     await window.voah.revealPath(targetPath);
+  }
+
+  async function saveModelKey(moduleId, key) {
+    if (!window.voah) return;
+    setSettingsBusy(true);
+    try {
+      await window.voah.saveModelKey({ module_id: moduleId, key });
+      await refresh();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err.message || "保存失败" };
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  async function deleteModelKey(moduleId) {
+    if (!window.voah) return;
+    setSettingsBusy(true);
+    try {
+      await window.voah.deleteModelKey({ module_id: moduleId });
+      await refresh();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err.message || "删除失败" };
+    } finally {
+      setSettingsBusy(false);
+    }
   }
 
   if (loading || !state) {
@@ -288,7 +329,14 @@ function App() {
           />
         ) : null}
         {active === "outputs" ? <Outputs state={state} revealPath={revealPath} /> : null}
-        {active === "settings" ? <Settings state={state} /> : null}
+        {active === "settings" ? (
+          <Settings
+            state={state}
+            saveModelKey={saveModelKey}
+            deleteModelKey={deleteModelKey}
+            busy={settingsBusy}
+          />
+        ) : null}
       </main>
     </div>
   );
@@ -620,20 +668,76 @@ function Outputs({ state, revealPath }) {
   );
 }
 
-function Settings({ state }) {
+function Settings({ state, saveModelKey, deleteModelKey, busy }) {
+  const [draftKeys, setDraftKeys] = useState({});
+  const [message, setMessage] = useState("");
+  const modules = state.model_keys?.modules || browserPreviewModelModules.map((item) => ({ ...item, has_key: false, masked_key: "" }));
+
+  function setDraft(moduleId, value) {
+    setDraftKeys((current) => ({ ...current, [moduleId]: value }));
+  }
+
+  async function handleSave(moduleId) {
+    const key = draftKeys[moduleId] || "";
+    const result = await saveModelKey(moduleId, key);
+    if (result?.ok) {
+      setDraft(moduleId, "");
+      setMessage("已保存");
+      return;
+    }
+    setMessage(result?.message || "保存失败");
+  }
+
+  async function handleDelete(moduleId) {
+    const result = await deleteModelKey(moduleId);
+    if (result?.ok) {
+      setDraft(moduleId, "");
+      setMessage("已删除");
+      return;
+    }
+    setMessage(result?.message || "删除失败");
+  }
+
   return (
     <section className="page">
       <section className="panel">
         <div className="panel-head">
-          <h2>设置</h2>
-          <p>低频配置入口，日常生产不需要进入这里。</p>
+          <div>
+            <h2>模型 Key</h2>
+            {message ? <p>{message}</p> : null}
+          </div>
         </div>
-        <div className="detail-grid">
-          <Info label="Workspace" value={state.settings.workspace_root} />
-          <Info label="Store" value={state.paths?.store_path} />
-          <Info label="TTS 声音" value={state.settings.tts_voice_preset} />
-          <Info label="字幕样式" value={state.settings.subtitle_preset} />
-          <Info label="Provider" value={state.settings.provider_status} />
+        <div className="model-key-list">
+          {modules.map((item) => (
+            <div key={item.id} className="model-key-row">
+              <div className="model-key-name">
+                <strong>
+                  {item.module} / {item.model}
+                </strong>
+              </div>
+              <Badge status={item.has_key ? "ready" : "needs_intake"}>
+                {item.has_key ? `已配置 ${item.masked_key}` : "未配置"}
+              </Badge>
+              <input
+                type="password"
+                value={draftKeys[item.id] || ""}
+                placeholder={item.has_key ? "输入新 key 更新" : "输入 key"}
+                autoComplete="off"
+                onChange={(event) => setDraft(item.id, event.target.value)}
+              />
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || !(draftKeys[item.id] || "").trim()}
+                onClick={() => handleSave(item.id)}
+              >
+                保存
+              </button>
+              <button type="button" disabled={busy || !item.has_key} onClick={() => handleDelete(item.id)}>
+                删除
+              </button>
+            </div>
+          ))}
         </div>
       </section>
     </section>

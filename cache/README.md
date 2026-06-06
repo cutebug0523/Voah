@@ -49,6 +49,8 @@ RUN_PROCESS.md
 full_pipeline_manifest.json
 voice_script.json
 audio_sections.json
+candidate_sections.json
+timeline_selection.json
 timeline_fill.json
 caption_plan.json
 preview_no_subtitles.mp4
