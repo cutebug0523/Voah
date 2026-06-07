@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { SUBTITLE_PRESETS, TTS_VOICE_OPTIONS } from "./lib/mvpContracts.js";
 import "./App.css";
 
 const navItems = [
@@ -15,7 +16,10 @@ const defaultBrief = {
   count: 3,
   main_claim: "自然气色、防晒持妆",
   offer: "今日活动价",
-  forbidden: "不夸大功效，不承诺医疗效果"
+  forbidden: "不夸大功效，不承诺医疗效果",
+  style: "",
+  audience: "",
+  cta_policy: ""
 };
 
 const browserPreviewModelModules = [
@@ -27,6 +31,36 @@ const browserPreviewModelModules = [
   { id: "tts_primary", module: "TTS", model: "speech-2.8-hd" },
   { id: "tts_fallback", module: "TTS备用", model: "speech-2.8-hd" }
 ];
+
+async function bridgeRequest(path, payload) {
+  const response = await fetch(`/api/voah/${path}`, {
+    method: payload === undefined ? "GET" : "POST",
+    headers: payload === undefined ? undefined : { "Content-Type": "application/json" },
+    body: payload === undefined ? undefined : JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.message || data.error || `请求失败：${response.status}`);
+  }
+  return data;
+}
+
+function createVoahClient() {
+  if (window.voah) {
+    return window.voah;
+  }
+  return {
+    getState: () => bridgeRequest("state"),
+    createBatch: (payload) => bridgeRequest("createBatch", payload),
+    runTask: (payload) => bridgeRequest("runTask", payload),
+    retryTask: (payload) => bridgeRequest("retryTask", payload),
+    revealPath: (targetPath) => bridgeRequest("revealPath", { path: targetPath }),
+    saveSettings: (payload) => bridgeRequest("saveSettings", payload),
+    saveModelKey: (payload) => bridgeRequest("saveModelKey", payload),
+    deleteModelKey: (payload) => bridgeRequest("deleteModelKey", payload),
+    validateModelKeys: (payload) => bridgeRequest("validateModelKeys", payload)
+  };
+}
 
 function formatTime(value) {
   if (!value) return "未记录";
@@ -60,6 +94,17 @@ function statusTone(status) {
   return "info";
 }
 
+function toNumber(value, fallback = 0) {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+}
+
+function compactPath(value) {
+  const text = String(value || "");
+  if (text.length <= 80) return text;
+  return `...${text.slice(-77)}`;
+}
+
 function useVoahState() {
   const [state, setState] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -68,12 +113,8 @@ function useVoahState() {
   async function refresh() {
     setLoading(true);
     try {
-      if (window.voah) {
-        const next = await window.voah.getState();
-        setState(next);
-      } else {
-        setState(createBrowserPreviewState());
-      }
+      const next = await createVoahClient().getState();
+      setState(next);
       setError("");
     } catch (err) {
       setError(err.message || "读取状态失败");
@@ -86,7 +127,7 @@ function useVoahState() {
     let ignore = false;
     async function loadInitialState() {
       try {
-        const next = window.voah ? await window.voah.getState() : createBrowserPreviewState();
+        const next = await createVoahClient().getState();
         if (!ignore) {
           setState(next);
           setError("");
@@ -110,37 +151,6 @@ function useVoahState() {
   return { state, loading, error, refresh };
 }
 
-function createBrowserPreviewState() {
-  return {
-    products: [
-      {
-        id: "product_fangshai_qidian",
-        name: "防晒气垫",
-        status: "ready",
-        material_status: "可生产",
-        claim_summary: "自然气色、防晒持妆、防水防汗、通勤补妆",
-        latest_intake_run: "20260603_225800_merged5_scene_candidates_v1",
-        updated_at: new Date().toISOString()
-      }
-    ],
-    tasks: [],
-    jobs: [],
-    artifacts: [],
-    qa_reports: [],
-    settings: {
-      workspace_root: "/Users/noah/混剪",
-      tts_voice_preset: "MiniMax 女声 happy / speed 1.1",
-      subtitle_preset: "方案 1：底部白字关键词高亮"
-    },
-    model_keys: {
-      modules: browserPreviewModelModules.map((item) => ({ ...item, has_key: false, masked_key: "" }))
-    },
-    paths: {
-      store_path: "浏览器预览模式不写入本地 store"
-    }
-  };
-}
-
 function App() {
   const { state, loading, error, refresh } = useVoahState();
   const [active, setActive] = useState("dashboard");
@@ -160,17 +170,18 @@ function App() {
   );
 
   async function createBatch() {
-    if (!selectedProduct || !window.voah) return;
+    if (!selectedProduct) return;
     setBusy(true);
     try {
-      const result = await window.voah.createBatch({
+      const voah = createVoahClient();
+      const result = await voah.createBatch({
         productId: selectedProduct.id,
         brief,
         count: Number(brief.count || 1)
       });
       const tasks = result.tasks || [];
       for (const task of tasks) {
-        await window.voah.runTask({ task_id: task.id });
+        await voah.runTask({ task_id: task.id });
       }
       if (tasks[0]) {
         setSelectedTaskId(tasks[0].id);
@@ -183,17 +194,18 @@ function App() {
   }
 
   async function createFailedDemo() {
-    if (!selectedProduct || !window.voah) return;
+    if (!selectedProduct) return;
     setBusy(true);
     try {
-      const result = await window.voah.createBatch({
+      const voah = createVoahClient();
+      const result = await voah.createBatch({
         productId: selectedProduct.id,
         brief: { ...brief, count: 1 },
         count: 1
       });
       const task = result.tasks?.[0];
       if (task) {
-        await window.voah.runTask({ task_id: task.id, fail_stage: "tts_audio" });
+        await voah.runTask({ task_id: task.id, fail_stage: "tts_audio" });
         setSelectedTaskId(task.id);
         setActive("tasks");
       }
@@ -204,10 +216,9 @@ function App() {
   }
 
   async function retryTask(taskId) {
-    if (!window.voah) return;
     setBusy(true);
     try {
-      await window.voah.retryTask({ task_id: taskId });
+      await createVoahClient().retryTask({ task_id: taskId });
       await refresh();
     } finally {
       setBusy(false);
@@ -215,15 +226,14 @@ function App() {
   }
 
   async function revealPath(targetPath) {
-    if (!window.voah || !targetPath) return;
-    await window.voah.revealPath(targetPath);
+    if (!targetPath) return;
+    await createVoahClient().revealPath(targetPath);
   }
 
   async function saveModelKey(moduleId, key) {
-    if (!window.voah) return;
     setSettingsBusy(true);
     try {
-      await window.voah.saveModelKey({ module_id: moduleId, key });
+      await createVoahClient().saveModelKey({ module_id: moduleId, key });
       await refresh();
       return { ok: true };
     } catch (err) {
@@ -234,14 +244,26 @@ function App() {
   }
 
   async function deleteModelKey(moduleId) {
-    if (!window.voah) return;
     setSettingsBusy(true);
     try {
-      await window.voah.deleteModelKey({ module_id: moduleId });
+      await createVoahClient().deleteModelKey({ module_id: moduleId });
       await refresh();
       return { ok: true };
     } catch (err) {
       return { ok: false, message: err.message || "删除失败" };
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  async function saveSettings(settings) {
+    setSettingsBusy(true);
+    try {
+      await createVoahClient().saveSettings({ settings });
+      await refresh();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err.message || "保存失败" };
     } finally {
       setSettingsBusy(false);
     }
@@ -276,8 +298,8 @@ function App() {
               onClick={() => setActive(item.id)}
               type="button"
             >
-              <span>{item.icon}</span>
-              {item.label}
+              <span className="nav-icon">{item.icon}</span>
+              <span className="nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -331,9 +353,11 @@ function App() {
         {active === "outputs" ? <Outputs state={state} revealPath={revealPath} /> : null}
         {active === "settings" ? (
           <Settings
+            key={JSON.stringify(state.settings || {})}
             state={state}
             saveModelKey={saveModelKey}
             deleteModelKey={deleteModelKey}
+            saveSettings={saveSettings}
             busy={settingsBusy}
           />
         ) : null}
@@ -354,7 +378,8 @@ function pageTitle(active) {
 
 function Dashboard({ state, counts, setActive, setSelectedProductId, setSelectedTaskId }) {
   const recentTasks = [...state.tasks].reverse().slice(0, 5);
-  const failedTasks = state.tasks.filter((task) => task.status === "failed");
+  const failedTasks = state.tasks.filter((task) => task.status === "failed").slice(0, 4);
+  const readyProducts = state.products.filter((product) => product.status === "ready").slice(0, 4);
 
   return (
     <section className="page">
@@ -372,7 +397,7 @@ function Dashboard({ state, counts, setActive, setSelectedProductId, setSelected
             <button type="button" onClick={() => setActive("products")}>查看产品</button>
           </div>
           <div className="product-list">
-            {state.products.map((product) => (
+            {readyProducts.map((product) => (
               <button
                 key={product.id}
                 className="product-row"
@@ -411,8 +436,10 @@ function Dashboard({ state, counts, setActive, setSelectedProductId, setSelected
                     setActive("tasks");
                   }}
                 >
-                  <strong>{task.title}</strong>
-                  <small>{task.human_error?.failed_step || "等待处理"}</small>
+                  <span>
+                    <strong>{task.title}</strong>
+                    <small>{task.human_error?.failed_step || "等待处理"}</small>
+                  </span>
                   <Badge status="failed">失败</Badge>
                 </button>
               ))}
@@ -437,9 +464,9 @@ function Dashboard({ state, counts, setActive, setSelectedProductId, setSelected
                   setActive("tasks");
                 }}
               >
-                <span>{task.title}</span>
+                <span title={task.title}>{task.title}</span>
                 <span>{statusText(task.status)}</span>
-                <span>{task.current_stage}</span>
+                <span title={task.current_stage}>{task.current_stage}</span>
                 <span>{formatTime(task.updated_at)}</span>
               </button>
             ))}
@@ -468,12 +495,12 @@ function Products({ products, selectedProduct, brief, setBrief, setSelectedProdu
                 className={`product-row ${selectedProduct?.id === product.id ? "selected" : ""}`}
                 onClick={() => setSelectedProductId(product.id)}
               >
-                <span>
-                  <strong>{product.name}</strong>
-                  <small>{product.latest_intake_run || "素材未入库"}</small>
-                </span>
-                <Badge status={product.status}>{product.material_status}</Badge>
-              </button>
+                  <span>
+                    <strong>{product.name}</strong>
+                    <small title={product.latest_intake_run || ""}>{product.latest_intake_run || "素材未入库"}</small>
+                  </span>
+                  <Badge status={product.status}>{product.material_status}</Badge>
+                </button>
             ))}
           </div>
         </section>
@@ -490,6 +517,9 @@ function Products({ products, selectedProduct, brief, setBrief, setSelectedProdu
             <Info label="素材文件夹" value={selectedProduct?.source_folder} />
             <Info label="最近入库" value={selectedProduct?.latest_intake_run || "无"} />
             <Info label="更新时间" value={formatTime(selectedProduct?.updated_at)} />
+            <Info label="全量卖点" value={selectedProduct?.selling_points || selectedProduct?.claim_summary} />
+            <Info label="合规禁忌" value={selectedProduct?.compliance_notes} />
+            <Info label="CTA 规则" value={selectedProduct?.cta_notes} />
           </div>
 
           <h3>创建批量任务</h3>
@@ -500,6 +530,9 @@ function Products({ products, selectedProduct, brief, setBrief, setSelectedProdu
             <Field label="主卖点" value={brief.main_claim} onChange={(value) => setBrief({ ...brief, main_claim: value })} />
             <Field label="活动优惠" value={brief.offer} onChange={(value) => setBrief({ ...brief, offer: value })} />
             <Field label="禁忌" value={brief.forbidden} onChange={(value) => setBrief({ ...brief, forbidden: value })} />
+            <Field label="风格" value={brief.style} onChange={(value) => setBrief({ ...brief, style: value })} />
+            <Field label="受众" value={brief.audience} onChange={(value) => setBrief({ ...brief, audience: value })} />
+            <Field label="CTA" value={brief.cta_policy} onChange={(value) => setBrief({ ...brief, cta_policy: value })} />
           </div>
           <div className="action-row">
             <button
@@ -596,7 +629,7 @@ function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, revealPath, 
                   <div key={artifact.id} className="artifact-row">
                     <div>
                       <strong>{artifact.kind}</strong>
-                      <small>{artifact.path}</small>
+                      <small title={artifact.path}>{compactPath(artifact.path)}</small>
                     </div>
                     <span>输入：{artifact.source_artifact_ids.length || "任务 brief"}</span>
                     <Badge status={artifact.qa_status}>{artifact.qa_status}</Badge>
@@ -652,7 +685,7 @@ function Outputs({ state, revealPath }) {
                   <h3>{task.title}</h3>
                   <p>{qa?.summary || "等待 QA"}</p>
                   <Badge status={qa?.status || task.status}>{qa?.status || statusText(task.status)}</Badge>
-                  <small>{finalPath || exportArtifact?.path || "未登记最终视频"}</small>
+                  <small title={finalPath || exportArtifact?.path || ""}>{compactPath(finalPath || exportArtifact?.path || "未登记最终视频")}</small>
                   <button type="button" onClick={() => revealPath(finalPath || exportArtifact?.path)}>
                     打开成片
                   </button>
@@ -668,13 +701,57 @@ function Outputs({ state, revealPath }) {
   );
 }
 
-function Settings({ state, saveModelKey, deleteModelKey, busy }) {
+function Settings({ state, saveModelKey, deleteModelKey, saveSettings, busy }) {
   const [draftKeys, setDraftKeys] = useState({});
+  const [settingsDraft, setSettingsDraft] = useState(state.settings || {});
   const [message, setMessage] = useState("");
   const modules = state.model_keys?.modules || browserPreviewModelModules.map((item) => ({ ...item, has_key: false, masked_key: "" }));
 
   function setDraft(moduleId, value) {
     setDraftKeys((current) => ({ ...current, [moduleId]: value }));
+  }
+
+  function updateCopy(field, value) {
+    setSettingsDraft((current) => ({
+      ...current,
+      copy: {
+        ...(current.copy || {}),
+        [field]: value
+      }
+    }));
+  }
+
+  function updateTts(field, value) {
+    setSettingsDraft((current) => ({
+      ...current,
+      tts: {
+        ...(current.tts || {}),
+        [field]: value
+      }
+    }));
+  }
+
+  function updateVoiceModify(field, value) {
+    setSettingsDraft((current) => ({
+      ...current,
+      tts: {
+        ...(current.tts || {}),
+        voice_modify: {
+          ...(current.tts?.voice_modify || {}),
+          [field]: value
+        }
+      }
+    }));
+  }
+
+  function updateSubtitle(field, value) {
+    setSettingsDraft((current) => ({
+      ...current,
+      subtitle: {
+        ...(current.subtitle || {}),
+        [field]: value
+      }
+    }));
   }
 
   async function handleSave(moduleId) {
@@ -698,9 +775,39 @@ function Settings({ state, saveModelKey, deleteModelKey, busy }) {
     setMessage(result?.message || "删除失败");
   }
 
+  async function handleSaveSettings() {
+    const selectedVoice = TTS_VOICE_OPTIONS.find((item) => item.id === settingsDraft.tts?.voice_id);
+    const selectedPreset = SUBTITLE_PRESETS.find((item) => item.id === settingsDraft.subtitle?.preset);
+    const result = await saveSettings({
+      copy: settingsDraft.copy || {},
+      tts: {
+        ...(settingsDraft.tts || {}),
+        voice_label: selectedVoice?.label || settingsDraft.tts?.voice_label || "",
+        speed: toNumber(settingsDraft.tts?.speed, 1.1),
+        vol: toNumber(settingsDraft.tts?.vol, 1),
+        pitch: toNumber(settingsDraft.tts?.pitch, 0),
+        voice_modify: {
+          pitch: toNumber(settingsDraft.tts?.voice_modify?.pitch, 20),
+          intensity: toNumber(settingsDraft.tts?.voice_modify?.intensity, 20),
+          timbre: toNumber(settingsDraft.tts?.voice_modify?.timbre, 0)
+        }
+      },
+      subtitle: {
+        ...(settingsDraft.subtitle || {}),
+        preset_label: selectedPreset?.label || settingsDraft.subtitle?.preset_label || ""
+      }
+    });
+    setMessage(result?.ok ? "设置已保存" : result?.message || "设置保存失败");
+  }
+
+  const copy = settingsDraft.copy || {};
+  const tts = settingsDraft.tts || {};
+  const voiceModify = tts.voice_modify || {};
+  const subtitle = settingsDraft.subtitle || {};
+
   return (
     <section className="page">
-      <section className="panel">
+      <section className="panel settings-panel">
         <div className="panel-head">
           <div>
             <h2>模型 Key</h2>
@@ -714,10 +821,9 @@ function Settings({ state, saveModelKey, deleteModelKey, busy }) {
                 <strong>
                   {item.module} / {item.model}
                 </strong>
+                {item.has_key ? <small>{item.masked_key}</small> : null}
               </div>
-              <Badge status={item.has_key ? "ready" : "needs_intake"}>
-                {item.has_key ? `已配置 ${item.masked_key}` : "未配置"}
-              </Badge>
+              <Badge status={item.has_key ? "ready" : "needs_intake"}>{item.has_key ? "已配置" : "未配置"}</Badge>
               <input
                 type="password"
                 value={draftKeys[item.id] || ""}
@@ -738,6 +844,66 @@ function Settings({ state, saveModelKey, deleteModelKey, busy }) {
               </button>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="panel settings-panel">
+        <div className="panel-head">
+          <div>
+            <h2>生产默认参数</h2>
+            <p>创建任务时会保存一份快照。</p>
+          </div>
+          <button type="button" className="primary" disabled={busy} onClick={handleSaveSettings}>
+            保存设置
+          </button>
+        </div>
+
+        <div className="settings-grid">
+          <div className="settings-block">
+            <h3>文案</h3>
+            <Field label="默认风格" value={copy.default_style || ""} onChange={(value) => updateCopy("default_style", value)} />
+            <Field label="默认受众" value={copy.default_audience || ""} onChange={(value) => updateCopy("default_audience", value)} />
+            <Field label="默认活动" value={copy.default_offer || ""} onChange={(value) => updateCopy("default_offer", value)} />
+            <Field label="违禁/禁忌" value={copy.forbidden_terms || ""} onChange={(value) => updateCopy("forbidden_terms", value)} multiline />
+            <Field label="CTA 规则" value={copy.cta_policy || ""} onChange={(value) => updateCopy("cta_policy", value)} multiline />
+          </div>
+
+          <div className="settings-block">
+            <h3>TTS</h3>
+            <Field
+              label="音色"
+              value={tts.voice_id || ""}
+              onChange={(value) => updateTts("voice_id", value)}
+              options={TTS_VOICE_OPTIONS.map((item) => ({ value: item.id, label: item.label }))}
+            />
+            <Field label="模型" value={tts.model || "speech-2.8-hd"} onChange={(value) => updateTts("model", value)} />
+            <Field label="情绪" value={tts.emotion || "happy"} onChange={(value) => updateTts("emotion", value)} />
+            <Field label="语速" type="number" step="0.05" value={tts.speed ?? 1.1} onChange={(value) => updateTts("speed", value)} />
+            <Field label="音量" type="number" step="0.1" value={tts.vol ?? 1} onChange={(value) => updateTts("vol", value)} />
+            <Field label="音调" type="number" value={tts.pitch ?? 0} onChange={(value) => updateTts("pitch", value)} />
+            <Field label="Pitch" type="number" value={voiceModify.pitch ?? 20} onChange={(value) => updateVoiceModify("pitch", value)} />
+            <Field label="Intensity" type="number" value={voiceModify.intensity ?? 20} onChange={(value) => updateVoiceModify("intensity", value)} />
+            <Field label="Timbre" type="number" value={voiceModify.timbre ?? 0} onChange={(value) => updateVoiceModify("timbre", value)} />
+          </div>
+
+          <div className="settings-block">
+            <h3>字幕</h3>
+            <Field
+              label="样式"
+              value={subtitle.preset || "songti_white_gold_lower"}
+              onChange={(value) => updateSubtitle("preset", value)}
+              options={SUBTITLE_PRESETS.map((item) => ({ value: item.id, label: item.label }))}
+            />
+            <Field label="字体文件" value={subtitle.font_source || ""} onChange={(value) => updateSubtitle("font_source", value)} />
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={subtitle.split_punctuation !== false}
+                onChange={(event) => updateSubtitle("split_punctuation", event.target.checked)}
+              />
+              <span>按标点拆字幕</span>
+            </label>
+          </div>
         </div>
       </section>
     </section>
@@ -766,11 +932,23 @@ function Info({ label, value }) {
   );
 }
 
-function Field({ label, value, onChange, type = "text" }) {
+function Field({ label, value, onChange, type = "text", step, options, multiline = false }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      {options ? (
+        <select value={value} onChange={(event) => onChange(event.target.value)}>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      ) : multiline ? (
+        <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} />
+      ) : (
+        <input type={type} step={step} value={value} onChange={(event) => onChange(event.target.value)} />
+      )}
     </label>
   );
 }

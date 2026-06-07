@@ -118,6 +118,37 @@ def caption_fragments(section: dict[str, Any], split_punctuation: bool) -> list[
     return fragments
 
 
+def enforce_monotonic_captions(captions: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+    if not captions:
+        return captions
+    ordered = sorted(
+        captions,
+        key=lambda item: (
+            float(item.get("start_s") or 0),
+            int(item.get("caption_order") or 0),
+        ),
+    )
+    fixed: list[dict[str, Any]] = []
+    cursor = 0.0
+    for index, caption in enumerate(ordered, start=1):
+        item = dict(caption)
+        original_start = float(item.get("start_s") or 0)
+        original_end = float(item.get("end_s") or original_start)
+        start_s = max(original_start, cursor)
+        end_s = max(original_end, start_s + 0.05)
+        if abs(start_s - original_start) > 0.001 or abs(end_s - original_end) > 0.001:
+            warnings.append(
+                f"caption {item.get('caption_order') or index} timing adjusted {original_start:.3f}-{original_end:.3f} -> {start_s:.3f}-{end_s:.3f}"
+            )
+        item["caption_order"] = index
+        item["start_s"] = round(start_s, 3)
+        item["end_s"] = round(end_s, 3)
+        item["duration_s"] = round(max(0.05, end_s - start_s), 3)
+        fixed.append(item)
+        cursor = end_s
+    return fixed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Voah caption_plan.json.")
     parser.add_argument("--audio-sections", required=True)
@@ -126,7 +157,7 @@ def main() -> int:
     parser.add_argument("--preset", default="songti_white_gold_lower")
     parser.add_argument("--split-punctuation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--style-source", default="/Users/noah/混剪/cache/voah_tasks/fangshai-qidian/20260605_164301_minimax_voice_audio_master_v1/hyperframes_style_preview/subtitle_presets.json")
-    parser.add_argument("--font-source", default="/Users/noah/混剪/cache/voah_tasks/fangshai-qidian/20260605_164301_minimax_voice_audio_master_v1/hyperframes_style_preview/fonts/Songti.ttc")
+    parser.add_argument("--font-source", default="/System/Library/Fonts/Supplemental/Songti.ttc")
     args = parser.parse_args()
 
     audio_sections_path = as_abs(args.audio_sections)
@@ -173,6 +204,7 @@ def main() -> int:
                 }
             )
 
+    captions = enforce_monotonic_captions(captions, warnings)
     total_duration = round(captions[-1]["end_s"], 3) if captions else 0
     plan = {
         "schema_version": "1.0.0",

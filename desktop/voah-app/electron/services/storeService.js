@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_PRODUCTS, DEFAULT_SETTINGS } from "../../src/lib/mvpContracts.js";
+import { DEFAULT_PRODUCTS, mergeVoahSettings } from "../../src/lib/mvpContracts.js";
 
 const STORE_VERSION = "voah-desktop-store.v1";
 
@@ -19,8 +19,19 @@ function createInitialStore(workspaceRoot) {
     jobs: [],
     artifacts: [],
     qa_reports: [],
-    settings: DEFAULT_SETTINGS
+    settings: mergeVoahSettings()
   };
+}
+
+function mergeDefaultProducts(products = []) {
+  const byId = new Map(products.map((product) => [product.id, product]));
+  for (const product of DEFAULT_PRODUCTS) {
+    byId.set(product.id, {
+      ...product,
+      ...(byId.get(product.id) || {})
+    });
+  }
+  return [...byId.values()];
 }
 
 export class StoreService {
@@ -35,7 +46,18 @@ export class StoreService {
     await mkdir(this.storeDir, { recursive: true });
     try {
       const parsed = JSON.parse(await readFile(this.storePath, "utf8"));
-      return parsed;
+      const merged = {
+        ...parsed,
+        products: mergeDefaultProducts(parsed.products),
+        settings: mergeVoahSettings(parsed.settings || {})
+      };
+      if (
+        JSON.stringify(merged.products) !== JSON.stringify(parsed.products || []) ||
+        JSON.stringify(merged.settings) !== JSON.stringify(parsed.settings || {})
+      ) {
+        await this.save(merged);
+      }
+      return merged;
     } catch {
       const initial = createInitialStore(this.workspaceRoot);
       await this.save(initial);

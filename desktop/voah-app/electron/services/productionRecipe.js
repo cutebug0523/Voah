@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   createHumanError,
   createTaskTitle,
+  mergeVoahSettings,
   RECIPE_STAGES
 } from "../../src/lib/mvpContracts.js";
 
@@ -85,11 +86,19 @@ function getIntakeRunDir(workspaceRoot, product) {
   return path.join(workspaceRoot, "cache", "voah_video_intake", product.slug, product.latest_intake_run);
 }
 
+function hyperframesCommandArgs(args) {
+  const localBin = path.join(process.cwd(), "node_modules", ".bin", "hyperframes");
+  if (existsSync(localBin)) {
+    return { command: localBin, args };
+  }
+  return { command: "npx", args: ["hyperframes", ...args] };
+}
+
 function productMeta(product) {
   return {
     id: product.id,
     name: product.name,
-    brand: product.brand || "花西子",
+    brand: product.brand || "",
     slug: product.slug
   };
 }
@@ -100,6 +109,22 @@ function splitClaims(product, brief) {
     ...(String(brief.main_claim || "").split(/[、,，]/)),
     brief.offer
   ]);
+}
+
+function taskConfig(task) {
+  return mergeVoahSettings(task.production_config || {});
+}
+
+function numberArg(value, fallback) {
+  return String(safeNumber(value, fallback));
+}
+
+function intArg(value, fallback) {
+  return String(Math.round(safeNumber(value, fallback)));
+}
+
+function optionalString(value) {
+  return String(value || "").trim();
 }
 
 function dryStagePayload({ stage, task, product, brief, sourceArtifacts, qaStatus }) {
@@ -166,11 +191,36 @@ export class ProductionRecipe {
 
     const safeCount = Math.max(1, Math.min(Number(count || 1), 50));
     const createdTasks = [];
+    const settings = mergeVoahSettings(store.settings || {});
+    const normalizedBrief = {
+      ...brief,
+      style: optionalString(brief.style) || settings.copy.default_style,
+      audience: optionalString(brief.audience) || settings.copy.default_audience,
+      offer: optionalString(brief.offer) || settings.copy.default_offer,
+      forbidden: optionalString(brief.forbidden) || settings.copy.forbidden_terms,
+      cta_policy: optionalString(brief.cta_policy) || settings.copy.cta_policy
+    };
+    const productionConfig = {
+      schema_version: "voah-production-config.v1",
+      copy: {
+        ...settings.copy,
+        task_overrides: {
+          main_claim: optionalString(normalizedBrief.main_claim),
+          offer: optionalString(normalizedBrief.offer),
+          forbidden: optionalString(normalizedBrief.forbidden),
+          style: optionalString(normalizedBrief.style),
+          audience: optionalString(normalizedBrief.audience),
+          cta_policy: optionalString(normalizedBrief.cta_policy)
+        }
+      },
+      tts: settings.tts,
+      subtitle: settings.subtitle
+    };
 
     await this.storeService.mutate(async (draft) => {
       for (let index = 0; index < safeCount; index += 1) {
         const taskId = compactId("task");
-        const title = `${createTaskTitle(product, brief)} #${index + 1}`;
+        const title = `${createTaskTitle(product, normalizedBrief)} #${index + 1}`;
         const taskDir = path.join(
           this.storeService.workspaceRoot,
           "cache",
@@ -188,7 +238,8 @@ export class ProductionRecipe {
           current_stage: "queued",
           task_dir: taskDir,
           source_intake_run: product.latest_intake_run,
-          brief,
+          brief: normalizedBrief,
+          production_config: productionConfig,
           pipeline_mode: "real",
           created_at: nowIso(),
           updated_at: nowIso()
@@ -480,6 +531,8 @@ export class ProductionRecipe {
     const taskBriefPath = path.join(task.task_dir, "task_brief.json");
     const intakeRun = getIntakeRunDir(this.storeService.workspaceRoot, product);
     const shotIndex = path.join(intakeRun, "shot_index.json");
+    const config = taskConfig(task);
+    const copyConfig = config.copy || {};
     if (!existsSync(shotIndex)) {
       throw new Error(`素材索引不存在：${shotIndex}`);
     }
@@ -494,18 +547,41 @@ export class ProductionRecipe {
         title: task.title,
         target_platform: task.target_platform,
         target_duration_range_s: normalizeTargetRange(task.target_duration_s),
-        style: task.brief.style || "轻快、口语、种草感，但不过度承诺",
-        audience: task.brief.audience || "夏天出门需要补妆、补防晒、想少带东西的人",
+        style: task.brief.style || copyConfig.default_style,
+        audience: task.brief.audience || copyConfig.default_audience,
         objective: "桌面端真实生产：先销售逻辑和连续口播，再 TTS，再按音频语义召回素材、烧字幕。"
       },
       inputs: {
         intake_run: intakeRun,
         shot_index: shotIndex,
-        user_brief: task.brief
+        user_brief: task.brief,
+        production_config: task.production_config || config
       },
-      product_claims: splitClaims(product, task.brief),
+      product_claims: uniqueStrings([
+        ...splitClaims(product, task.brief),
+        ...(String(product.selling_points || "").split(/[、,，]/))
+      ]),
+      product_library: {
+        name: product.name,
+        brand: product.brand || "",
+        selling_points: product.selling_points || product.claim_summary || "",
+        compliance_notes: product.compliance_notes || "",
+        cta_notes: product.cta_notes || "",
+        material_summary: product.claim_summary || "",
+        latest_intake_run: product.latest_intake_run || ""
+      },
+      copy_parameters: {
+        main_claim: task.brief.main_claim || "",
+        offer: task.brief.offer || copyConfig.default_offer || "",
+        forbidden_terms: task.brief.forbidden || copyConfig.forbidden_terms || "",
+        cta_policy: task.brief.cta_policy || copyConfig.cta_policy || "",
+        style: task.brief.style || copyConfig.default_style || "",
+        audience: task.brief.audience || copyConfig.default_audience || ""
+      },
       constraints: uniqueStrings([
         task.brief.forbidden,
+        copyConfig.forbidden_terms,
+        product.compliance_notes,
         "不写医疗或绝对化功效",
         "不说百分百防水、不脱妆一整天等过强承诺",
         "不把原素材 ASR/OCR 逐字搬运成文案",
@@ -528,6 +604,8 @@ export class ProductionRecipe {
   async writeCopyBrief({ task, product, jobId }) {
     const taskBriefPath = path.join(task.task_dir, "task_brief.json");
     const copyBriefPath = path.join(task.task_dir, "copy_brief.json");
+    const intakeRun = getIntakeRunDir(this.storeService.workspaceRoot, product);
+    const shotIndex = path.join(intakeRun, "shot_index.json");
     const env = await this.buildModelEnv(["copy_generation"]);
     await this.runCommand({
       task,
@@ -539,6 +617,8 @@ export class ProductionRecipe {
         taskBriefPath,
         "--task-dir",
         task.task_dir,
+        "--shot-index",
+        shotIndex,
         "--target-duration-s",
         String(task.target_duration_s || 45),
         "--variant",
@@ -565,41 +645,68 @@ export class ProductionRecipe {
   async runTts({ task, product, jobId }) {
     const voiceScriptPath = path.join(task.task_dir, "voice_script.json");
     const env = await this.buildModelEnv(["tts_primary"]);
+    const config = taskConfig(task);
+    const tts = config.tts || {};
+    const voiceModify = tts.voice_modify || {};
+    const args = [
+      path.join(this.storeService.workspaceRoot, "scripts", "voah_run_oneshot_minimax_tts.py"),
+      "--voice-script",
+      voiceScriptPath,
+      "--task-dir",
+      task.task_dir,
+      "--provider",
+      optionalString(tts.provider) || "minimax-official",
+      "--model",
+      optionalString(tts.model) || "speech-2.8-hd",
+      "--voice-id",
+      optionalString(tts.voice_id) || "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
+      "--speed",
+      numberArg(tts.speed, 1.1),
+      "--vol",
+      numberArg(tts.vol, 1),
+      "--voice-setting-pitch",
+      intArg(tts.pitch, 0),
+      "--emotion",
+      optionalString(tts.emotion) || "happy",
+      "--modify-pitch",
+      intArg(voiceModify.pitch, 20),
+      "--modify-intensity",
+      intArg(voiceModify.intensity, 20),
+      "--modify-timbre",
+      intArg(voiceModify.timbre, 0),
+      "--subtitle-type",
+      optionalString(tts.subtitle_type) || "sentence",
+      "--output-format",
+      optionalString(tts.output_format) || "url"
+    ];
+    args.push(tts.subtitle_enable === false ? "--no-subtitle-enable" : "--subtitle-enable");
     await this.runCommand({
       task,
       jobId,
       command: "python3",
-      args: [
-        path.join(this.storeService.workspaceRoot, "scripts", "voah_run_oneshot_minimax_tts.py"),
-        "--voice-script",
-        voiceScriptPath,
-        "--task-dir",
-        task.task_dir,
-        "--provider",
-        "minimax-official",
-        "--model",
-        "speech-2.8-hd",
-        "--voice-id",
-        "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
-        "--speed",
-        "1.1",
-        "--emotion",
-        "happy",
-        "--modify-pitch",
-        "20",
-        "--modify-intensity",
-        "20",
-        "--modify-timbre",
-        "0",
-        "--subtitle-enable",
-        "--subtitle-type",
-        "sentence"
-      ],
+      args,
       env
     });
     const ttsAudioPath = path.join(task.task_dir, "tts_audio.json");
     const payload = await readJson(ttsAudioPath);
     payload.product = payload.product?.name ? payload.product : productMeta(product);
+    payload.desktop_config = {
+      provider: optionalString(tts.provider) || "minimax-official",
+      model: optionalString(tts.model) || "speech-2.8-hd",
+      voice_id: optionalString(tts.voice_id) || "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
+      voice_label: optionalString(tts.voice_label),
+      speed: safeNumber(tts.speed, 1.1),
+      vol: safeNumber(tts.vol, 1),
+      pitch: Math.round(safeNumber(tts.pitch, 0)),
+      emotion: optionalString(tts.emotion) || "happy",
+      voice_modify: {
+        pitch: Math.round(safeNumber(voiceModify.pitch, 20)),
+        intensity: Math.round(safeNumber(voiceModify.intensity, 20)),
+        timbre: Math.round(safeNumber(voiceModify.timbre, 0))
+      },
+      subtitle_enable: tts.subtitle_enable !== false,
+      subtitle_type: optionalString(tts.subtitle_type) || "sentence"
+    };
     await writeJson(ttsAudioPath, payload);
     return { path: ttsAudioPath, payload };
   }
@@ -638,7 +745,7 @@ export class ProductionRecipe {
         "--pool-k",
         "36",
         "--max-clips-per-section",
-        "3",
+        "6",
         "--selection-planner",
         "auto",
         "--width",
@@ -662,23 +769,39 @@ export class ProductionRecipe {
   }
 
   async runCaptionPlan({ task, jobId }) {
+    const config = taskConfig(task);
+    const subtitle = config.subtitle || {};
+    const args = [
+      path.join(this.storeService.workspaceRoot, "scripts", "voah_build_caption_plan.py"),
+      "--audio-sections",
+      path.join(task.task_dir, "audio_sections.json"),
+      "--task-dir",
+      task.task_dir,
+      "--preset",
+      optionalString(subtitle.preset) || "songti_white_gold_lower"
+    ];
+    const fontSource = optionalString(subtitle.font_source);
+    if (fontSource) {
+      args.push("--font-source", fontSource);
+    }
+    args.push(subtitle.split_punctuation === false ? "--no-split-punctuation" : "--split-punctuation");
     await this.runCommand({
       task,
       jobId,
       command: "python3",
-      args: [
-        path.join(this.storeService.workspaceRoot, "scripts", "voah_build_caption_plan.py"),
-        "--audio-sections",
-        path.join(task.task_dir, "audio_sections.json"),
-        "--task-dir",
-        task.task_dir,
-        "--preset",
-        "songti_white_gold_lower",
-        "--split-punctuation"
-      ]
+      args
     });
     const captionPlanPath = path.join(task.task_dir, "caption_plan.json");
     const payload = await readJson(captionPlanPath);
+    payload.desktop_config = {
+      subtitle: {
+        preset: optionalString(subtitle.preset) || "songti_white_gold_lower",
+        preset_label: optionalString(subtitle.preset_label),
+        font_source: fontSource || payload.style?.font_source || "",
+        split_punctuation: subtitle.split_punctuation !== false
+      }
+    };
+    await writeJson(captionPlanPath, payload);
     return { path: captionPlanPath, payload };
   }
 
@@ -710,15 +833,13 @@ export class ProductionRecipe {
     await this.runCommand({
       task,
       jobId,
-      command: "npx",
-      args: ["hyperframes", "lint", "."],
+      ...hyperframesCommandArgs(["lint", "."]),
       cwd: projectDir
     });
     await this.runCommand({
       task,
       jobId,
-      command: "npx",
-      args: ["hyperframes", "inspect", ".", "--samples", "12", "--json", "--browser-timeout", "180"],
+      ...hyperframesCommandArgs(["inspect", ".", "--samples", "12", "--json"]),
       cwd: projectDir,
       env: hyperframesTimeoutEnv
     });
@@ -771,7 +892,6 @@ export class ProductionRecipe {
   async renderHyperframesWithRetry({ task, jobId, projectDir }) {
     const output = path.join(projectDir, "final_subtitled.mp4");
     const baseArgs = [
-      "hyperframes",
       "render",
       ".",
       "--output",
@@ -801,8 +921,7 @@ export class ProductionRecipe {
       await this.runCommand({
         task,
         jobId,
-        command: "npx",
-        args: baseArgs,
+        ...hyperframesCommandArgs(baseArgs),
         cwd: projectDir,
         env
       });
@@ -815,12 +934,11 @@ export class ProductionRecipe {
       await this.runCommand({
         task,
         jobId,
-        command: "npx",
-        args: [...baseArgs, "--no-browser-gpu", "--no-low-memory-mode"],
+        ...hyperframesCommandArgs(baseArgs.filter((item) => item !== "--no-low-memory-mode").concat("--low-memory-mode")),
         cwd: projectDir,
         env: {
           ...env,
-          PRODUCER_LOW_MEMORY_MODE: "false"
+          PRODUCER_LOW_MEMORY_MODE: "true"
         }
       });
     }

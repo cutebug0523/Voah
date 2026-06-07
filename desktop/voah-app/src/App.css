@@ -8,7 +8,9 @@
 }
 
 .shell {
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
   background: #f3f5f4;
@@ -22,6 +24,7 @@
   display: flex;
   flex-direction: column;
   gap: 28px;
+  min-height: 0;
 }
 
 .brand {
@@ -69,6 +72,20 @@
   font-size: 15px;
   cursor: pointer;
   text-align: left;
+  min-width: 0;
+}
+
+.nav-icon {
+  width: 18px;
+  flex: 0 0 auto;
+  text-align: center;
+}
+
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar button.active,
@@ -79,14 +96,20 @@
 
 .main {
   min-width: 0;
-  padding: 28px;
+  min-height: 0;
+  padding: 22px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .topbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 22px;
+  gap: 16px;
+  margin-bottom: 16px;
+  min-width: 0;
 }
 
 .topbar p,
@@ -97,7 +120,7 @@
 
 .topbar h1 {
   margin: 4px 0 0;
-  font-size: 30px;
+  font-size: 28px;
 }
 
 .top-actions {
@@ -129,13 +152,17 @@ button.primary {
 
 .page {
   display: grid;
-  gap: 18px;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+  align-content: start;
 }
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
 }
 
 .metric,
@@ -146,7 +173,7 @@ button.primary {
 }
 
 .metric {
-  padding: 18px;
+  padding: 14px;
 }
 
 .metric span {
@@ -156,8 +183,8 @@ button.primary {
 
 .metric strong {
   display: block;
-  margin-top: 12px;
-  font-size: 32px;
+  margin-top: 8px;
+  font-size: 28px;
 }
 
 .metric.good strong {
@@ -177,7 +204,8 @@ button.primary {
 }
 
 .panel {
-  padding: 18px;
+  padding: 16px;
+  min-width: 0;
 }
 
 .panel-head {
@@ -185,7 +213,12 @@ button.primary {
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+  min-width: 0;
+}
+
+.panel-head > div {
+  min-width: 0;
 }
 
 .panel h2,
@@ -194,13 +227,14 @@ button.primary {
 }
 
 .panel h3 {
-  margin-top: 22px;
-  margin-bottom: 12px;
+  margin-top: 18px;
+  margin-bottom: 10px;
 }
 
 .layout {
   display: grid;
-  gap: 18px;
+  gap: 14px;
+  min-height: 0;
 }
 
 .layout.two {
@@ -218,6 +252,14 @@ button.primary {
 .artifact-list {
   display: grid;
   gap: 10px;
+  min-height: 0;
+}
+
+.layout.products > .panel:first-child .product-list,
+.layout.tasks > .panel:first-child .task-list {
+  max-height: calc(100dvh - 190px);
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .product-row,
@@ -230,6 +272,7 @@ button.primary {
   align-items: center;
   gap: 12px;
   border-color: #dde4e0;
+  min-width: 0;
 }
 
 .product-row.selected,
@@ -243,6 +286,10 @@ button.primary {
 .task-row strong,
 .task-row small {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .product-row small,
@@ -256,6 +303,13 @@ button.primary {
   margin-bottom: 8px;
 }
 
+.table-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -265,6 +319,9 @@ button.primary {
   padding: 0 10px;
   font-size: 13px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .badge.good {
@@ -324,6 +381,21 @@ button.primary {
   color: #17211e;
 }
 
+.field select,
+.field textarea {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  color: #17211e;
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
 .action-row {
   display: flex;
   gap: 10px;
@@ -357,6 +429,7 @@ button.primary {
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .artifact-row {
@@ -368,6 +441,12 @@ button.primary {
   color: #68746f;
   margin-top: 4px;
   overflow-wrap: anywhere;
+}
+
+.artifact-row > div,
+.job-row > span,
+.check-item > span {
+  min-width: 0;
 }
 
 .qa-box {
@@ -390,7 +469,7 @@ button.primary {
 
 .output-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 14px;
 }
 
@@ -399,11 +478,23 @@ button.primary {
   border-radius: 8px;
   padding: 14px;
   display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
   gap: 10px;
+  align-items: start;
+}
+
+.output-card h3,
+.output-card p,
+.output-card small,
+.output-card .badge,
+.output-card button {
+  grid-column: 2;
 }
 
 .output-card h3 {
-  margin-top: 2px;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .output-card small {
@@ -412,6 +503,8 @@ button.primary {
 }
 
 .output-thumb {
+  grid-row: 1 / span 5;
+  width: 72px;
   aspect-ratio: 9 / 16;
   border-radius: 8px;
   background: linear-gradient(145deg, #22302c, #60756c);
@@ -429,7 +522,7 @@ button.primary {
 
 .model-key-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(128px, auto) minmax(180px, 280px) 76px 76px;
+  grid-template-columns: minmax(180px, 1fr) 92px minmax(160px, 260px) 72px 72px;
   align-items: center;
   gap: 10px;
   border: 1px solid #dde4e0;
@@ -469,13 +562,44 @@ button.primary {
 }
 
 .empty {
-  min-height: 150px;
+  min-height: 132px;
   display: grid;
   place-items: center;
   text-align: center;
   color: #68746f;
   border: 1px dashed #c8d0cc;
   border-radius: 8px;
+}
+
+.settings-panel {
+  overflow: hidden;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 0.9fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.settings-block {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-block h3 {
+  margin: 0 0 2px;
+}
+
+.toggle-row {
+  border: 1px solid #dde4e0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfb;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .empty strong {
@@ -492,18 +616,37 @@ button.primary {
   }
 
   .brand div,
-  .sidebar button:not(.active) {
-    font-size: 0;
+  .nav-label {
+    display: none;
   }
 
+  .sidebar {
+    padding: 24px 14px;
+  }
+
+  .sidebar button {
+    justify-content: center;
+    padding: 12px 8px;
+  }
+}
+
+@media (max-width: 960px) {
   .layout.two,
   .layout.products,
   .layout.tasks,
-  .metric-grid,
   .detail-grid,
   .form-grid,
+  .settings-grid,
   .output-grid,
   .model-key-row {
     grid-template-columns: 1fr;
+  }
+
+  .output-card {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .output-thumb {
+    width: 64px;
   }
 }

@@ -27,10 +27,30 @@ function assertKnownModules(moduleIds) {
   }
 }
 
+async function readEnvFile(filePath) {
+  try {
+    const text = await readFile(filePath, "utf8");
+    return Object.fromEntries(
+      text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#") && line.includes("="))
+        .map((line) => {
+          const [key, ...rest] = line.split("=");
+          return [key.trim(), rest.join("=").trim().replace(/^['"]|['"]$/g, "")];
+        })
+        .filter(([key, value]) => key && value)
+    );
+  } catch {
+    return {};
+  }
+}
+
 export class ModelKeyService {
-  constructor({ appDataDir }) {
+  constructor({ appDataDir, envPaths = [] }) {
     this.storeDir = path.join(appDataDir, "voah-mvp");
     this.keysPath = path.join(this.storeDir, "model-keys.local.json");
+    this.envPaths = envPaths;
   }
 
   async ensureDir() {
@@ -51,6 +71,21 @@ export class ModelKeyService {
     }
   }
 
+  async readEnvSecrets() {
+    const merged = {};
+    for (const envPath of this.envPaths) {
+      Object.assign(merged, await readEnvFile(envPath));
+    }
+    return merged;
+  }
+
+  async readAvailableSecrets() {
+    return {
+      ...(await this.readEnvSecrets()),
+      ...(await this.readSecrets())
+    };
+  }
+
   getPaths() {
     return {
       key_store_dir: this.storeDir,
@@ -69,7 +104,7 @@ export class ModelKeyService {
   }
 
   async getPublicConfig() {
-    const secrets = await this.readSecrets();
+    const secrets = await this.readAvailableSecrets();
     return {
       modules: publicModelModules().map((item) => {
         const envKey = keyIdForModule(item.id);
@@ -132,7 +167,7 @@ export class ModelKeyService {
 
   async buildPipelineEnv(moduleIds = []) {
     const resolvedModuleIds = this.moduleIdsOrAll(moduleIds);
-    const secrets = await this.readSecrets();
+    const secrets = await this.readAvailableSecrets();
     const requested = new Set(MODEL_MODULES.filter((item) => resolvedModuleIds.includes(item.id)).map((item) => item.envKey));
     const env = runtimeEnvForModuleIds(resolvedModuleIds);
     for (const envKey of requested) {
@@ -150,7 +185,7 @@ export class ModelKeyService {
 
   async validateRequiredKeys(moduleIds = []) {
     const resolvedModuleIds = this.moduleIdsOrAll(moduleIds);
-    const secrets = await this.readSecrets();
+    const secrets = await this.readAvailableSecrets();
     const modules = MODEL_MODULES.filter((item) => resolvedModuleIds.includes(item.id));
     const seenEnvKeys = new Set();
     const missing = [];

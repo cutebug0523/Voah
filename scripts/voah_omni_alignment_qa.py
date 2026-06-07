@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -98,16 +99,24 @@ def cut_clip(video: Path, output: Path, start_s: float, end_s: float) -> None:
             f"{duration:.3f}",
             "-i",
             str(video),
+            "-vf",
+            "scale=360:-2,fps=12,format=yuv420p",
             "-c:v",
             "libx264",
             "-preset",
             "veryfast",
             "-crf",
-            "20",
+            "30",
             "-c:a",
             "aac",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
             "-b:a",
-            "128k",
+            "48k",
+            "-movflags",
+            "+faststart",
             "-avoid_negative_ts",
             "make_zero",
             str(output),
@@ -149,22 +158,33 @@ def parse_sse_line(line: bytes) -> dict[str, Any] | None:
         return {"raw": payload}
 
 
-def dashscope_upload(video_path: Path, model: str) -> str:
+def dashscope_upload(video_path: Path, model: str, timeout_s: int = 600, retries: int = 2) -> str:
     cli = os.path.expanduser("~/Library/Python/3.9/bin/dashscope")
-    proc = subprocess.run(
-        [cli, "oss", "upload", "-f", str(video_path), "-m", model],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        env={**os.environ},
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr[-1000:])
-    oss_url = extract_oss_url(proc.stdout or "", proc.stderr or "")
-    if not oss_url:
-        raise RuntimeError("cannot extract oss url from dashscope upload")
-    return oss_url
+    last_error = ""
+    for attempt in range(1, retries + 2):
+        try:
+            proc = subprocess.run(
+                [cli, "oss", "upload", "-f", str(video_path), "-m", model],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                env={**os.environ},
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_error = f"dashscope upload timeout after {timeout_s}s on attempt {attempt}: {exc}"
+            time.sleep(min(2 * attempt, 8))
+            continue
+        if proc.returncode != 0:
+            last_error = proc.stderr[-1000:] or proc.stdout[-1000:]
+            time.sleep(min(2 * attempt, 8))
+            continue
+        oss_url = extract_oss_url(proc.stdout or "", proc.stderr or "")
+        if oss_url:
+            return oss_url
+        last_error = "cannot extract oss url from dashscope upload"
+        time.sleep(min(2 * attempt, 8))
+    raise RuntimeError(last_error)
 
 
 def extract_oss_url(stdout: str, stderr: str) -> str:
@@ -358,6 +378,14 @@ def extract_json_object(text: str) -> dict[str, Any]:
         parsed = json.loads(raw[start : end + 1])
         if isinstance(parsed, dict):
             return parsed
+    if start >= 0:
+        candidate = raw[start:]
+        missing_braces = candidate.count("{") - candidate.count("}")
+        repaired = candidate + ("}" * max(1, missing_braces))
+        parsed = json.loads(repaired)
+        if isinstance(parsed, dict):
+            parsed["_json_repair"] = "appended_missing_closing_brace"
+            return parsed
     raise ValueError("response is not JSON object")
 
 
@@ -400,6 +428,8 @@ def main() -> int:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--max-sections", type=int, default=0)
     parser.add_argument("--timeout-s", type=int, default=600)
+    parser.add_argument("--upload-timeout-s", type=int, default=600)
+    parser.add_argument("--upload-retries", type=int, default=2)
     parser.add_argument("--skip-upload", action="store_true")
     args = parser.parse_args()
 
@@ -414,6 +444,18 @@ def main() -> int:
     clips_dir = output_dir / "section_clips"
     frames_dir = output_dir / "section_frames"
     omni_dir = output_dir / "omni_sections"
+    if output_dir.exists():
+        for child in (clips_dir, frames_dir, omni_dir):
+            if child.exists():
+                shutil.rmtree(child)
+        for stale_file in [
+            "alignment_inputs.json",
+            "omni_alignment_results.json",
+            "OMNI_ALIGNMENT_QA_REPORT.md",
+        ]:
+            stale_path = output_dir / stale_file
+            if stale_path.exists():
+                stale_path.unlink()
     clips_dir.mkdir(parents=True, exist_ok=True)
     frames_dir.mkdir(parents=True, exist_ok=True)
     omni_dir.mkdir(parents=True, exist_ok=True)
@@ -451,7 +493,7 @@ def main() -> int:
         section_omni_dir.mkdir(parents=True, exist_ok=True)
         video_url = str(clip_path)
         if not args.skip_upload:
-            video_url = dashscope_upload(clip_path, args.model)
+            video_url = dashscope_upload(clip_path, args.model, args.upload_timeout_s, args.upload_retries)
         prompt = build_prompt(section, timeline_by_id.get(section_id))
         try:
             parsed, meta = call_omni(video_url, prompt, section_omni_dir, args.model, args.base_url, args.timeout_s)

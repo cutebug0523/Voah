@@ -99,6 +99,21 @@ export const RECIPE_STAGES = [
 
 export const DEFAULT_PRODUCTS = [
   {
+    id: "product_huaxizi_qidian",
+    name: "花西子气垫",
+    brand: "花西子",
+    slug: "huaxizi-qidian",
+    source_folder: "cache/voah_video_intake/huaxizi-qidian",
+    status: "ready",
+    material_status: "可生产",
+    claim_summary: "轻薄服帖、自然柔焦、遇水稳定、礼盒陈列",
+    selling_points: "轻薄服帖、自然柔焦、遇水稳定、礼盒陈列、通勤快速补妆",
+    compliance_notes: "不承诺医学防晒或绝对不脱妆，不夸大遮瑕效果",
+    cta_notes: "礼盒、活动价、限时福利放在卖点和证明之后",
+    latest_intake_run: "20260607_013444_selected6_scene_candidates_v1",
+    updated_at: "2026-06-07T03:12:00+08:00"
+  },
+  {
     id: "product_fangshai_qidian",
     name: "防晒气垫",
     slug: "fangshai-qidian",
@@ -106,6 +121,9 @@ export const DEFAULT_PRODUCTS = [
     status: "ready",
     material_status: "可生产",
     claim_summary: "自然气色、防晒持妆、防水防汗、通勤补妆",
+    selling_points: "自然气色、防晒持妆、防水防汗、通勤补妆、一盒少带东西",
+    compliance_notes: "不写百分百防水、防汗一整天、不承诺医疗或绝对化功效",
+    cta_notes: "活动价、补妆场景、防晒气垫一盒搞定放在后段",
     latest_intake_run: "20260603_225800_merged5_scene_candidates_v1",
     updated_at: "2026-06-05T20:55:59+08:00"
   },
@@ -117,17 +135,113 @@ export const DEFAULT_PRODUCTS = [
     status: "needs_intake",
     material_status: "需处理素材",
     claim_summary: "待整理",
+    selling_points: "待整理",
+    compliance_notes: "待整理",
+    cta_notes: "待整理",
     latest_intake_run: null,
     updated_at: "2026-06-01T10:00:00+08:00"
   }
 ];
 
+export const TTS_VOICE_OPTIONS = [
+  {
+    id: "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
+    label: "带货女声基线",
+    provider: "minimax-official"
+  },
+  {
+    id: "Chinese (Mandarin)_Warm_Bestie",
+    label: "Warm Bestie",
+    provider: "minimax-official"
+  },
+  {
+    id: "Chinese (Mandarin)_Warm_Girl",
+    label: "Warm Girl",
+    provider: "minimax-official"
+  },
+  {
+    id: "Chinese (Mandarin)_Sweet_Lady",
+    label: "Sweet Lady",
+    provider: "minimax-official"
+  },
+  {
+    id: "Chinese (Mandarin)_Crisp_Girl",
+    label: "Crisp Girl",
+    provider: "minimax-official"
+  }
+];
+
+export const SUBTITLE_PRESETS = [
+  {
+    id: "songti_white_gold_lower",
+    label: "宋体白金下方"
+  },
+  {
+    id: "live_bar_lower",
+    label: "直播条下方"
+  }
+];
+
 export const DEFAULT_SETTINGS = {
   workspace_root: "/Users/noah/混剪",
+  copy: {
+    default_style: "轻快、口语、种草感，但不过度承诺",
+    default_audience: "夏天出门需要补妆、补防晒、想少带东西的人",
+    default_offer: "今日活动价",
+    forbidden_terms: "不夸大功效，不承诺医疗效果",
+    cta_policy: "先完成产品介绍、卖点和证明，再给活动与购买动作"
+  },
+  tts: {
+    provider: "minimax-official",
+    model: "speech-2.8-hd",
+    voice_id: "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
+    voice_label: "带货女声基线",
+    speed: 1.1,
+    vol: 1,
+    pitch: 0,
+    emotion: "happy",
+    voice_modify: {
+      pitch: 20,
+      intensity: 20,
+      timbre: 0
+    },
+    subtitle_enable: true,
+    subtitle_type: "sentence",
+    output_format: "url"
+  },
+  subtitle: {
+    preset: "songti_white_gold_lower",
+    preset_label: "宋体白金下方",
+    font_source: "/System/Library/Fonts/Supplemental/Songti.ttc",
+    split_punctuation: true
+  },
   tts_voice_preset: "MiniMax 女声 happy / speed 1.1",
   subtitle_preset: "方案 1：底部白字关键词高亮",
   provider_status: "已配置本机私有 key，不在应用中显示明文"
 };
+
+export function mergeVoahSettings(settings = {}) {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    copy: {
+      ...DEFAULT_SETTINGS.copy,
+      ...(settings.copy || {})
+    },
+    tts: {
+      ...DEFAULT_SETTINGS.tts,
+      ...(settings.tts || {}),
+      voice_modify: {
+        ...DEFAULT_SETTINGS.tts.voice_modify,
+        ...(settings.tts?.voice_modify || {})
+      }
+    },
+    subtitle: {
+      ...DEFAULT_SETTINGS.subtitle,
+      ...(settings.subtitle || {})
+    }
+  };
+}
 
 export function createTaskTitle(product, brief) {
   const platform = brief.target_platform || "抖音";

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("voah", {
   runTask: (payload) => ipcRenderer.invoke("voah:runTask", payload),
   retryTask: (payload) => ipcRenderer.invoke("voah:retryTask", payload),
   revealPath: (path) => ipcRenderer.invoke("voah:revealPath", path),
+  saveSettings: (payload) => ipcRenderer.invoke("voah:saveSettings", payload),
   saveModelKey: (payload) => ipcRenderer.invoke("voah:saveModelKey", payload),
   deleteModelKey: (payload) => ipcRenderer.invoke("voah:deleteModelKey", payload),
   validateModelKeys: (payload) => ipcRenderer.invoke("voah:validateModelKeys", payload)

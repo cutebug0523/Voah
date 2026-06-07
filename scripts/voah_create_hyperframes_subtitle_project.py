@@ -44,12 +44,78 @@ def rel(path: Path, base: Path) -> str:
     return path.relative_to(base).as_posix()
 
 
-def caption_html(caption: dict[str, Any]) -> str:
+def caption_class_for_preset(preset: str) -> str:
+    if preset == "live_bar_lower":
+        return "live-bar-caption"
+    return "songti-caption"
+
+
+def style_css_for_preset(preset: str) -> str:
+    if preset == "live_bar_lower":
+        return """
+      .live-bar-caption {
+        position: absolute;
+        left: 46px;
+        right: 46px;
+        bottom: 246px;
+        min-height: 94px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 18px 30px 20px;
+        border-radius: 8px;
+        font-family: "VoahSongti", serif;
+        font-size: 44px;
+        line-height: 1.12;
+        font-weight: 900;
+        text-align: center;
+        letter-spacing: 0;
+        color: #fffdf4;
+        background: rgba(18, 22, 20, 0.82);
+        border: 2px solid rgba(244, 209, 155, 0.78);
+        box-shadow:
+          0 10px 26px rgba(0, 0, 0, 0.36),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+        text-shadow: 2px 3px 5px rgba(0, 0, 0, 0.62);
+      }
+
+      .live-bar-caption .highlight {
+        color: #f6cf82;
+      }
+"""
+    return """
+      .songti-caption {
+        position: absolute;
+        left: 34px;
+        right: 34px;
+        bottom: 260px;
+        font-family: "VoahSongti", serif;
+        font-size: 54px;
+        line-height: 1.08;
+        font-weight: 900;
+        text-align: center;
+        letter-spacing: 0;
+        color: #fffdf4;
+        -webkit-text-stroke: 2.2px rgba(16, 16, 16, 0.94);
+        text-shadow:
+          0 2px 0 rgba(255, 255, 255, 0.35),
+          3px 5px 7px rgba(0, 0, 0, 0.58),
+          0 0 10px rgba(0, 0, 0, 0.22);
+      }
+
+      .songti-caption .highlight {
+        color: #f4d19b;
+      }
+"""
+
+
+def caption_html(caption: dict[str, Any], preset: str) -> str:
     start = float(caption.get("start_s") or 0)
     duration = max(0.01, float(caption.get("duration_s") or 0))
     text = html.escape(str(caption.get("text") or ""))
     keywords = ",".join(html.escape(str(item)) for item in caption.get("keywords") or [])
     order = int(caption.get("caption_order") or 0)
+    caption_class = caption_class_for_preset(preset)
     return f'''      <div
         id="caption-{order:03d}"
         class="clip caption-clip"
@@ -58,7 +124,7 @@ def caption_html(caption: dict[str, Any]) -> str:
         data-track-index="2"
       >
         <div
-          class="songti-caption"
+          class="{caption_class}"
           data-highlight-text="{text}"
           data-highlight-keywords="{keywords}"
         ></div>
@@ -69,7 +135,9 @@ def build_index_html(project_dir: Path, base_video: Path, voice_audio: Path, pla
     duration = float(plan.get("summary", {}).get("total_duration_s") or 0)
     width = int(plan.get("canvas", {}).get("width") or 720)
     height = int(plan.get("canvas", {}).get("height") or 1280)
-    captions = "\n".join(caption_html(caption) for caption in plan.get("captions") or [])
+    preset = str(plan.get("style", {}).get("preset") or "songti_white_gold_lower")
+    captions = "\n".join(caption_html(caption, preset) for caption in plan.get("captions") or [])
+    preset_css = style_css_for_preset(preset)
     return f'''<!doctype html>
 <html>
   <head>
@@ -125,28 +193,7 @@ def build_index_html(project_dir: Path, base_video: Path, voice_audio: Path, pla
         pointer-events: none;
       }}
 
-      .songti-caption {{
-        position: absolute;
-        left: 34px;
-        right: 34px;
-        bottom: 260px;
-        font-family: "VoahSongti", serif;
-        font-size: 54px;
-        line-height: 1.08;
-        font-weight: 900;
-        text-align: center;
-        letter-spacing: 0;
-        color: #fffdf4;
-        -webkit-text-stroke: 2.2px rgba(16, 16, 16, 0.94);
-        text-shadow:
-          0 2px 0 rgba(255, 255, 255, 0.35),
-          3px 5px 7px rgba(0, 0, 0, 0.58),
-          0 0 10px rgba(0, 0, 0, 0.22);
-      }}
-
-      .songti-caption .highlight {{
-        color: #f4d19b;
-      }}
+{preset_css}
     </style>
   </head>
   <body>
@@ -243,6 +290,7 @@ def main() -> int:
     fonts_dir.mkdir(parents=True, exist_ok=True)
 
     plan = load_json(caption_plan)
+    preset = str(plan.get("style", {}).get("preset") or "songti_white_gold_lower")
     font_source = as_abs(plan.get("style", {}).get("font_source") or "")
     if not font_source.exists():
         raise FileNotFoundError(f"font not found: {font_source}")
@@ -253,11 +301,12 @@ def main() -> int:
     shutil.copy2(voice_wav_source, voice_audio)
     shutil.copy2(font_source, fonts_dir / "Songti.ttc")
 
-    design = """# Voah Subtitle Burn
+    preset_label = "直播间口播条，下方安全区" if preset == "live_bar_lower" else "宋体白金描边，下方安全区"
+    design = f"""# Voah Subtitle Burn
 
 ## Style Prompt
 
-美妆带货短视频字幕烧录工程。字幕采用宋体白金描边，固定在下方安全区，突出重点词，但不遮挡产品和人脸中心。
+美妆带货短视频字幕烧录工程。字幕采用{preset_label}，突出重点词，但不遮挡产品和人脸中心。
 
 ## Colors
 
@@ -268,7 +317,8 @@ def main() -> int:
 ## Typography
 
 - Font: bundled `fonts/Songti.ttc` as `VoahSongti`.
-- Lower-safe-area captions, 54px, no negative letter spacing.
+- Preset: `{preset}`.
+- Lower-safe-area captions, no negative letter spacing.
 
 ## What NOT to Do
 

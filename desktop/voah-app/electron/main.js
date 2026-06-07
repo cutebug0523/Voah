@@ -18,7 +18,13 @@ function getServices() {
       appDataDir: app.getPath("userData"),
       workspaceRoot
     });
-    modelKeyService = new ModelKeyService({ appDataDir: app.getPath("userData") });
+    modelKeyService = new ModelKeyService({
+      appDataDir: app.getPath("userData"),
+      envPaths: [
+        path.join(workspaceRoot, ".env"),
+        path.join(app.getPath("home"), ".voah", "video_intake", ".env")
+      ]
+    });
     productionRecipe = new ProductionRecipe({ storeService, modelKeyService });
   }
   return { storeService, productionRecipe, modelKeyService };
@@ -80,6 +86,40 @@ ipcMain.handle("voah:revealPath", async (_event, targetPath) => {
   }
   await shell.showItemInFolder(targetPath);
   return { ok: true };
+});
+
+ipcMain.handle("voah:saveSettings", async (_event, payload = {}) => {
+  const { storeService: store } = getServices();
+  const next = await store.mutate(async (draft) => {
+    draft.settings = {
+      ...(draft.settings || {}),
+      ...(payload.settings || {})
+    };
+    if (payload.settings?.copy) {
+      draft.settings.copy = {
+        ...(draft.settings.copy || {}),
+        ...payload.settings.copy
+      };
+    }
+    if (payload.settings?.tts) {
+      draft.settings.tts = {
+        ...(draft.settings.tts || {}),
+        ...payload.settings.tts,
+        voice_modify: {
+          ...(draft.settings.tts?.voice_modify || {}),
+          ...(payload.settings.tts.voice_modify || {})
+        }
+      };
+    }
+    if (payload.settings?.subtitle) {
+      draft.settings.subtitle = {
+        ...(draft.settings.subtitle || {}),
+        ...payload.settings.subtitle
+      };
+    }
+    return draft;
+  });
+  return { schema_version: "voah-save-settings-response.v1", settings: next.settings };
 });
 
 ipcMain.handle("voah:saveModelKey", async (_event, payload) => {

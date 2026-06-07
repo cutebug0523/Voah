@@ -17,6 +17,7 @@ from typing import Any
 
 
 SEARCH_SCRIPT = Path("/Users/noah/.codex/skills/voah-shot-retrieval/scripts/search.py")
+MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION = 2
 
 DOMAIN_TERMS = [
     "SPF50+",
@@ -32,6 +33,13 @@ DOMAIN_TERMS = [
     "防水",
     "防汗",
     "出汗",
+    "脱妆",
+    "卡粉",
+    "卡纹",
+    "斑驳",
+    "油光",
+    "泛油",
+    "细纹",
     "遇水",
     "泼水",
     "纸巾",
@@ -78,6 +86,12 @@ TERM_ALIASES = {
     "防晒": ["防晒值", "防晒力"],
     "遇水": ["泼水", "防水"],
     "出汗": ["汗", "高温"],
+    "脱妆": ["斑驳", "花妆", "掉妆"],
+    "卡粉": ["卡纹", "细纹"],
+    "卡纹": ["卡粉", "细纹"],
+    "斑驳": ["脱妆", "花妆"],
+    "油光": ["泛油", "出油"],
+    "泛油": ["油光", "出油"],
     "海边": ["海滩", "沙滩", "海景"],
     "湿发": ["水珠", "浴巾"],
     "车里": ["车内", "车上", "车内补妆"],
@@ -88,6 +102,48 @@ TERM_ALIASES = {
     "赠品": ["送"],
     "618": ["六一八", "大促"],
 }
+
+OPENING_SOLUTION_PROOF_TERMS = [
+    "倒水",
+    "泼水",
+    "遇水",
+    "防水",
+    "防汗",
+    "测试",
+    "擦拭",
+    "妆容未花",
+    "不渗水",
+    "吸水",
+    "水滴",
+    "实证",
+    "验证",
+]
+
+OPENING_ALLOWED_SOLUTION_TERMS = [
+    "遇水",
+    "防水",
+    "防汗",
+    "倒水",
+    "泼水",
+    "测试",
+    "擦拭",
+    "稳定",
+    "持妆证明",
+]
+
+CTA_PRODUCT_USE_TERMS = [
+    "上妆",
+    "轻拍",
+    "粉扑",
+    "脸颊",
+    "额头",
+    "下巴",
+    "眼下",
+    "鼻翼",
+    "妆效",
+    "微笑示意",
+    "使用效果",
+]
 
 
 def iso_now() -> str:
@@ -222,6 +278,15 @@ def text_blob(record: dict[str, Any]) -> str:
         " ".join(record.get("timeline_roles") or []),
         record.get("shot_type", ""),
     ]
+    return " ".join(str(part) for part in parts if part)
+
+
+def candidate_full_text_blob(record: dict[str, Any]) -> str:
+    parts = [text_blob(record)]
+    for child in record.get("child_physical_shots") or []:
+        if isinstance(child, dict):
+            parts.append(child_text_blob(child))
+            parts.append(child_parent_context_blob(child))
     return " ".join(str(part) for part in parts if part)
 
 
@@ -492,6 +557,42 @@ def required_visual_terms(section: dict[str, Any]) -> list[str]:
 
 def term_in_blob(term: str, blob: str) -> bool:
     return any(normalized(variant) in blob for variant in term_variants(term))
+
+
+def section_is_opening_without_solution(section: dict[str, Any]) -> bool:
+    if str(section.get("role") or "") != "opening":
+        return False
+    value = " ".join(
+        [
+            str(section.get("required_visual") or ""),
+            str(section.get("required_meaning") or ""),
+            str(section.get("voice_text") or ""),
+            str(section.get("intention_copy") or ""),
+            " ".join(str(item) for item in section.get("keywords") or []),
+        ]
+    )
+    return not any(term in value for term in OPENING_ALLOWED_SOLUTION_TERMS)
+
+
+def section_forbidden_hits(candidate: dict[str, Any], section: dict[str, Any]) -> list[str]:
+    if not section_is_opening_without_solution(section):
+        if section_is_cta_packaging(section):
+            blob = candidate_full_text_blob(candidate)
+            return [term for term in CTA_PRODUCT_USE_TERMS if term in blob]
+        return []
+    blob = candidate_full_text_blob(candidate)
+    return [term for term in OPENING_SOLUTION_PROOF_TERMS if term in blob]
+
+
+def candidate_allowed_for_section(candidate: dict[str, Any], section: dict[str, Any]) -> bool:
+    return not section_forbidden_hits(candidate, section)
+
+
+def section_is_cta_packaging(section: dict[str, Any]) -> bool:
+    if str(section.get("role") or "") != "cta":
+        return False
+    value = section_query(section)
+    return any(term in value for term in ("礼盒", "陈列", "外壳", "款式", "套装", "活动价"))
 
 
 def required_visual_hits(record: dict[str, Any], section: dict[str, Any]) -> list[str]:
@@ -835,6 +936,11 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
         return []
     intra = child_selection_start(candidate, section)
     children = intra.get("children") or []
+    parent_clip = candidate.get("trimmed_clip_path") or candidate.get("source_clip_path") or ""
+    parent_duration = candidate_duration(candidate)
+    parent_start_offset = parent_start_offset_from_child(candidate, intra)
+    if parent_clip and parent_duration > 0 and parent_start_offset < parent_duration - 0.03:
+        return [clip_segment_from_parent_story_unit(candidate, section, intra, max_duration)]
     if not children:
         return [clip_segment_from_intra(candidate, intra, max_duration)]
     segments: list[dict[str, Any]] = []
@@ -842,6 +948,8 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
     start_index = int(intra.get("start_index") or 0)
     ordered_children = children[start_index:]
     for child in ordered_children:
+        if len(segments) >= MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION:
+            break
         duration = child_duration(child)
         if duration <= 0:
             continue
@@ -852,6 +960,82 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
         if remaining <= 0.03:
             break
     return segments
+
+
+def parent_start_offset_from_child(candidate: dict[str, Any], intra: dict[str, Any]) -> float:
+    child_id = str(intra.get("child_physical_shot_id") or "")
+    if not child_id:
+        return 0.0
+    parent_usable = usable_range_of(candidate)
+    parent_start = float(parent_usable[0] or 0.0)
+    for child in candidate.get("child_physical_shots") or []:
+        if str(child.get("shot_id") or "") != child_id:
+            continue
+        child_usable = usable_range_of(child)
+        return max(0.0, round(float(child_usable[0] or 0.0) - parent_start, 3))
+    return 0.0
+
+
+def clip_segment_from_parent_story_unit(
+    candidate: dict[str, Any],
+    section: dict[str, Any],
+    intra: dict[str, Any],
+    planned_duration: float,
+) -> dict[str, Any]:
+    source_duration = candidate_duration(candidate)
+    source_start_offset = min(parent_start_offset_from_child(candidate, intra), max(0.0, source_duration))
+    available_duration = max(0.0, source_duration - source_start_offset)
+    planned = min(max(0.0, planned_duration), available_duration) if available_duration > 0 else 0.0
+    target_terms = hard_visual_terms(section)
+    parent_hits = required_visual_hits(candidate, section)
+    semantic_hits = keyword_hits(candidate, section)
+    missing_terms = [
+        term
+        for term in target_terms
+        if term not in parent_hits and not any(alias in parent_hits for alias in TERM_ALIASES.get(term, []))
+    ]
+    requires_review = bool(target_terms and not parent_hits)
+    selection_reasons = list(candidate.get("fill_reasons", []))
+    selection_reasons.append(
+        "使用 story unit 父级连续片段裁切，避免同一父素材拆成过多 child clip 连续铺开"
+    )
+    if intra.get("reason"):
+        selection_reasons.append(str(intra.get("reason")))
+    selection_risks = list(candidate.get("fill_risks", []))
+    if requires_review:
+        selection_risks.append("目标视觉词未能在 story unit 父级文本中明确命中，需抽帧或 Omni 复核")
+    return {
+        "shot_id": candidate.get("shot_id"),
+        "story_unit_id": candidate.get("story_unit_id") or candidate.get("shot_id"),
+        "child_physical_shot_id": intra.get("child_physical_shot_id", ""),
+        "intra_clip_selection_mode": "story_unit_parent_continuous",
+        "intra_clip_selection_reason": "优先使用 story unit 父级连续片段；child 仅作为定位证据",
+        "target_visual_terms": target_terms,
+        "missing_target_terms": missing_terms,
+        "asset_id": candidate.get("asset_id"),
+        "label": candidate.get("label"),
+        "score": candidate.get("score"),
+        "adjusted_score": candidate.get("adjusted_score"),
+        "source_clip_path": candidate.get("trimmed_clip_path") or candidate.get("source_clip_path") or "",
+        "source_duration_s": round(source_duration, 3),
+        "source_start_offset_s": round(source_start_offset, 3),
+        "source_end_offset_s": round(source_start_offset + planned, 3),
+        "planned_duration_s": round(planned, 3),
+        "allow_loop": False,
+        "loop_policy": "disabled_by_default",
+        "visual_summary": candidate.get("visual_summary") or intra.get("visual_summary"),
+        "source_meaning": candidate.get("source_meaning") or intra.get("source_meaning"),
+        "selling_points": candidate.get("selling_points", []),
+        "hard_subtitle_risk": candidate.get("hard_subtitle_risk"),
+        "voiceover_fit": candidate.get("voiceover_fit"),
+        "selection_reasons": selection_reasons,
+        "selection_risks": selection_risks,
+        "semantic_hits": semantic_hits,
+        "parent_context_hits": intra.get("parent_context_hits", []),
+        "child_metadata_precision": intra.get("child_metadata_precision", ""),
+        "semantic_score": candidate.get("semantic_score"),
+        "requires_visual_review": requires_review,
+    }
 
 
 def select_child_metadata_from_child(
@@ -990,6 +1174,13 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
             score -= 0.035 if len(semantic_terms) >= 2 else 0.06
         else:
             score -= 0.14
+    forbidden_hits = section_forbidden_hits(candidate, section)
+    if forbidden_hits:
+        score -= 1.4
+        risks.append(
+            "opening 痛点段禁止提前使用解决方案/证明素材："
+            + "、".join(forbidden_hits[:8])
+        )
     output = dict(candidate)
     output["adjusted_score"] = round(score, 6)
     output["fill_reasons"] = reasons
@@ -998,6 +1189,7 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
     output["semantic_score"] = round(semantic_score, 3)
     output["required_visual_hits"] = visual_hits
     output["required_visual_score"] = visual_score
+    output["section_forbidden_hits"] = forbidden_hits
     return output
 
 
@@ -1103,6 +1295,14 @@ def allocate_clip_plan(selected: list[dict[str, Any]], section: dict[str, Any]) 
 
 
 def candidates_compatible(seed: dict[str, Any] | None, item: dict[str, Any], section: dict[str, Any]) -> bool:
+    if section_is_cta_packaging(section):
+        required_hits = set(required_visual_hits(item, section))
+        packaging_hits = {
+            term
+            for term in required_hits
+            if term in {"礼盒", "陈列", "外壳", "款式", "套装", "活动价"}
+        }
+        return bool(packaging_hits)
     if seed is None:
         return True
     seed_hits = set(keyword_hits(seed, section))
@@ -1125,27 +1325,37 @@ def top_up_selection(
 ) -> tuple[list[dict[str, Any]], str]:
     selected = list(selected)
     note = ""
+    effective_max = max(max_clips_per_section, len(selected) + 2)
     selected_ids = {str(item.get("shot_id") or "") for item in selected}
     selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
     seed = selected[0] if selected else None
-    while missing_duration_s > 0.08 and len(selected) < max_clips_per_section:
+    while missing_duration_s > 0.08 and len(selected) < effective_max:
         next_item = None
-        for item in adjusted:
-            shot_id = str(item.get("shot_id") or "")
-            if not shot_id or shot_id in selected_ids:
-                continue
-            if not candidate_renderable(item):
-                continue
-            if not candidates_compatible(seed, item, section):
-                continue
-            next_item = item
-            break
+        compatibility_modes = (True,) if section_is_cta_packaging(section) else (True, False)
+        for require_compatible in compatibility_modes:
+            for item in adjusted:
+                shot_id = str(item.get("shot_id") or "")
+                if not shot_id or shot_id in selected_ids:
+                    continue
+                if not candidate_renderable(item):
+                    continue
+                if not candidate_allowed_for_section(item, section):
+                    continue
+                if require_compatible and not candidates_compatible(seed, item, section):
+                    continue
+                next_item = item
+                break
+            if next_item is not None:
+                if not require_compatible:
+                    note = "；严格同语义补齐不足时，使用候选池中可渲染素材补齐短缺时长"
+                break
         if next_item is None:
             break
         selected.append(next_item)
         selected_ids.add(str(next_item.get("shot_id") or ""))
         selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
-        note = "；命中 story unit 内连续 child 不足时，追加同语义候选补齐"
+        if not note:
+            note = "；命中 story unit 内连续 child 不足时，追加同语义候选补齐"
     return selected, note
 
 
@@ -1240,6 +1450,7 @@ def compact_candidate_for_llm(candidate: dict[str, Any], rank: int, section: dic
 
 
 def compact_section_for_llm(section: dict[str, Any], candidate_section: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    llm_candidates = candidates_for_llm(candidates, section)
     return {
         "section_id": section.get("section_id"),
         "timeline_order": section.get("timeline_order"),
@@ -1249,8 +1460,44 @@ def compact_section_for_llm(section: dict[str, Any], candidate_section: dict[str
         "required_meaning": str(section.get("required_meaning") or "")[:100],
         "required_visual": str(section.get("required_visual") or "")[:100],
         "keywords": section.get("keywords") or [],
-        "candidates": [compact_candidate_for_llm(candidate, rank + 1, section) for rank, candidate in enumerate(candidates[:5])],
+        "candidates": [compact_candidate_for_llm(candidate, rank + 1, section) for rank, candidate in enumerate(llm_candidates)],
     }
+
+
+def candidates_for_llm(candidates: list[dict[str, Any]], section: dict[str, Any], limit: int = 8) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(item: dict[str, Any]) -> None:
+        shot_id = str(item.get("shot_id") or "")
+        if not shot_id or shot_id in seen:
+            return
+        if not candidate_renderable(item):
+            return
+        if not candidate_allowed_for_section(item, section):
+            return
+        selected.append(item)
+        seen.add(shot_id)
+
+    for item in sorted(
+        candidates,
+        key=lambda candidate: (
+            float(candidate.get("required_visual_score") or 0),
+            candidate_semantic_score(candidate),
+            candidate_score(candidate),
+        ),
+        reverse=True,
+    ):
+        add(item)
+        if len(selected) >= 3:
+            break
+
+    for item in candidates:
+        add(item)
+        if len(selected) >= limit:
+            break
+
+    return selected[:limit]
 
 
 def compact_previous_selection_for_llm(raw_section: dict[str, Any], candidate_section: dict[str, Any]) -> dict[str, Any]:
@@ -1674,6 +1921,9 @@ def apply_llm_selection(
         if not candidate_renderable(item):
             invalid.append(f"{requested_id}: not renderable")
             continue
+        if not candidate_allowed_for_section(item, section):
+            invalid.append(f"{requested_id}: forbidden for section role")
+            continue
         selected.append(apply_llm_child_preference(item, preferred_child_ids))
         seen.add(shot_id)
     if invalid:
@@ -1751,7 +2001,7 @@ def build_selection_section(
             usable = [
                 item
                 for item in adjusted
-                if candidate_renderable(item)
+                if candidate_renderable(item) and candidate_allowed_for_section(item, section)
             ]
             long_enough = [item for item in usable if candidate_duration(item) >= target - 0.03]
             strong_semantic = [item for item in usable if candidate_semantic_score(item) >= 1.6]
@@ -1969,7 +2219,7 @@ def main() -> int:
     parser.add_argument("--product", default="防晒气垫")
     parser.add_argument("--top-k", type=int, default=14)
     parser.add_argument("--pool-k", type=int, default=36)
-    parser.add_argument("--max-clips-per-section", type=int, default=3)
+    parser.add_argument("--max-clips-per-section", type=int, default=6)
     parser.add_argument("--timeline-selection", default="timeline_selection.json")
     parser.add_argument("--selection-overrides", default="")
     parser.add_argument("--selection-planner", default="auto", choices=["auto", "off", "minimax-m3"])

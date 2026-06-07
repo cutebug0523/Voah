@@ -189,20 +189,19 @@ def main() -> int:
             "voah-render-qa",
             "voah-full-pipeline-manifest",
         ],
-        "fixed_tts_baseline": {
-            "provider": "minimax-official",
-            "base_url": "https://api.minimaxi.com",
-            "model": "speech-2.8-hd",
-            "voice_id": "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
-            "speed": 1.1,
-            "emotion": "happy",
-            "voice_modify": {
-                "pitch": 20,
-                "intensity": 20,
-                "timbre": 0,
-            },
-            "key_policy": "read_from_local_env_only_never_persist",
-        },
+        "tts_config": (
+            tts_audio.get("desktop_config")
+            or {
+                "provider": (tts_audio.get("provider") or {}).get("name"),
+                "base_url": (tts_audio.get("provider") or {}).get("base_url"),
+                "model": (tts_audio.get("provider") or {}).get("model"),
+                "voice_id": (tts_audio.get("provider") or {}).get("voice_id"),
+                "voice_setting": tts_audio.get("voice_setting") or {},
+                "voice_modify": tts_audio.get("voice_modify") or {},
+                "key_policy": "read_from_local_env_only_never_persist",
+            }
+        ),
+        "subtitle_config": caption_plan.get("desktop_config") or {"style": caption_plan.get("style") or {}},
         "stage_artifacts": {label: str(path) for label, path in stage_paths.items()},
         "legacy_optional_artifacts": {
             label: str(path)
