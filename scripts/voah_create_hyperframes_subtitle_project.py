@@ -299,7 +299,8 @@ def main() -> int:
     voice_audio = media_dir / "voice.wav"
     shutil.copy2(base_video_source, base_video)
     shutil.copy2(voice_wav_source, voice_audio)
-    shutil.copy2(font_source, fonts_dir / "Songti.ttc")
+    # System fonts can carry macOS file flags that are not writable in cache dirs.
+    shutil.copyfile(font_source, fonts_dir / "Songti.ttc")
 
     preset_label = "直播间口播条，下方安全区" if preset == "live_bar_lower" else "宋体白金描边，下方安全区"
     design = f"""# Voah Subtitle Burn

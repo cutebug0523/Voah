@@ -16,9 +16,14 @@ function createInitialStore(workspaceRoot) {
     updated_at: nowIso(),
     products: DEFAULT_PRODUCTS,
     tasks: [],
+    batches: [],
     jobs: [],
+    intake_jobs: [],
     artifacts: [],
     qa_reports: [],
+    quality_reports: [],
+    output_reviews: [],
+    tts_previews: [],
     settings: mergeVoahSettings()
   };
 }
@@ -49,6 +54,14 @@ export class StoreService {
       const merged = {
         ...parsed,
         products: mergeDefaultProducts(parsed.products),
+        batches: parsed.batches || [],
+        jobs: parsed.jobs || [],
+        intake_jobs: parsed.intake_jobs || [],
+        artifacts: parsed.artifacts || [],
+        qa_reports: parsed.qa_reports || [],
+        quality_reports: parsed.quality_reports || [],
+        output_reviews: parsed.output_reviews || [],
+        tts_previews: parsed.tts_previews || [],
         settings: mergeVoahSettings(parsed.settings || {})
       };
       if (

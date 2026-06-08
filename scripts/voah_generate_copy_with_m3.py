@@ -50,6 +50,11 @@ MATERIAL_SIGNAL_TERMS = [
     "奶茶",
 ]
 
+STRONG_VISUAL_MIN_COUNT = 2
+HIGH_EVIDENCE_MIN_COUNT = 3
+OPENING_RISK_TERMS = ("卡纹", "泛油", "油光", "地铁", "毛孔", "瑕疵")
+PROBLEM_TERMS = ("卡粉", "卡纹", "斑驳", "脱妆", "泛油", "油光", "地铁")
+
 
 def iso_now() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -249,6 +254,14 @@ def compact_material_capabilities(shot_index_path: Path | None) -> dict[str, Any
                 }
             )
     missing_terms = [term for term in MATERIAL_SIGNAL_TERMS if term not in term_counts]
+    strong_terms = [term for term, count in term_counts.items() if count >= STRONG_VISUAL_MIN_COUNT]
+    high_evidence_terms = [term for term, count in term_counts.items() if count >= HIGH_EVIDENCE_MIN_COUNT]
+    weak_problem_terms = [term for term in PROBLEM_TERMS if term_counts.get(term, 0) < STRONG_VISUAL_MIN_COUNT]
+    safe_opening_terms = [
+        term
+        for term in ("补妆", "轻拍", "上脸", "粉扑", "开盖", "粉芯", "柔焦", "精华", "礼盒", "陈列")
+        if term_counts.get(term, 0) >= STRONG_VISUAL_MIN_COUNT
+    ]
     return {
         "available": True,
         "shot_index": str(shot_index_path),
@@ -258,6 +271,10 @@ def compact_material_capabilities(shot_index_path: Path | None) -> dict[str, Any
             for term, count in sorted(term_counts.items(), key=lambda item: (-item[1], item[0]))[:30]
         ],
         "missing_or_weak_visual_terms": missing_terms[:30],
+        "strong_visual_terms": sorted(strong_terms, key=lambda term: (-term_counts[term], term))[:30],
+        "high_evidence_terms": sorted(high_evidence_terms, key=lambda term: (-term_counts[term], term))[:30],
+        "weak_problem_terms": weak_problem_terms,
+        "safe_opening_terms": safe_opening_terms,
         "selling_points_observed": [
             {"term": term, "count": count}
             for term, count in sorted(selling_points.items(), key=lambda item: (-item[1], item[0]))[:24]
@@ -270,7 +287,8 @@ def compact_material_capabilities(shot_index_path: Path | None) -> dict[str, Any
         "copy_policy": [
             "voice_text 可以表达产品卖点，但 required_visual 必须优先使用 available_visual_terms 和 representative_examples 中能看见的画面。",
             "如果素材里没有毛孔/瑕疵/纸巾/前后对比，就不要把它们写成 required_visual。",
-            "痛点开场优先写素材里已有的卡粉、卡纹、脱妆、油光、地铁等具体可见问题。",
+            "痛点开场只能写 strong_visual_terms/high_evidence_terms 支撑的可见问题；weak_problem_terms 只能作为泛化需求，不要写成确定视觉证据。",
+            "如果强证据痛点不足，开场改写成通勤补妆、妆感厚重、自然气色、轻薄服帖这类可由产品/上脸/补妆画面支撑的泛化问题。",
             "稳定性证明按素材真实动作写，例如倒水、泼水、擦拭；不要改写成不存在的纸巾按压。",
         ],
     }
@@ -310,9 +328,50 @@ def sanitize_section_copy(section: dict[str, Any]) -> dict[str, Any]:
     voice_text = str(output.get("voice_text") or "")
     required_visual = str(output.get("required_visual") or "")
     role = str(output.get("role") or "")
+    if role == "opening":
+        weak_visual_markers = ("卡纹", "斑驳", "脱妆", "泛油", "油光", "地铁", "毛孔", "瑕疵")
+        if any(term in voice_text or term in required_visual for term in weak_visual_markers):
+            voice_text = "早上赶着出门，底妆最怕一上脸就厚重，补两下又怕越补越明显。想要自然气色，又不想粉感太重。"
+            output["voice_text"] = voice_text
+            output["tts_text"] = pronounce_text(voice_text)
+            output["intention_copy"] = "用通勤补妆和粉感厚重的泛化痛点建立共鸣，避免写素材证据不足的具体脱妆场景"
+            output["required_meaning"] = "底妆需要自然气色、轻薄服帖，补妆不显厚重"
+            output["required_visual"] = "补妆动作、上脸轻拍、自然底妆效果、产品粉扑或粉芯特写"
+            output["keywords"] = ["补妆", "轻薄", "自然气色", "底妆"]
+        elif "卡粉" in voice_text and "卡纹" in voice_text:
+            voice_text = voice_text.replace("卡粉、卡纹", "卡粉")
+            voice_text = voice_text.replace("卡粉卡纹", "卡粉")
+            output["voice_text"] = voice_text
+            output["tts_text"] = pronounce_text(voice_text)
     if role == "proof":
         risky_object_terms = ("粉面", "粉芯", "粉仓")
         water_terms = ("倒水", "遇水", "水珠", "擦")
+        precise_light_water_patterns = (
+            "往妆面滴上几滴水",
+            "往妆面滴几滴水",
+            "在妆面上滴上几滴水",
+            "在妆面上滴几滴水",
+            "滴上几滴水",
+            "滴几滴水",
+            "少量水",
+            "水珠落上去",
+            "水滴落上去",
+        )
+        if any(pattern in voice_text for pattern in precise_light_water_patterns):
+            voice_text = re.sub(
+                r"(往|在)?妆面(上)?滴上?几滴水",
+                "做个倒水测试",
+                voice_text,
+            )
+            voice_text = voice_text.replace("滴上几滴水", "做个倒水测试")
+            voice_text = voice_text.replace("滴几滴水", "做个倒水测试")
+            voice_text = voice_text.replace("少量水", "水")
+            voice_text = voice_text.replace("水珠落上去", "做完遇水测试")
+            voice_text = voice_text.replace("水滴落上去", "做完遇水测试")
+            voice_text = re.sub(r"做个倒水测试[，,、]?再", "做个倒水测试，再", voice_text)
+            voice_text = re.sub(r"做个倒水测试[，,、]?妆面", "做个倒水测试，妆面", voice_text)
+            output["voice_text"] = voice_text
+            output["tts_text"] = pronounce_text(voice_text)
         if any(term in voice_text for term in risky_object_terms) and any(term in voice_text for term in water_terms):
             replacements = {
                 "我还特意在粉面上做了一次遇水测试，水珠落上去会顺着表面滑下来，不会直接渗进粉芯。": "我还特意做了一次遇水测试，水珠落上去后再轻轻擦开，妆面依然稳稳的。",
@@ -342,21 +401,78 @@ def sanitize_section_copy(section: dict[str, Any]) -> dict[str, Any]:
         voice_text = re.sub(r"我还特意做了遇水测试，做个倒水测试", "我还特意做了个倒水测试", voice_text)
         voice_text = re.sub(r"做了遇水测试，做个倒水测试", "做了个倒水测试", voice_text)
         voice_text = re.sub(r"(做个倒水测试)[，,、]?(妆面)", r"\1，\2", voice_text)
+        if len(voice_text) > 46 or any(term in voice_text for term in ("下雨", "小雨", "出汗", "临时", "不会轻易垮", "通勤用着")):
+            voice_text = "做个倒水测试，水流过后，妆面依然服帖稳定。"
+        voice_text = voice_text.replace("水流过后轻轻擦开，", "水流过后，")
+        voice_text = voice_text.replace("擦干后依旧", "水流过后依旧")
         output["voice_text"] = voice_text
         output["tts_text"] = pronounce_text(voice_text)
+        output["rough_duration_s"] = min(float(output.get("rough_duration_s") or 6), 6.5)
+        output["intention_copy"] = "用短证明段表达遇水后妆面稳定，避免证明素材时长不足"
+        output["required_meaning"] = "做倒水或遇水测试后，妆面依然服帖稳定"
+        output["keywords"] = ["倒水测试", "遇水", "稳定", "服帖"]
         if any(term in required_visual for term in risky_object_terms) and any(term in required_visual for term in water_terms):
             output["required_visual"] = "遇水测试动作特写、倒水或擦拭后妆面稳定近景"
         if "手臂" in required_visual or "脸上倒水" in required_visual:
             output["required_visual"] = "倒水或泼水测试，擦拭后妆面稳定近景"
+        if any(term in required_visual for term in ("滴", "水滴", "水珠", "少量水")):
+            output["required_visual"] = "倒水或泼水测试，擦拭后妆面稳定近景"
+        if not output.get("required_visual"):
+            output["required_visual"] = "倒水或泼水测试，擦拭后妆面稳定近景"
     if role == "cta":
         cta_noise_terms = ("通勤", "补妆", "放包", "出门", "上妆", "粉扑", "妆感")
-        if any(term in voice_text for term in cta_noise_terms) or len(voice_text) > 38:
-            voice_text = "今天活动价给到礼盒装，多款外壳整齐陈列，自用送人都体面。"
+        if any(term in voice_text for term in cta_noise_terms) or len(voice_text) > 24 or "礼盒装" in voice_text:
+            voice_text = "活动套装，多款外壳陈列，喜欢直接拍。"
             output["voice_text"] = voice_text
             output["tts_text"] = pronounce_text(voice_text)
-            output["required_meaning"] = "礼盒装陈列、多款外壳与活动价，引导下单"
+            output["required_meaning"] = "多款外壳、套装陈列与活动价，引导下单"
+            output["required_visual"] = "多款气垫外壳、托盘或桌面陈列"
+            output["keywords"] = ["套装", "外壳", "陈列", "活动价", "下单"]
+    if role == "product":
+        product_replacements = {
+            "粉芯里加了高浓度精华，一按就有水润感。": "开盖能看到粉芯和粉扑，拿起来补妆很顺手。",
+            "高浓度精华": "水润妆感",
+            "精华液": "水润妆感",
+            "柔焦奶油肌": "自然柔焦妆感",
+            "奶油肌": "自然柔焦妆感",
+            "像天生好皮": "像本身气色就很好",
+            "底妆就被补得服服帖帖": "妆面就更服服帖帖",
+            "粉扑拍一拍就能补好": "粉扑拍一拍就能让妆面更服帖",
+            "补妆很顺手": "上脸很顺手",
+        }
+        for old, new in product_replacements.items():
+            voice_text = voice_text.replace(old, new)
+        output["voice_text"] = voice_text
+        output["tts_text"] = pronounce_text(voice_text)
+        if "精华液" in required_visual or "高浓度精华" in required_visual:
+            output["required_visual"] = "气垫开盖露出粉芯与粉扑、取粉或质地特写"
+        effect_terms = ("轻薄", "服帖", "服贴", "柔焦", "粉扑", "轻拍", "上脸", "妆面")
+        packaging_terms = ("礼盒", "外壳", "陈列", "多款", "活动价")
+        detail_terms = ("粉芯", "开盖", "膏体", "取粉")
+        locked_detail_section = False
+        if any(term in voice_text for term in detail_terms) and any(term in voice_text for term in effect_terms):
+            voice_text = "开盖看粉芯，取粉均匀，质地细润。"
+            output["voice_text"] = voice_text
+            output["tts_text"] = pronounce_text(voice_text)
+            output["rough_duration_s"] = min(float(output.get("rough_duration_s") or 3.5), 4.0)
+            output["required_meaning"] = "展示气垫开盖、粉芯和取粉质地"
+            output["required_visual"] = "气垫开盖露出粉芯、取粉或膏体质地特写"
+            output["keywords"] = ["开盖", "粉芯", "取粉", "质地"]
+            locked_detail_section = True
+        if (
+            not locked_detail_section
+            and any(term in voice_text for term in effect_terms)
+            and not any(term in voice_text for term in packaging_terms)
+        ):
+            output["required_meaning"] = "产品轻薄服帖，上脸轻拍后呈现自然柔焦妆效"
+            output["required_visual"] = "女性用粉扑轻拍上脸、自然妆效近景"
+            output["keywords"] = ["粉扑", "轻拍", "上脸", "柔焦", "服帖"]
+        if any(term in voice_text for term in detail_terms):
+            output["required_visual"] = "气垫开盖露出粉芯、取粉或膏体质地特写"
+            output["keywords"] = ["开盖", "粉芯", "取粉", "质地"]
+        if any(term in voice_text for term in packaging_terms):
             output["required_visual"] = "礼盒装、多款气垫外壳、托盘或桌面陈列"
-            output["keywords"] = ["礼盒", "陈列", "活动价", "下单"]
+            output["keywords"] = ["礼盒", "外壳", "陈列"]
     return output
 
 
@@ -436,6 +552,80 @@ def enforce_voice_char_limit(sections: list[dict[str, Any]], max_chars: int) -> 
     return enforce_complete_sentences(trimmed_sections), warnings
 
 
+def rebalance_short_script(sections: list[dict[str, Any]], min_chars: int) -> tuple[list[dict[str, Any]], list[str]]:
+    full_text = "".join(section["voice_text"] for section in sections)
+    if len(full_text) >= min_chars:
+        return sections, []
+    output = [dict(section) for section in sections]
+    warnings = [f"voice_text below target min by {min_chars - len(full_text)} chars; inserted deterministic apply/effect section"]
+    has_apply_section = any(
+        str(section.get("role") or "") == "product"
+        and any(term in str(section.get("required_visual") or "") for term in ("上脸", "轻拍", "妆效"))
+        for section in output
+    )
+    if not has_apply_section:
+        insert_index = next(
+            (
+                index + 1
+                for index, section in enumerate(output)
+                if str(section.get("role") or "") == "product"
+            ),
+            min(2, len(output)),
+        )
+        output.insert(
+            insert_index,
+            {
+                "timeline_order": insert_index + 1,
+                "section_id": "sec_apply_effect",
+                "role": "product",
+                "rough_duration_s": 9.0,
+                "intention_copy": "独立展示粉扑轻拍上脸和自然柔焦妆效，承接产品质地段",
+                "required_meaning": "女性用粉扑轻拍上脸，妆效自然服帖、不厚重",
+                "required_visual": "女性用粉扑轻拍上脸、自然妆效近景",
+                "avoid": ["不要混入礼盒、精华液、遇水测试或手臂试色"],
+                "keywords": ["粉扑", "轻拍", "上脸", "柔焦", "服帖"],
+                "voice_text": "上脸的时候用粉扑轻轻拍开，妆面会很快贴住皮肤，不会一下子变厚。脸上的气色是自然提起来的，近看也不会有明显粉感。",
+                "tts_text": pronounce_text("上脸的时候用粉扑轻轻拍开，妆面会很快贴住皮肤，不会一下子变厚。脸上的气色是自然提起来的，近看也不会有明显粉感。"),
+            },
+        )
+    full_text = "".join(section["voice_text"] for section in output)
+    if len(full_text) < min_chars:
+        for section in output:
+            if str(section.get("role") or "") == "opening":
+                extra = "尤其是早八通勤或者临时补妆，越是赶时间，越需要这种不费手的底妆。"
+                if extra not in str(section.get("voice_text") or ""):
+                    section["voice_text"] = f"{section['voice_text']}{extra}"
+                    section["tts_text"] = pronounce_text(section["voice_text"])
+                break
+    full_text = "".join(section["voice_text"] for section in output)
+    if len(full_text) < min_chars:
+        for section in output:
+            if str(section.get("section_id") or "") == "sec_apply_effect":
+                extra = "不用反复叠很多层，镜头近一点看也会更干净。"
+                if extra not in str(section.get("voice_text") or ""):
+                    section["voice_text"] = f"{section['voice_text']}{extra}"
+                    section["tts_text"] = pronounce_text(section["voice_text"])
+                break
+    full_text = "".join(section["voice_text"] for section in output)
+    if len(full_text) < min_chars:
+        for section in output:
+            if str(section.get("role") or "") == "product" and any(
+                term in str(section.get("required_visual") or "") + str(section.get("voice_text") or "")
+                for term in ("上脸", "轻拍", "妆效", "粉扑")
+            ):
+                extra = "不用反复叠很多层，镜头近一点看也会更干净。"
+                if extra not in str(section.get("voice_text") or ""):
+                    section["voice_text"] = f"{section['voice_text']}{extra}"
+                    section["tts_text"] = pronounce_text(section["voice_text"])
+                break
+    for index, section in enumerate(output, start=1):
+        section["timeline_order"] = index
+        section_id = str(section.get("section_id") or "")
+        if section_id.startswith("section_") or section_id == "sec_apply_effect":
+            section["section_id"] = f"sec_{index}_{section.get('role') or 'product'}"
+    return output, warnings
+
+
 def build_revision_prompt(
     task_brief: dict[str, Any],
     raw_plan: dict[str, Any],
@@ -468,7 +658,7 @@ def build_revision_prompt(
             "必须重新写 script_sections[].voice_text，不要简单截断原文。",
             f"full_voice_text 必须落在 {min_voice_chars}-{max_voice_chars} 字之间。",
             "每一句都必须是完整自然中文，不允许出现“整。”“补。”“很。”这类残句。",
-            "proof 段禁止写测试部位，只能泛化为倒水测试/遇水测试后妆面稳定。",
+            "proof 段禁止写测试部位，也不要写滴几滴水、少量水、水珠等动作力度；只能泛化为倒水测试/遇水测试后妆面稳定。",
             "cta 段只写礼盒装、活动价、多款外壳/陈列、自用送人和下单，25-38 字。",
             "重写时必须贴合 material_capabilities；required_visual 不要写素材库没有的硬画面词。",
             "不要虚构具体价格、库存数字或赠品细节。",
@@ -526,12 +716,16 @@ def build_prompt(
             "文案不绑定具体 shot，不要写“画面里/这里看到”这类依赖镜头的表达。",
             "每个 section 必须给 required_meaning 和 required_visual，供 TTS 后按语义召回素材。",
             "必须参考 material_capabilities：required_visual 优先使用素材库真实出现的画面词和动作，不要写库存里没有的硬画面。",
-            "required_visual 只能写可召回画面类型，例如卡粉卡纹近景、地铁泛油光、产品特写、开盖粉芯、上脸轻拍、倒水擦拭测试、礼盒陈列；不要写办公室、海边、车内、上班路、约会等素材库未明确给出的硬场景。",
+            "required_visual 只能写可召回画面类型，例如产品特写、开盖粉芯、上脸轻拍、补妆动作、倒水/泼水/擦拭测试、礼盒陈列；不要写办公室、海边、车内、上班路、约会等素材库未明确给出的硬场景。",
+            "卡粉/卡纹/斑驳/脱妆/泛油/油光/地铁这类具体痛点，只有出现在 material_capabilities.strong_visual_terms 或 high_evidence_terms 时才能写成明确视觉诉求。",
+            "material_capabilities.weak_problem_terms 里的词不要写进 opening 的 voice_text 和 required_visual；改写成通勤补妆、自然气色、轻薄服帖、粉感不厚重等泛化需求。",
             "如果素材能力里没有毛孔、瑕疵、纸巾、前后对比，就不要把这些词写进 required_visual；可以把口播改成更泛化的自然妆感、服帖、不容易斑驳。",
-            "痛点开场如果素材里有卡粉/卡纹/地铁泛油光，就围绕这些真实可见问题写；不要用防水测试画面去承担痛点开场。",
+            "产品段不要写高浓度精华、精华液、奶油肌、天生好皮等肉眼难证明或需要特写证据的词；优先写开盖粉芯、粉扑轻拍、自然柔焦、轻薄服帖、上脸顺手。",
+            "同一个 product 段只能围绕一个视觉主题：讲上脸妆效就只写粉扑轻拍/自然妆效；讲产品细节就只写开盖粉芯/取粉质地；讲礼盒 CTA 才写礼盒/外壳/陈列，不能把三类画面塞进同一段 required_visual。",
+            "痛点开场优先围绕 safe_opening_terms 写；如果 safe_opening_terms 只有补妆/轻拍/上脸/产品，就不要写脱妆、油光、地铁等需要强视觉证据的痛点。",
             "稳定性证明如果素材是倒水、泼水、擦拭，就按这些动作写；不要改写成纸巾按压。",
             "不要把不同素材里的动作对象拼成一句硬描述；例如素材既有粉芯吸水又有人脸倒水时，voice_text 只能写“做个遇水测试/倒水测试”，不要写“往粉芯倒水”或“用纸巾擦粉芯”。",
-            "证明段禁止写具体测试部位，例如手臂、脸、粉芯、粉面；只写“做个倒水测试/遇水测试，妆面依然稳定”。",
+            "证明段禁止写具体测试部位，例如手臂、脸、粉芯、粉面；也禁止写滴几滴水、少量水、水珠等动作力度；只写“做个倒水测试/遇水测试，妆面依然稳定”。",
             "required_visual 可以列多个可选画面，但 voice_text 只能说这些画面都能支撑的泛化语义，避免音画对象错配。",
             "如果想表达日常/通勤/出门，只能写成可由产品画面支撑的泛化需求，例如自然妆效近景；不要在 CTA 段写通勤补妆、放包、出门等需要额外画面的内容。",
             "CTA 段只允许写礼盒装、活动价、多款外壳/陈列、自用送人、下单；控制在 25-38 字，避免素材时长不够。",
@@ -625,8 +819,12 @@ def main() -> int:
     if len(full_voice_text) > max_voice_chars:
         sections, auto_trim_warnings = enforce_voice_char_limit(sections, max_voice_chars)
         full_voice_text = "".join(section["voice_text"] for section in sections)
+    rebalance_warnings: list[str] = []
+    if len(full_voice_text) < min_voice_chars:
+        sections, rebalance_warnings = rebalance_short_script(sections, min_voice_chars)
+        full_voice_text = "".join(section["voice_text"] for section in sections)
     pronounce = "".join(section["tts_text"] for section in sections)
-    warnings: list[str] = list(auto_trim_warnings)
+    warnings: list[str] = [*auto_trim_warnings, *rebalance_warnings]
     if len(full_voice_text) < min_voice_chars:
         warnings.append("voice_text may be short for target duration")
     if len(full_voice_text) > max_voice_chars:

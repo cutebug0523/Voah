@@ -49,11 +49,77 @@ async function handleRoute(method, pathname, body) {
     const tasks = await productionRecipe.createBatch(body);
     return { schema_version: "voah-create-batch-response.v1", tasks };
   }
+  if (method === "POST" && pathname === "/saveProduct") {
+    const next = await storeService.mutate(async (draft) => {
+      const product = body.product || {};
+      const productId = product.id || `product_${Date.now()}`;
+      const existingIndex = draft.products.findIndex((item) => item.id === productId);
+      const saved = {
+        ...(existingIndex >= 0 ? draft.products[existingIndex] : {}),
+        ...product,
+        id: productId,
+        updated_at: new Date().toISOString()
+      };
+      saved.status = saved.latest_intake_run ? "ready" : saved.status || "needs_intake";
+      saved.material_status = saved.status === "ready" ? "可生产" : saved.material_status || "需处理素材";
+      if (existingIndex >= 0) {
+        draft.products[existingIndex] = saved;
+      } else {
+        draft.products.push(saved);
+      }
+      return draft;
+    });
+    return {
+      schema_version: "voah-save-product-response.v1",
+      product: next.products.find((item) => item.id === (body.product?.id || "")) || next.products.at(-1)
+    };
+  }
+  if (method === "POST" && pathname === "/startIntakeJob") {
+    return productionRecipe.startIntakeJob(body);
+  }
   if (method === "POST" && pathname === "/runTask") {
     return productionRecipe.runTask(body.task_id, { failStage: body.fail_stage || null });
   }
   if (method === "POST" && pathname === "/retryTask") {
     return productionRecipe.retryFailedTask(body.task_id);
+  }
+  if (method === "POST" && pathname === "/previewTts") {
+    return productionRecipe.previewTts(body);
+  }
+  if (method === "POST" && pathname === "/reviewOutput") {
+    const next = await storeService.mutate(async (draft) => {
+      const task = draft.tasks.find((item) => item.id === body.task_id);
+      if (!task) {
+        throw new Error("未找到任务");
+      }
+      const review = {
+        id: `review_${Date.now()}`,
+        task_id: task.id,
+        decision: body.decision || "manual_review",
+        note: body.note || "",
+        created_at: new Date().toISOString()
+      };
+      draft.output_reviews = [review, ...(draft.output_reviews || [])];
+      if (review.decision === "approved") {
+        task.status = "completed";
+      }
+      if (review.decision === "rejected") {
+        task.status = "failed";
+        task.human_error = {
+          task: task.title,
+          failed_step: "人工审核",
+          reason: review.note || "成品未通过人工审核",
+          impact: "该成品不会进入发布队列。",
+          suggested_action: "重试失败步骤"
+        };
+      }
+      if (review.decision === "manual_review") {
+        task.status = "awaiting_review";
+      }
+      task.updated_at = new Date().toISOString();
+      return draft;
+    });
+    return { schema_version: "voah-output-review-response.v1", reviews: next.output_reviews };
   }
   if (method === "POST" && pathname === "/saveSettings") {
     const next = await storeService.mutate(async (draft) => {

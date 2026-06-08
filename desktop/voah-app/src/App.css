@@ -400,11 +400,18 @@ button.primary {
   display: flex;
   gap: 10px;
   margin-top: 16px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .action-row.compact {
   margin-top: -6px;
   margin-bottom: 16px;
+}
+
+.action-row .field {
+  width: 140px;
+  padding: 8px 10px;
 }
 
 .human-error {
@@ -421,7 +428,8 @@ button.primary {
 
 .job-row,
 .artifact-row,
-.check-item {
+.check-item,
+.batch-row {
   border: 1px solid #dde4e0;
   border-radius: 8px;
   padding: 12px;
@@ -467,6 +475,27 @@ button.primary {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.batch-list {
+  display: grid;
+  gap: 10px;
+}
+
+.batch-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.batch-row strong,
+.batch-row small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.batch-row small {
+  color: #68746f;
+  margin-top: 4px;
+}
+
 .output-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -487,7 +516,9 @@ button.primary {
 .output-card p,
 .output-card small,
 .output-card .badge,
-.output-card button {
+.output-card button,
+.output-card textarea,
+.output-actions {
   grid-column: 2;
 }
 
@@ -500,6 +531,26 @@ button.primary {
 .output-card small {
   color: #68746f;
   overflow-wrap: anywhere;
+}
+
+.output-card textarea {
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid #c8d0cc;
+  border-radius: 8px;
+  padding: 8px 10px;
+  resize: vertical;
+  font: inherit;
+}
+
+.output-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.output-actions button {
+  padding: 8px 10px;
 }
 
 .output-thumb {
@@ -600,6 +651,29 @@ button.primary {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.preview-box {
+  border: 1px solid #dde4e0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfb;
+  display: grid;
+  gap: 10px;
+}
+
+.preview-box audio {
+  width: 100%;
+}
+
+.preview-box small {
+  color: #68746f;
+  overflow-wrap: anywhere;
+}
+
+.inline-message {
+  color: #315a78;
+  font-size: 14px;
 }
 
 .empty strong {

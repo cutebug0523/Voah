@@ -19,6 +19,35 @@ function compactId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 }
 
+function parseStdoutKeyValue(stdout) {
+  return String(stdout || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes("="))
+    .reduce((acc, line) => {
+      const index = line.indexOf("=");
+      acc[line.slice(0, index)] = line.slice(index + 1);
+      return acc;
+    }, {});
+}
+
+function extractJsonObject(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(raw.slice(start, end + 1));
+    }
+  }
+  return {};
+}
+
 function slugify(input) {
   return String(input || "task")
     .toLowerCase()
@@ -196,9 +225,9 @@ export class ProductionRecipe {
       ...brief,
       style: optionalString(brief.style) || settings.copy.default_style,
       audience: optionalString(brief.audience) || settings.copy.default_audience,
-      offer: optionalString(brief.offer) || settings.copy.default_offer,
-      forbidden: optionalString(brief.forbidden) || settings.copy.forbidden_terms,
-      cta_policy: optionalString(brief.cta_policy) || settings.copy.cta_policy
+      offer: optionalString(brief.offer) || optionalString(product.default_offer) || settings.copy.default_offer,
+      forbidden: optionalString(brief.forbidden) || optionalString(product.compliance_notes) || settings.copy.forbidden_terms,
+      cta_policy: optionalString(brief.cta_policy) || optionalString(product.cta_notes) || settings.copy.cta_policy
     };
     const productionConfig = {
       schema_version: "voah-production-config.v1",
@@ -217,7 +246,18 @@ export class ProductionRecipe {
       subtitle: settings.subtitle
     };
 
+    const batchId = compactId("batch");
     await this.storeService.mutate(async (draft) => {
+      const batch = {
+        id: batchId,
+        product_id: product.id,
+        title: `${product.name} 批量生产 ${safeCount} 条`,
+        status: "queued",
+        task_ids: [],
+        target_count: safeCount,
+        created_at: nowIso(),
+        updated_at: nowIso()
+      };
       for (let index = 0; index < safeCount; index += 1) {
         const taskId = compactId("task");
         const title = `${createTaskTitle(product, normalizedBrief)} #${index + 1}`;
@@ -238,6 +278,7 @@ export class ProductionRecipe {
           current_stage: "queued",
           task_dir: taskDir,
           source_intake_run: product.latest_intake_run,
+          batch_id: batchId,
           brief: normalizedBrief,
           production_config: productionConfig,
           pipeline_mode: "real",
@@ -245,12 +286,203 @@ export class ProductionRecipe {
           updated_at: nowIso()
         };
         draft.tasks.push(task);
+        batch.task_ids.push(task.id);
         createdTasks.push(task);
       }
+      draft.batches = [batch, ...(draft.batches || [])];
       return draft;
     });
 
     return createdTasks;
+  }
+
+  async previewTts(payload = {}) {
+    const settings = mergeVoahSettings(payload.settings || {});
+    const tts = {
+      ...settings.tts,
+      ...(payload.tts || {}),
+      voice_modify: {
+        ...(settings.tts?.voice_modify || {}),
+        ...(payload.tts?.voice_modify || {})
+      }
+    };
+    const voiceModify = tts.voice_modify || {};
+    const text = optionalString(payload.text) || "今天这款气垫，上脸是自然气色，通勤补妆也很轻薄。";
+    const task = {
+      id: compactId("tts_preview"),
+      title: "TTS 参数试听",
+      task_dir: path.join(this.storeService.workspaceRoot, "cache", "voah_tts", "desktop_preview", `${compactDateTime()}_desktop`)
+    };
+    await mkdir(path.join(task.task_dir, "logs"), { recursive: true });
+    const jobId = compactId("job");
+    const env = await this.buildModelEnv(["tts_primary"]);
+    const result = await this.runCommand({
+      task,
+      jobId,
+      command: "python3",
+      args: [
+        path.join(this.storeService.workspaceRoot, "scripts", "voah_tts_desktop_preview.py"),
+        "--text",
+        text,
+        "--provider",
+        optionalString(tts.provider) || "minimax-official",
+        "--model",
+        optionalString(tts.model) || "speech-2.8-hd",
+        "--voice-id",
+        optionalString(tts.voice_id) || "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
+        "--speed",
+        numberArg(tts.speed, 1.1),
+        "--vol",
+        numberArg(tts.vol, 1),
+        "--pitch",
+        intArg(tts.pitch, 0),
+        "--emotion",
+        optionalString(tts.emotion) || "happy",
+        "--modify-pitch",
+        intArg(voiceModify.pitch, 20),
+        "--modify-intensity",
+        intArg(voiceModify.intensity, 20),
+        "--modify-timbre",
+        intArg(voiceModify.timbre, 0),
+        "--audio-format",
+        optionalString(payload.audio_format) || "mp3",
+        "--output-root",
+        path.join(this.storeService.workspaceRoot, "cache", "voah_tts", "desktop_preview"),
+        "--timestamp",
+        path.basename(task.task_dir)
+      ],
+      env
+    });
+    const parsed = parseStdoutKeyValue(result.stdout);
+    const manifestPath = parsed.manifest || path.join(task.task_dir, "manifest.json");
+    const manifest = existsSync(manifestPath) ? await readJson(manifestPath) : {};
+    const record = {
+      id: compactId("tts_preview"),
+      text,
+      provider: optionalString(tts.provider) || "minimax-official",
+      model: optionalString(tts.model) || "speech-2.8-hd",
+      voice_id: optionalString(tts.voice_id),
+      voice_label: optionalString(tts.voice_label),
+      speed: safeNumber(tts.speed, 1.1),
+      emotion: optionalString(tts.emotion) || "happy",
+      voice_modify: {
+        pitch: Math.round(safeNumber(voiceModify.pitch, 20)),
+        intensity: Math.round(safeNumber(voiceModify.intensity, 20)),
+        timbre: Math.round(safeNumber(voiceModify.timbre, 0))
+      },
+      audio_path: manifest.outputs?.preview_audio || parsed.preview_audio || "",
+      manifest_path: manifestPath,
+      duration_s: manifest.timing?.actual_audio_duration_s || null,
+      qa_status: manifest.qa?.status || "ok",
+      created_at: nowIso()
+    };
+    await this.storeService.mutate(async (draft) => {
+      draft.tts_previews = [record, ...((draft.tts_previews || []).filter((item) => item.id !== record.id))].slice(0, 20);
+      return draft;
+    });
+    return { schema_version: "voah-tts-preview-response.v1", preview: record, manifest };
+  }
+
+  async startIntakeJob(payload = {}) {
+    const store = await this.storeService.read();
+    const product = store.products.find((item) => item.id === payload.product_id);
+    if (!product) {
+      throw new Error("未找到产品");
+    }
+    const jobId = compactId("intake");
+    const sourceDir = optionalString(payload.source_dir) || product.source_folder;
+    const productSlug = optionalString(product.slug) || slugify(product.name);
+    const intakeJob = {
+      id: jobId,
+      product_id: product.id,
+      stage: "material_intake",
+      status: "running",
+      source_dir: sourceDir,
+      run_label: optionalString(payload.run_label) || "desktop_intake_v1",
+      max_videos: Math.max(0, Math.round(safeNumber(payload.max_videos, 3))),
+      started_at: nowIso(),
+      finished_at: null,
+      result_path: null,
+      run_dir: null,
+      error_message: null
+    };
+    await this.storeService.mutate(async (draft) => {
+      draft.intake_jobs = [intakeJob, ...(draft.intake_jobs || [])];
+      const current = draft.products.find((item) => item.id === product.id);
+      current.status = "running";
+      current.material_status = "入库中";
+      current.updated_at = nowIso();
+      return draft;
+    });
+    const task = {
+      id: jobId,
+      title: `${product.name} 素材入库`,
+      task_dir: path.join(this.storeService.workspaceRoot, "cache", "voah_video_intake", productSlug, "_desktop_jobs", jobId)
+    };
+    await mkdir(path.join(task.task_dir, "logs"), { recursive: true });
+    const env = await this.buildModelEnv(["material_understanding", "material_vectorization"]);
+    try {
+      const result = await this.runCommand({
+        task,
+        jobId,
+        command: "python3",
+        args: [
+          path.join(this.storeService.workspaceRoot, "scripts", "voah_intake_desktop_wrapper.py"),
+          "--job-id",
+          jobId,
+          "--workspace",
+          this.storeService.workspaceRoot,
+          "--product-slug",
+          productSlug,
+          "--product-name",
+          product.name,
+          "--source-dir",
+          sourceDir,
+          "--max-videos",
+          String(intakeJob.max_videos),
+          "--run-label",
+          intakeJob.run_label
+        ],
+        env
+      });
+      const workerResult = extractJsonObject(result.stdout);
+      const runDir = workerResult.outputs?.run_dir || "";
+      const runName = runDir ? path.basename(runDir) : "";
+      await this.storeService.mutate(async (draft) => {
+        const currentJob = draft.intake_jobs.find((item) => item.id === jobId);
+        currentJob.status = workerResult.qa?.status === "ok" ? "succeeded" : "warning";
+        currentJob.finished_at = nowIso();
+        currentJob.result_path = workerResult.outputs?.desktop_result || "";
+        currentJob.run_dir = runDir;
+        currentJob.qa = workerResult.qa || {};
+        const currentProduct = draft.products.find((item) => item.id === product.id);
+        currentProduct.latest_intake_run = runName || currentProduct.latest_intake_run;
+        currentProduct.source_folder = sourceDir;
+        currentProduct.status = runName ? "ready" : "awaiting_review";
+        currentProduct.material_status = runName ? "可生产" : "待确认";
+        currentProduct.updated_at = nowIso();
+        return draft;
+      });
+      return {
+        schema_version: "voah-start-intake-response.v1",
+        job_id: jobId,
+        status: "succeeded",
+        result: workerResult
+      };
+    } catch (error) {
+      await this.storeService.mutate(async (draft) => {
+        const currentJob = draft.intake_jobs.find((item) => item.id === jobId);
+        currentJob.status = "failed";
+        currentJob.finished_at = nowIso();
+        currentJob.error_message = error.message || String(error);
+        const currentProduct = draft.products.find((item) => item.id === product.id);
+        currentProduct.status = "failed";
+        currentProduct.material_status = "入库失败";
+        currentProduct.updated_at = nowIso();
+        return draft;
+      });
+      throw error;
+    }
   }
 
   async runTask(taskId, options = {}) {
@@ -843,13 +1075,18 @@ export class ProductionRecipe {
       cwd: projectDir,
       env: hyperframesTimeoutEnv
     });
-    await this.renderHyperframesWithRetry({ task, jobId, projectDir });
+    const renderResult = await this.renderHyperframesWithRetry({ task, jobId, projectDir });
     const manifestPath = path.join(projectDir, "hyperframes_subtitle_burn_manifest.json");
     const payload = await readJson(manifestPath);
     payload.outputs.final_subtitled = path.join(projectDir, "final_subtitled.mp4");
+    payload.outputs.overlay_fallback_manifest = path.join(projectDir, "overlay_subtitle_burn_manifest.json");
+    payload.render = renderResult;
     payload.qa = {
       status: existsSync(payload.outputs.final_subtitled) ? "ok" : "warning",
-      warnings: existsSync(payload.outputs.final_subtitled) ? [] : ["final_subtitled.mp4 missing after render"]
+      warnings: [
+        ...(existsSync(payload.outputs.final_subtitled) ? [] : ["final_subtitled.mp4 missing after render"]),
+        ...(renderResult.fallback_used ? [`HyperFrames render fallback used: ${renderResult.fallback_reason}`] : [])
+      ]
     };
     await writeJson(manifestPath, payload);
     return { path: manifestPath, payload };
@@ -891,6 +1128,7 @@ export class ProductionRecipe {
 
   async renderHyperframesWithRetry({ task, jobId, projectDir }) {
     const output = path.join(projectDir, "final_subtitled.mp4");
+    const timeoutMs = Math.max(60000, Math.round(safeNumber(process.env.VOAH_HYPERFRAMES_RENDER_TIMEOUT_MS, 90000)));
     const baseArgs = [
       "render",
       ".",
@@ -923,25 +1161,83 @@ export class ProductionRecipe {
         jobId,
         ...hyperframesCommandArgs(baseArgs),
         cwd: projectDir,
-        env
+        env,
+        timeoutMs
       });
+      return {
+        renderer: "hyperframes",
+        fallback_used: false,
+        output
+      };
     } catch (error) {
       await writeFile(
         path.join(task.task_dir, "logs", `${jobId}.log`),
         `\n--- render retry ---\n${error.message}\n`,
         { flag: "a" }
       );
-      await this.runCommand({
-        task,
-        jobId,
-        ...hyperframesCommandArgs(baseArgs.filter((item) => item !== "--no-low-memory-mode").concat("--low-memory-mode")),
-        cwd: projectDir,
-        env: {
-          ...env,
-          PRODUCER_LOW_MEMORY_MODE: "true"
-        }
-      });
+      try {
+        await this.runCommand({
+          task,
+          jobId,
+          ...hyperframesCommandArgs(baseArgs.filter((item) => item !== "--no-low-memory-mode").concat("--low-memory-mode")),
+          cwd: projectDir,
+          env: {
+            ...env,
+            PRODUCER_LOW_MEMORY_MODE: "true"
+          },
+          timeoutMs
+        });
+        return {
+          renderer: "hyperframes-low-memory",
+          fallback_used: false,
+          output
+        };
+      } catch (retryError) {
+        await writeFile(
+          path.join(task.task_dir, "logs", `${jobId}.log`),
+          `\n--- overlay fallback ---\n${retryError.message}\n`,
+          { flag: "a" }
+        );
+        await this.burnSubtitlesWithOverlay({
+          task,
+          jobId,
+          projectDir,
+          output,
+          reason: retryError.message || error.message || "hyperframes render failed"
+        });
+        return {
+          renderer: "ffmpeg-png-overlay",
+          fallback_used: true,
+          fallback_reason: retryError.message || error.message || "hyperframes render failed",
+          output
+        };
+      }
     }
+  }
+
+  async burnSubtitlesWithOverlay({ task, jobId, projectDir, output, reason }) {
+    await this.runCommand({
+      task,
+      jobId,
+      command: "python3",
+      args: [
+        path.join(this.storeService.workspaceRoot, "scripts", "voah_burn_subtitles_overlay.py"),
+        "--caption-plan",
+        path.join(task.task_dir, "caption_plan.json"),
+        "--base-video",
+        path.join(projectDir, "media", "base_video.mp4"),
+        "--voice-wav",
+        path.join(projectDir, "media", "voice.wav"),
+        "--output",
+        output,
+        "--work-dir",
+        projectDir,
+        "--manifest",
+        path.join(projectDir, "overlay_subtitle_burn_manifest.json"),
+        "--reason",
+        reason
+      ]
+    });
   }
 
   async writeQaGate({ task, jobId }) {
@@ -1145,6 +1441,65 @@ export class ProductionRecipe {
     return { path: outputPath, payload };
   }
 
+  async writeDesktopQualityReport({ task, jobId, qaGatePayload }) {
+    const outputPath = path.join(task.task_dir, "desktop_quality_report.json");
+    const markdownPath = path.join(task.task_dir, "desktop_quality_report.md");
+    try {
+      await this.runCommand({
+        task,
+        jobId,
+        command: "python3",
+        args: [
+          path.join(this.storeService.workspaceRoot, "scripts", "voah_build_desktop_quality_report.py"),
+          "--task-dir",
+          task.task_dir,
+          "--output",
+          outputPath,
+          "--markdown-output",
+          markdownPath
+        ]
+      });
+      const report = existsSync(outputPath) ? await readJson(outputPath) : {};
+      await this.storeService.mutate(async (draft) => {
+        draft.quality_reports = [
+          {
+            id: compactId("quality"),
+            task_id: task.id,
+            status: report.qa?.status || "warning",
+            summary: report.summary || {},
+            checks: report.checks || [],
+            report_path: outputPath,
+            markdown_path: markdownPath,
+            final_video: report.outputs?.final_video || path.join(task.task_dir, "hyperframes_subtitle_burn", "final_subtitled.mp4"),
+            created_at: nowIso()
+          },
+          ...((draft.quality_reports || []).filter((item) => item.task_id !== task.id))
+        ];
+        return draft;
+      });
+      return report;
+    } catch (error) {
+      qaGatePayload.qa = qaGatePayload.qa || {};
+      qaGatePayload.qa.warnings = [
+        ...(qaGatePayload.qa.warnings || []),
+        `desktop quality report failed: ${error.message || String(error)}`
+      ];
+      await writeJson(outputPath, {
+        schema_version: "1.0.0",
+        stage: "voah_desktop_quality_report",
+        created_at: nowIso(),
+        task_dir: task.task_dir,
+        status: "failed",
+        error: error.message || String(error),
+        qa: {
+          status: "warning",
+          warnings: [`desktop quality report failed: ${error.message || String(error)}`]
+        }
+      });
+      return null;
+    }
+  }
+
   async writeExportRecord({ task, product, jobId }) {
     const qaGatePath = path.join(task.task_dir, "qa_gate_report.json");
     const qaGate = existsSync(qaGatePath) ? await readJson(qaGatePath) : {};
@@ -1205,14 +1560,23 @@ export class ProductionRecipe {
       next_consumers: ["operator-review", "export-library"]
     };
     await writeJson(exportPath, payload);
+    const qualityReport = await this.writeDesktopQualityReport({ task, jobId, qaGatePayload: payload });
+    if (qualityReport) {
+      payload.outputs.desktop_quality_report = path.join(task.task_dir, "desktop_quality_report.json");
+      payload.outputs.desktop_quality_report_md = path.join(task.task_dir, "desktop_quality_report.md");
+      await writeJson(exportPath, payload);
+    }
     return { path: exportPath, payload };
   }
 
-  async runCommand({ task, jobId, command, args, cwd, env }) {
+  async runCommand({ task, jobId, command, args, cwd, env, timeoutMs = 0 }) {
     const logPath = path.join(task.task_dir, "logs", `${jobId}.log`);
     const started = `$ ${command} ${args.join(" ")}\n\n`;
     await writeFile(logPath, started, { flag: "a" });
     return new Promise((resolve, reject) => {
+      let timedOut = false;
+      let timeout = null;
+      let forceKillTimeout = null;
       const child = spawn(command, args, {
         cwd: cwd || this.storeService.workspaceRoot,
         env: {
@@ -1228,18 +1592,44 @@ export class ProductionRecipe {
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString();
       });
-      child.on("error", reject);
+      if (timeoutMs) {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+          forceKillTimeout = setTimeout(() => child.kill("SIGKILL"), 5000);
+        }, timeoutMs);
+      }
+      child.on("error", async (error) => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        if (forceKillTimeout) {
+          clearTimeout(forceKillTimeout);
+        }
+        await writeFile(logPath, `\nprocess_error=${error.message || String(error)}\n`, { flag: "a" });
+        reject(error);
+      });
       child.on("close", async (code) => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        if (forceKillTimeout) {
+          clearTimeout(forceKillTimeout);
+        }
         const output = [
           stdout ? `--- stdout ---\n${stdout}` : "",
           stderr ? `--- stderr ---\n${stderr}` : "",
+          timedOut ? `\ntimeout_ms=${timeoutMs}\n` : "",
           `\nexit_code=${code}\n`
         ]
           .filter(Boolean)
           .join("\n");
         await writeFile(logPath, output, { flag: "a" });
-        if (code === 0) {
+        if (code === 0 && !timedOut) {
           resolve({ stdout, stderr });
+        } else if (timedOut) {
+          const tail = (stderr || stdout || "").split("\n").slice(-16).join("\n").trim();
+          reject(new Error(`${command} 超时 ${Math.round(timeoutMs / 1000)}s${tail ? `：${tail}` : ""}`));
         } else {
           const tail = (stderr || stdout || "").split("\n").slice(-16).join("\n").trim();
           reject(new Error(`${command} 退出码 ${code}${tail ? `：${tail}` : ""}`));

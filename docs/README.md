@@ -36,6 +36,7 @@
 - `00-overview/Voah桌面应用数据模型与任务状态机.md`
 - `00-overview/Voah桌面应用服务边界与Worker合同.md`
 - `00-overview/Voah批量生产SOP与产能方案.md`
+- `00-overview/Voah桌面端使用说明与功能介绍.md`
 - `00-overview/Voah仓库范围与发布约定.md`
 - `00-overview/混剪工作台技术方案.md`
 

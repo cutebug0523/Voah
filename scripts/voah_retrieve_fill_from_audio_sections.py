@@ -17,7 +17,7 @@ from typing import Any
 
 
 SEARCH_SCRIPT = Path("/Users/noah/.codex/skills/voah-shot-retrieval/scripts/search.py")
-MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION = 2
+DEFAULT_MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION = 2
 
 DOMAIN_TERMS = [
     "SPF50+",
@@ -41,7 +41,12 @@ DOMAIN_TERMS = [
     "泛油",
     "细纹",
     "遇水",
+    "倒水",
     "泼水",
+    "水流",
+    "喷洒",
+    "测试",
+    "擦拭",
     "纸巾",
     "海边",
     "海滩",
@@ -84,7 +89,9 @@ TERM_ALIASES = {
     "紫外线": ["UV"],
     "测试卡": ["感应卡"],
     "防晒": ["防晒值", "防晒力"],
-    "遇水": ["泼水", "防水"],
+    "遇水": ["泼水", "倒水", "水流", "喷洒", "防水"],
+    "倒水": ["泼水", "水流", "倾倒", "遇水"],
+    "泼水": ["倒水", "水流", "遇水"],
     "出汗": ["汗", "高温"],
     "脱妆": ["斑驳", "花妆", "掉妆"],
     "卡粉": ["卡纹", "细纹"],
@@ -119,6 +126,50 @@ OPENING_SOLUTION_PROOF_TERMS = [
     "验证",
 ]
 
+PRODUCT_TEXTURE_FORBIDDEN_PROOF_TERMS = [
+    "礼盒",
+    "套装",
+    "面膜",
+    "手臂",
+    "试色",
+    "晕染",
+    "精华",
+    "精华液",
+    "灵芝",
+    "高浓",
+    "高浓度",
+    "60倍",
+    "六十倍",
+    "爆浆",
+    "妆养",
+    "养肤",
+    "护肤级",
+    "水珠",
+    "水滴",
+    "遇水",
+    "泼水",
+    "倒水",
+    "防水",
+    "防汗",
+    "测试",
+    "擦拭",
+]
+
+PRODUCT_TEXTURE_SECTION_TERMS = [
+    "粉芯",
+    "膏体",
+    "取粉",
+    "贴肤",
+    "服帖",
+    "质感",
+    "开盖",
+    "礼盒",
+    "外壳",
+    "款式",
+    "陈列",
+    "国风",
+]
+
 OPENING_ALLOWED_SOLUTION_TERMS = [
     "遇水",
     "防水",
@@ -143,6 +194,135 @@ CTA_PRODUCT_USE_TERMS = [
     "妆效",
     "微笑示意",
     "使用效果",
+]
+
+FACE_APPLY_TERMS = [
+    "粉扑",
+    "轻拍",
+    "上脸",
+    "面部",
+    "脸颊",
+    "脸上",
+    "补妆",
+    "妆效",
+    "底妆",
+    "气色",
+    "柔焦",
+    "服帖",
+    "服贴",
+    "清透",
+    "清爽",
+    "自然",
+]
+
+FACE_APPLY_STRONG_TERMS = [
+    "粉扑",
+    "轻拍",
+    "上脸",
+    "面部",
+    "脸颊",
+    "脸上",
+    "妆效",
+    "底妆",
+    "气色",
+    "柔焦",
+    "服帖",
+    "服贴",
+    "清透",
+]
+
+PRODUCT_DETAIL_TERMS = [
+    "开盖",
+    "打开",
+    "粉芯",
+    "膏体",
+    "取粉",
+    "质地",
+    "镜面",
+    "气垫盒",
+    "粉底液",
+    "外观",
+    "手持",
+]
+
+PRODUCT_CORE_DETAIL_TERMS = [
+    "开盖",
+    "打开",
+    "粉芯",
+    "膏体",
+    "取粉",
+    "质地",
+    "镜面",
+    "粉底液",
+]
+
+PACKAGING_TERMS = [
+    "礼盒",
+    "陈列",
+    "外壳",
+    "托盘",
+    "多款",
+    "套装",
+    "替换装",
+    "周边",
+    "活动价",
+    "自用",
+    "送人",
+]
+
+PACKAGING_FORBIDDEN_FOR_FACE_APPLY = [
+    term
+    for term in PACKAGING_TERMS
+    if term not in {"活动价", "自用", "送人"}
+]
+
+PROOF_TEST_TERMS = [
+    "遇水",
+    "倒水",
+    "泼水",
+    "防水",
+    "防汗",
+    "测试",
+    "擦拭",
+    "水流",
+    "水珠",
+    "喷洒",
+    "纸巾",
+    "按压",
+    "不脱妆",
+    "不渗透",
+    "酱汁",
+]
+
+PROOF_VISUAL_ACTION_TERMS = [
+    "泼水",
+    "倒水",
+    "倾倒",
+    "水流",
+    "喷洒",
+    "水雾",
+    "水珠",
+    "水滴",
+    "纸巾",
+    "按压",
+    "擦拭",
+    "酱汁",
+    "不渗透",
+    "不脱妆",
+]
+
+STRONG_PROOF_OR_FORMULA_TERMS = [
+    "精华",
+    "精华液",
+    "灵芝",
+    "高浓",
+    "高浓度",
+    "60倍",
+    "六十倍",
+    "爆浆",
+    "妆养",
+    "养肤",
+    *PROOF_TEST_TERMS,
 ]
 
 
@@ -559,6 +739,123 @@ def term_in_blob(term: str, blob: str) -> bool:
     return any(normalized(variant) in blob for variant in term_variants(term))
 
 
+def hits_for_terms(blob: str, terms: list[str]) -> list[str]:
+    return [term for term in terms if term in blob]
+
+
+def visual_theme_contract(section: dict[str, Any]) -> dict[str, Any]:
+    query = section_query(section)
+    role = str(section.get("role") or "")
+    voice_text = str(section.get("voice_text") or "")
+    themes: list[str] = []
+    required_any: dict[str, list[str]] = {}
+    forbidden: list[str] = []
+    strict = False
+
+    def add_theme(name: str, terms: list[str]) -> None:
+        if name not in themes:
+            themes.append(name)
+        required_any[name] = terms
+
+    if role == "cta" or any(term in query for term in PACKAGING_TERMS):
+        add_theme("packaging", PACKAGING_TERMS)
+        strict = True
+    if role == "proof" or any(term in query for term in PROOF_TEST_TERMS):
+        add_theme("proof_test", PROOF_TEST_TERMS)
+        strict = True
+    if any(term in query for term in PRODUCT_DETAIL_TERMS):
+        add_theme("product_detail", PRODUCT_DETAIL_TERMS)
+        if role == "product":
+            strict = True
+    if any(term in query for term in FACE_APPLY_TERMS):
+        add_theme("face_apply", FACE_APPLY_TERMS)
+        if role in ("opening", "product"):
+            strict = True
+
+    if role in ("opening", "product") and "face_apply" in themes and "product_detail" in themes:
+        primary_text = voice_text if voice_text else query
+        face_index = min((primary_text.find(term) for term in FACE_APPLY_TERMS if term in primary_text), default=9999)
+        detail_index = min((primary_text.find(term) for term in PRODUCT_DETAIL_TERMS if term in primary_text), default=9999)
+        if face_index == detail_index == 9999:
+            face_index = min((query.find(term) for term in FACE_APPLY_TERMS if term in query), default=9999)
+            detail_index = min((query.find(term) for term in PRODUCT_DETAIL_TERMS if term in query), default=9999)
+        keep = "face_apply" if face_index <= detail_index else "product_detail"
+        themes = [keep]
+        required_any = {keep: required_any[keep]}
+
+    if "packaging" in themes and role == "cta":
+        themes = ["packaging"]
+        required_any = {"packaging": PACKAGING_TERMS}
+        forbidden.extend(CTA_PRODUCT_USE_TERMS)
+    elif "packaging" in themes and "product_detail" in themes:
+        themes = ["product_detail"]
+        required_any = {"product_detail": PRODUCT_CORE_DETAIL_TERMS}
+    elif "packaging" in themes and "face_apply" in themes:
+        themes = ["face_apply"]
+        required_any = {"face_apply": FACE_APPLY_STRONG_TERMS}
+        forbidden.extend(term for term in PACKAGING_FORBIDDEN_FOR_FACE_APPLY if term not in forbidden)
+    elif "packaging" in themes:
+        themes = ["packaging"]
+        required_any = {"packaging": PACKAGING_TERMS}
+    elif "proof_test" in themes:
+        themes = ["proof_test"]
+        required_any = {"proof_test": PROOF_TEST_TERMS}
+    elif "face_apply" in themes:
+        required_any = {"face_apply": FACE_APPLY_STRONG_TERMS}
+        forbidden.extend(term for term in PACKAGING_FORBIDDEN_FOR_FACE_APPLY if term not in forbidden)
+        forbidden.extend(term for term in STRONG_PROOF_OR_FORMULA_TERMS if term not in forbidden)
+    elif "product_detail" in themes:
+        required_any = {"product_detail": PRODUCT_CORE_DETAIL_TERMS}
+        forbidden.extend(term for term in PROOF_TEST_TERMS if term not in forbidden)
+        forbidden.extend(term for term in PACKAGING_TERMS if term not in forbidden)
+
+    forbidden = list(dict.fromkeys(forbidden))
+    return {
+        "themes": themes,
+        "required_any": required_any,
+        "forbidden": forbidden,
+        "strict": strict,
+    }
+
+
+def visual_theme_eval(candidate: dict[str, Any], section: dict[str, Any]) -> dict[str, Any]:
+    contract = visual_theme_contract(section)
+    blob = candidate_full_text_blob(candidate)
+    theme_hits = {
+        theme: hits_for_terms(blob, terms)
+        for theme, terms in (contract.get("required_any") or {}).items()
+    }
+    forbidden_hits = hits_for_terms(blob, contract.get("forbidden") or [])
+    required_themes = contract.get("themes") or []
+    missing_themes = [theme for theme in required_themes if not theme_hits.get(theme)]
+    allowed = not forbidden_hits and (not contract.get("strict") or not missing_themes)
+    return {
+        "contract": contract,
+        "theme_hits": theme_hits,
+        "forbidden_hits": forbidden_hits,
+        "missing_themes": missing_themes,
+        "allowed": allowed,
+    }
+
+
+def visual_theme_allowed(candidate: dict[str, Any], section: dict[str, Any]) -> bool:
+    return bool(visual_theme_eval(candidate, section).get("allowed"))
+
+
+def visual_theme_reason(theme_eval: dict[str, Any]) -> str:
+    contract = theme_eval.get("contract") or {}
+    missing = theme_eval.get("missing_themes") or []
+    forbidden = theme_eval.get("forbidden_hits") or []
+    parts: list[str] = []
+    if missing:
+        parts.append(f"缺少视觉主题命中：{'、'.join(missing)}")
+    if forbidden:
+        parts.append(f"命中当前段禁用视觉：{'、'.join(forbidden[:8])}")
+    if not parts and contract.get("themes"):
+        parts.append("视觉主题合同通过")
+    return "；".join(parts)
+
+
 def section_is_opening_without_solution(section: dict[str, Any]) -> bool:
     if str(section.get("role") or "") != "opening":
         return False
@@ -574,18 +871,57 @@ def section_is_opening_without_solution(section: dict[str, Any]) -> bool:
     return not any(term in value for term in OPENING_ALLOWED_SOLUTION_TERMS)
 
 
+def section_is_product_texture_without_proof(section: dict[str, Any]) -> bool:
+    if str(section.get("role") or "") != "product":
+        return False
+    value = section_query(section)
+    if any(term in value for term in OPENING_ALLOWED_SOLUTION_TERMS):
+        return False
+    return any(term in value for term in PRODUCT_TEXTURE_SECTION_TERMS)
+
+
 def section_forbidden_hits(candidate: dict[str, Any], section: dict[str, Any]) -> list[str]:
-    if not section_is_opening_without_solution(section):
-        if section_is_cta_packaging(section):
-            blob = candidate_full_text_blob(candidate)
-            return [term for term in CTA_PRODUCT_USE_TERMS if term in blob]
-        return []
     blob = candidate_full_text_blob(candidate)
-    return [term for term in OPENING_SOLUTION_PROOF_TERMS if term in blob]
+    theme_eval = visual_theme_eval(candidate, section)
+    theme_forbidden_hits = list(theme_eval.get("forbidden_hits") or [])
+    if section_is_opening_without_solution(section):
+        return list(dict.fromkeys(theme_forbidden_hits + [term for term in OPENING_SOLUTION_PROOF_TERMS if term in blob]))
+    if section_is_product_texture_without_proof(section):
+        return list(dict.fromkeys(theme_forbidden_hits + [term for term in PRODUCT_TEXTURE_FORBIDDEN_PROOF_TERMS if term in blob]))
+    if section_is_cta_packaging(section):
+        return list(dict.fromkeys(theme_forbidden_hits + [term for term in CTA_PRODUCT_USE_TERMS if term in blob]))
+    return theme_forbidden_hits
+
+
+def section_forbidden_reason(section: dict[str, Any], forbidden_hits: list[str]) -> str:
+    terms = "、".join(forbidden_hits[:8])
+    if section_is_opening_without_solution(section):
+        return f"opening 痛点段禁止提前使用解决方案/证明素材：{terms}"
+    if section_is_product_texture_without_proof(section):
+        return f"产品质感/礼盒段禁止混入强功效演示素材：{terms}"
+    if section_is_cta_packaging(section):
+        return f"CTA 礼盒/活动段禁止混入上脸使用素材：{terms}"
+    return f"当前段落禁止使用该候选素材：{terms}"
 
 
 def candidate_allowed_for_section(candidate: dict[str, Any], section: dict[str, Any]) -> bool:
-    return not section_forbidden_hits(candidate, section)
+    return not section_forbidden_hits(candidate, section) and visual_theme_allowed(candidate, section)
+
+
+def candidate_allowed_for_top_up(candidate: dict[str, Any], section: dict[str, Any]) -> bool:
+    if not visual_theme_allowed(candidate, section):
+        return False
+    forbidden_hits = section_forbidden_hits(candidate, section)
+    if not forbidden_hits:
+        return True
+    if str(section.get("role") or "") == "product" and (
+        visual_theme_contract(section).get("themes") or []
+    ) == ["product_detail"]:
+        hard_forbidden = set(PROOF_TEST_TERMS) | {"礼盒", "套装", "面膜", "精华", "精华液", "灵芝", "60倍", "六十倍", "妆养"}
+        return not any(term in hard_forbidden for term in forbidden_hits)
+    if section_is_cta_packaging(section):
+        return not any(term in CTA_PRODUCT_USE_TERMS for term in forbidden_hits)
+    return False
 
 
 def section_is_cta_packaging(section: dict[str, Any]) -> bool:
@@ -745,6 +1081,52 @@ def term_positions_in_text(text: str, terms: list[str]) -> dict[str, float]:
     return positions
 
 
+def text_segments_with_positions(text: str) -> list[tuple[float, str]]:
+    value = str(text or "")
+    if not value:
+        return []
+    parts = [item for item in re.split(r"([，。！？、,.!?；;：])", value) if item]
+    segments: list[tuple[float, str]] = []
+    cursor = 0
+    current = ""
+    current_start = 0
+    punctuation = set("，。！？、,.!?；;：")
+    for part in parts:
+        if not current:
+            current_start = cursor
+        current += part
+        cursor += len(part)
+        if part in punctuation:
+            body = current.strip()
+            if body:
+                segments.append((current_start / max(1, len(value)), body))
+            current = ""
+    if current.strip():
+        segments.append((current_start / max(1, len(value)), current.strip()))
+    return segments
+
+
+def proof_action_positions_in_parent(child: dict[str, Any], section: dict[str, Any]) -> list[float]:
+    if str(section.get("role") or "") != "proof":
+        return []
+    parent_text = str(child.get("parent_visual_summary") or "")
+    positions: list[float] = []
+    for position, segment in text_segments_with_positions(parent_text):
+        if any(term in segment for term in PROOF_VISUAL_ACTION_TERMS):
+            positions.append(position)
+    if positions:
+        return positions
+    fallback_text = " ".join(
+        str(item or "")
+        for item in (
+            parent_text,
+            child.get("parent_source_meaning"),
+            " ".join(str(action) for action in child.get("parent_visual_actions") or []),
+        )
+    )
+    return list(term_positions_in_text(fallback_text, PROOF_VISUAL_ACTION_TERMS).values())
+
+
 def section_term_positions(candidate: dict[str, Any], section: dict[str, Any], terms: list[str]) -> dict[str, float]:
     story_text = text_blob(candidate)
     return term_positions_in_text(story_text, terms)
@@ -759,6 +1141,26 @@ def child_order_hint_score(child_index: int, child_count: int, term_positions: d
         target_positions = list(term_positions.values())
     target = sum(target_positions) / len(target_positions)
     return max(0.0, 0.42 - abs(center - target)) * 0.45
+
+
+def child_proof_action_order_score(child: dict[str, Any], section: dict[str, Any], child_index: int, child_count: int) -> float:
+    positions = proof_action_positions_in_parent(child, section)
+    if child_count <= 1 or not positions:
+        return 0.0
+    center = (child_index + 0.5) / child_count
+    target = sum(positions) / len(positions)
+    return max(0.0, 0.62 - abs(center - target)) * 0.9
+
+
+def unverified_proof_child_late_bias(child: dict[str, Any], section: dict[str, Any], child_index: int, child_count: int) -> float:
+    if str(section.get("role") or "") != "proof" or child_count <= 1:
+        return 0.0
+    hits = child_term_hit_info(child, section)
+    parent_hits = child_parent_context_hits(child, section)
+    if hits or not parent_hits or child_text_is_verified(child):
+        return 0.0
+    late_ratio = child_index / max(1, child_count - 1)
+    return late_ratio * 0.9 - (1.0 - late_ratio) * 0.4
 
 
 def hard_visual_terms(section: dict[str, Any]) -> list[str]:
@@ -812,6 +1214,12 @@ def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, An
         parent_hits = child_parent_context_hits(child, section)
         score = child_semantic_weight(child, section)
         score += child_order_hint_score(child_index, len(children), term_positions, hits)
+        proof_order_score = child_proof_action_order_score(child, section, child_index, len(children))
+        if proof_order_score:
+            score += proof_order_score
+        late_bias = unverified_proof_child_late_bias(child, section, child_index, len(children))
+        if late_bias:
+            score += late_bias
         if parent_hits and not hits:
             score -= 0.28
         if not child_text_is_verified(child):
@@ -830,15 +1238,23 @@ def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, An
 
 def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any]) -> dict[str, Any]:
     preferred_child_ids = [str(item) for item in candidate.get("llm_preferred_child_physical_shot_ids") or []]
+    scored, term_positions, target_terms = ranked_child_physical_shots(candidate, section)
+    best_scored_child_id = str(scored[0][2].get("shot_id") or "") if scored else ""
     if preferred_child_ids:
         for child in candidate.get("child_physical_shots") or []:
             if not isinstance(child, dict) or not is_child_renderable(child):
                 continue
             if str(child.get("shot_id") or "") in preferred_child_ids:
-                target_terms = hard_visual_terms(section)
                 hits = [str(item["term"]) for item in child_term_hit_info(child, section)]
                 parent_hits = child_parent_context_hits(child, section)
                 inherited_only = bool(target_terms and parent_hits and not hits)
+                if (
+                    str(section.get("role") or "") == "proof"
+                    and inherited_only
+                    and best_scored_child_id
+                    and best_scored_child_id != str(child.get("shot_id") or "")
+                ):
+                    break
                 base = {
                     "target_visual_terms": target_terms,
                     "semantic_hits": hits,
@@ -852,7 +1268,6 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
                 }
                 return select_child_metadata_from_child(candidate, section, child, base)
 
-    scored, term_positions, target_terms = ranked_child_physical_shots(candidate, section)
     if not scored:
         return {
             "mode": "story_unit_clip",
@@ -899,6 +1314,7 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
             f"story unit 内子镜头匹配：{best_child.get('shot_id')}；命中 "
             f"{'、'.join(hits) if hits else '无硬视觉词'}"
             f"{'；硬词仅见于父级上下文：' + '、'.join(parent_context_hits[:6]) if inherited_only_hits else ''}"
+            f"{'；按父级证明动作顺序定位' if child_proof_action_order_score(best_child, section, _child_index, len([child for child in candidate.get('child_physical_shots') or [] if isinstance(child, dict) and is_child_renderable(child)])) else ''}"
             f"{'；使用 story 文本顺序定位' if term_positions else ''}"
         ),
         "source_clip_path": source_path,
@@ -935,6 +1351,15 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
     if max_duration <= 0:
         return []
     intra = child_selection_start(candidate, section)
+    if section_is_cta_packaging(section) and candidate_duration(candidate) >= 0.3:
+        intra = dict(intra)
+        intra["child_physical_shot_id"] = ""
+        intra["source_start_offset_s"] = 0.0
+        intra["start_index"] = 0
+        intra["reason"] = (
+            f"{intra.get('reason') or ''}；CTA/包装段使用 story unit 从开头连续取片，"
+            "避免从中段 child 起点造成结尾短缺"
+        ).strip("；")
     children = intra.get("children") or []
     parent_clip = candidate.get("trimmed_clip_path") or candidate.get("source_clip_path") or ""
     parent_duration = candidate_duration(candidate)
@@ -947,8 +1372,9 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
     remaining = max_duration
     start_index = int(intra.get("start_index") or 0)
     ordered_children = children[start_index:]
+    max_child_clips = max_child_clips_per_story_unit(section)
     for child in ordered_children:
-        if len(segments) >= MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION:
+        if len(segments) >= max_child_clips:
             break
         duration = child_duration(child)
         if duration <= 0:
@@ -960,6 +1386,14 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
         if remaining <= 0.03:
             break
     return segments
+
+
+def max_child_clips_per_story_unit(section: dict[str, Any]) -> int:
+    if section_is_cta_packaging(section):
+        return 4
+    if str(section.get("role") or "") == "proof":
+        return 4
+    return DEFAULT_MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION
 
 
 def parent_start_offset_from_child(candidate: dict[str, Any], intra: dict[str, Any]) -> float:
@@ -1177,10 +1611,15 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
     forbidden_hits = section_forbidden_hits(candidate, section)
     if forbidden_hits:
         score -= 1.4
-        risks.append(
-            "opening 痛点段禁止提前使用解决方案/证明素材："
-            + "、".join(forbidden_hits[:8])
-        )
+        risks.append(section_forbidden_reason(section, forbidden_hits))
+    theme_eval = visual_theme_eval(candidate, section)
+    if theme_eval.get("allowed"):
+        if (theme_eval.get("contract") or {}).get("themes"):
+            score += 0.18
+            reasons.append(visual_theme_reason(theme_eval))
+    else:
+        score -= 1.6
+        risks.append(f"视觉主题合同不通过：{visual_theme_reason(theme_eval)}")
     output = dict(candidate)
     output["adjusted_score"] = round(score, 6)
     output["fill_reasons"] = reasons
@@ -1190,6 +1629,11 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
     output["required_visual_hits"] = visual_hits
     output["required_visual_score"] = visual_score
     output["section_forbidden_hits"] = forbidden_hits
+    output["visual_theme_contract"] = theme_eval.get("contract")
+    output["visual_theme_hits"] = theme_eval.get("theme_hits")
+    output["visual_theme_forbidden_hits"] = theme_eval.get("forbidden_hits")
+    output["visual_theme_missing"] = theme_eval.get("missing_themes")
+    output["visual_theme_allowed"] = bool(theme_eval.get("allowed"))
     return output
 
 
@@ -1232,6 +1676,49 @@ def candidate_from_index_record(record: dict[str, Any], section: dict[str, Any])
         "fill_reasons": ["final selection override: semantic/visual fit is better than raw top score"],
         "fill_risks": [],
     }
+
+
+def expand_with_theme_candidates(
+    candidates: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    section: dict[str, Any],
+    used_counts: dict[str, int] | None = None,
+    limit: int = 18,
+) -> list[dict[str, Any]]:
+    selected = list(candidates)
+    seen = {str(item.get("shot_id") or "") for item in selected}
+    extras: list[dict[str, Any]] = []
+    for record in records:
+        shot_id = str(record.get("shot_id") or "")
+        if not shot_id or shot_id in seen:
+            continue
+        if record.get("planning_granularity") not in (None, "", "story_unit"):
+            continue
+        candidate = adjusted_candidate(candidate_from_index_record(record, section), section, used_counts or {})
+        if not candidate_renderable(candidate):
+            continue
+        if not visual_theme_allowed(candidate, section):
+            continue
+        if not candidate_allowed_for_top_up(candidate, section):
+            continue
+        extras.append(candidate)
+    extras.sort(
+        key=lambda item: (
+            float(item.get("required_visual_score") or 0),
+            candidate_semantic_score(item),
+            candidate_duration(item),
+            candidate_score(item),
+        ),
+        reverse=True,
+    )
+    for item in extras[:limit]:
+        shot_id = str(item.get("shot_id") or "")
+        if shot_id in seen:
+            continue
+        item["fill_reasons"] = list(item.get("fill_reasons") or []) + ["全量素材库同主题候选补入 embedding pool"]
+        selected.append(item)
+        seen.add(shot_id)
+    return selected
 
 
 def apply_selection_overrides(
@@ -1295,6 +1782,8 @@ def allocate_clip_plan(selected: list[dict[str, Any]], section: dict[str, Any]) 
 
 
 def candidates_compatible(seed: dict[str, Any] | None, item: dict[str, Any], section: dict[str, Any]) -> bool:
+    if not visual_theme_allowed(item, section):
+        return False
     if section_is_cta_packaging(section):
         required_hits = set(required_visual_hits(item, section))
         packaging_hits = {
@@ -1312,6 +1801,9 @@ def candidates_compatible(seed: dict[str, Any] | None, item: dict[str, Any], sec
     required_hits = set(required_visual_hits(item, section))
     if required_hits:
         return True
+    item_theme_hits = visual_theme_eval(item, section).get("theme_hits") or {}
+    if any(item_theme_hits.values()):
+        return True
     if str(seed.get("asset_id") or "") == str(item.get("asset_id") or ""):
         return True
     return False
@@ -1325,7 +1817,7 @@ def top_up_selection(
 ) -> tuple[list[dict[str, Any]], str]:
     selected = list(selected)
     note = ""
-    effective_max = max(max_clips_per_section, len(selected) + 2)
+    effective_max = max(max_clips_per_section, len(selected) + max_clips_per_section)
     selected_ids = {str(item.get("shot_id") or "") for item in selected}
     selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
     seed = selected[0] if selected else None
@@ -1339,7 +1831,7 @@ def top_up_selection(
                     continue
                 if not candidate_renderable(item):
                     continue
-                if not candidate_allowed_for_section(item, section):
+                if not candidate_allowed_for_top_up(item, section):
                     continue
                 if require_compatible and not candidates_compatible(seed, item, section):
                     continue
@@ -1365,6 +1857,8 @@ def reject_reason(candidate: dict[str, Any], section: dict[str, Any], selected_i
         return "已被选中"
     if not candidate_renderable(candidate):
         return "缺少可渲染素材路径"
+    if not visual_theme_allowed(candidate, section):
+        return f"视觉主题合同不通过：{visual_theme_reason(visual_theme_eval(candidate, section))}"
     duration = candidate_duration(candidate)
     hits = keyword_hits(candidate, section)
     risks = candidate.get("fill_risks") or candidate.get("risks") or []
@@ -1441,6 +1935,11 @@ def compact_candidate_for_llm(candidate: dict[str, Any], rank: int, section: dic
         "semantic_score": candidate.get("semantic_score"),
         "semantic_hits": candidate.get("semantic_hits") or [],
         "visual_hits": candidate.get("required_visual_hits") or [],
+        "visual_theme": {
+            "contract": candidate.get("visual_theme_contract") or visual_theme_contract(section),
+            "hits": candidate.get("visual_theme_hits") or {},
+            "allowed": bool(candidate.get("visual_theme_allowed")),
+        },
         "visual": str(candidate.get("visual_summary") or "")[:110],
         "meaning": str(candidate.get("source_meaning") or "")[:110],
         "subtitle_risk": candidate.get("hard_subtitle_risk"),
@@ -1922,7 +2421,7 @@ def apply_llm_selection(
             invalid.append(f"{requested_id}: not renderable")
             continue
         if not candidate_allowed_for_section(item, section):
-            invalid.append(f"{requested_id}: forbidden for section role")
+            invalid.append(f"{requested_id}: forbidden or visual theme mismatch for section role")
             continue
         selected.append(apply_llm_child_preference(item, preferred_child_ids))
         seen.add(shot_id)
@@ -2078,12 +2577,16 @@ def build_selection_section(
         message = f"{section.get('section_id')}: 已选素材存在 hard_subtitle_risk=medium，建议人工复核"
         warnings.append(message)
         manual_reviews.append(message)
+    visual_review_messages: set[str] = set()
     for item in selected_clips:
         if item.get("requires_visual_review"):
             message = (
                 f"{section.get('section_id')}/{item.get('shot_id')}: "
                 "child physical shot 未明确命中目标视觉词，需抽帧或 Omni 复核"
             )
+            if message in visual_review_messages:
+                continue
+            visual_review_messages.add(message)
             warnings.append(message)
             manual_reviews.append(message)
 
@@ -2281,6 +2784,7 @@ def main() -> int:
             pool_k=args.pool_k,
         )
         adjusted = [adjusted_candidate(item, section, {}) for item in candidates]
+        adjusted = expand_with_theme_candidates(adjusted, index.get("records", []), section, {})
         adjusted.sort(key=lambda item: candidate_score(item), reverse=True)
         candidate_sections.append(
             {

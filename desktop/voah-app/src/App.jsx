@@ -52,8 +52,12 @@ function createVoahClient() {
   return {
     getState: () => bridgeRequest("state"),
     createBatch: (payload) => bridgeRequest("createBatch", payload),
+    saveProduct: (payload) => bridgeRequest("saveProduct", payload),
+    startIntakeJob: (payload) => bridgeRequest("startIntakeJob", payload),
     runTask: (payload) => bridgeRequest("runTask", payload),
     retryTask: (payload) => bridgeRequest("retryTask", payload),
+    previewTts: (payload) => bridgeRequest("previewTts", payload),
+    reviewOutput: (payload) => bridgeRequest("reviewOutput", payload),
     revealPath: (targetPath) => bridgeRequest("revealPath", { path: targetPath }),
     saveSettings: (payload) => bridgeRequest("saveSettings", payload),
     saveModelKey: (payload) => bridgeRequest("saveModelKey", payload),
@@ -82,7 +86,11 @@ function statusText(status) {
     qa_warning: "QA 提醒",
     completed: "已完成",
     failed: "失败",
-    draft: "草稿"
+    draft: "草稿",
+    succeeded: "成功",
+    warning: "警告",
+    manual_review: "需复核",
+    block: "阻断"
   };
   return map[status] || status;
 }
@@ -103,6 +111,55 @@ function compactPath(value) {
   const text = String(value || "");
   if (text.length <= 80) return text;
   return `...${text.slice(-77)}`;
+}
+
+function slugify(value) {
+  return String(value || "product")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "product";
+}
+
+function mediaSrc(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (text.startsWith("file://") || text.startsWith("http://") || text.startsWith("https://")) return text;
+  if (text.startsWith("/")) return `file://${text}`;
+  return text;
+}
+
+function productDraftFrom(product) {
+  return {
+    id: product?.id || `product_${Date.now()}`,
+    name: product?.name || "",
+    brand: product?.brand || "",
+    slug: product?.slug || "",
+    source_folder: product?.source_folder || "",
+    status: product?.status || "needs_intake",
+    material_status: product?.material_status || "需处理素材",
+    claim_summary: product?.claim_summary || "",
+    selling_points: product?.selling_points || "",
+    compliance_notes: product?.compliance_notes || "",
+    cta_notes: product?.cta_notes || "",
+    default_offer: product?.default_offer || "",
+    latest_intake_run: product?.latest_intake_run || ""
+  };
+}
+
+function batchSummary(batch, tasks) {
+  const ids = new Set(batch.task_ids || []);
+  const batchTasks = tasks.filter((task) => ids.has(task.id) || task.batch_id === batch.id);
+  return {
+    total: batchTasks.length || batch.target_count || 0,
+    running: batchTasks.filter((task) => task.status === "running").length,
+    failed: batchTasks.filter((task) => task.status === "failed").length,
+    review: batchTasks.filter((task) => ["qa_warning", "awaiting_review"].includes(task.status)).length,
+    done: batchTasks.filter((task) => task.status === "completed").length,
+    taskIds: batchTasks.map((task) => task.id),
+    failedTaskIds: batchTasks.filter((task) => task.status === "failed").map((task) => task.id)
+  };
 }
 
 function useVoahState() {
@@ -181,7 +238,7 @@ function App() {
       });
       const tasks = result.tasks || [];
       for (const task of tasks) {
-        await voah.runTask({ task_id: task.id });
+        await voah.runTask({ task_id: task.id }).catch(() => null);
       }
       if (tasks[0]) {
         setSelectedTaskId(tasks[0].id);
@@ -220,6 +277,73 @@ function App() {
     try {
       await createVoahClient().retryTask({ task_id: taskId });
       await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryFailedTasks(taskIds) {
+    setBusy(true);
+    try {
+      const voah = createVoahClient();
+      for (const taskId of taskIds) {
+        await voah.retryTask({ task_id: taskId }).catch(() => null);
+      }
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveProduct(product) {
+    setBusy(true);
+    try {
+      await createVoahClient().saveProduct({ product });
+      await refresh();
+      setSelectedProductId(product.id);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err.message || "保存失败" };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startIntakeJob(payload) {
+    setBusy(true);
+    try {
+      await createVoahClient().startIntakeJob(payload);
+      await refresh();
+      return { ok: true };
+    } catch (err) {
+      await refresh();
+      return { ok: false, message: err.message || "入库失败" };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewTts(payload) {
+    setSettingsBusy(true);
+    try {
+      const result = await createVoahClient().previewTts(payload);
+      await refresh();
+      return { ok: true, preview: result.preview };
+    } catch (err) {
+      return { ok: false, message: err.message || "试听失败" };
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  async function reviewOutput(payload) {
+    setBusy(true);
+    try {
+      await createVoahClient().reviewOutput(payload);
+      await refresh();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err.message || "审核失败" };
     } finally {
       setBusy(false);
     }
@@ -330,6 +454,7 @@ function App() {
         ) : null}
         {active === "products" ? (
           <Products
+            key={selectedProduct?.id || "new-product"}
             products={state.products}
             selectedProduct={selectedProduct}
             brief={brief}
@@ -337,6 +462,9 @@ function App() {
             setSelectedProductId={setSelectedProductId}
             createBatch={createBatch}
             createFailedDemo={createFailedDemo}
+            saveProduct={saveProduct}
+            startIntakeJob={startIntakeJob}
+            intakeJobs={state.intake_jobs || []}
             busy={busy}
           />
         ) : null}
@@ -346,11 +474,12 @@ function App() {
             selectedTask={selectedTask}
             setSelectedTaskId={setSelectedTaskId}
             retryTask={retryTask}
+            retryFailedTasks={retryFailedTasks}
             revealPath={revealPath}
             busy={busy}
           />
         ) : null}
-        {active === "outputs" ? <Outputs state={state} revealPath={revealPath} /> : null}
+        {active === "outputs" ? <Outputs state={state} revealPath={revealPath} reviewOutput={reviewOutput} busy={busy} /> : null}
         {active === "settings" ? (
           <Settings
             key={JSON.stringify(state.settings || {})}
@@ -358,6 +487,8 @@ function App() {
             saveModelKey={saveModelKey}
             deleteModelKey={deleteModelKey}
             saveSettings={saveSettings}
+            previewTts={previewTts}
+            revealPath={revealPath}
             busy={settingsBusy}
           />
         ) : null}
@@ -479,13 +610,67 @@ function Dashboard({ state, counts, setActive, setSelectedProductId, setSelected
   );
 }
 
-function Products({ products, selectedProduct, brief, setBrief, setSelectedProductId, createBatch, createFailedDemo, busy }) {
+function Products({
+  products,
+  selectedProduct,
+  brief,
+  setBrief,
+  setSelectedProductId,
+  createBatch,
+  createFailedDemo,
+  saveProduct,
+  startIntakeJob,
+  intakeJobs,
+  busy
+}) {
+  const [productDraft, setProductDraft] = useState(productDraftFrom(selectedProduct));
+  const [message, setMessage] = useState("");
+  const [intakeMaxVideos, setIntakeMaxVideos] = useState(3);
+  const productIntakeJobs = (intakeJobs || []).filter((job) => job.product_id === productDraft.id).slice(0, 4);
+
+  function updateProduct(field, value) {
+    setProductDraft((current) => ({
+      ...current,
+      [field]: value
+    }));
+  }
+
+  async function handleSaveProduct() {
+    const result = await saveProduct({
+      ...productDraft,
+      slug: productDraft.slug || slugify(productDraft.name),
+      status: productDraft.latest_intake_run ? "ready" : productDraft.status
+    });
+    setMessage(result?.ok ? "产品库已保存" : result?.message || "保存失败");
+  }
+
+  async function handleStartIntake() {
+    const result = await startIntakeJob({
+      product_id: productDraft.id,
+      source_dir: productDraft.source_folder,
+      max_videos: intakeMaxVideos,
+      run_label: "desktop_intake_v1"
+    });
+    setMessage(result?.ok ? "入库任务已完成" : result?.message || "入库失败");
+  }
+
+  function createNewProduct() {
+    const next = productDraftFrom({
+      id: `product_${Date.now()}`,
+      status: "needs_intake",
+      material_status: "需处理素材"
+    });
+    setProductDraft(next);
+    setMessage("正在新增产品，保存后会进入产品列表。");
+  }
+
   return (
     <section className="page">
       <div className="layout products">
         <section className="panel">
           <div className="panel-head">
             <h2>产品</h2>
+            <button type="button" onClick={createNewProduct}>新增</button>
           </div>
           <div className="product-list">
             {products.map((product) => (
@@ -508,19 +693,63 @@ function Products({ products, selectedProduct, brief, setBrief, setSelectedProdu
         <section className="panel product-detail">
           <div className="panel-head">
             <div>
-              <h2>{selectedProduct?.name}</h2>
-              <p>{selectedProduct?.claim_summary}</p>
+              <h2>{productDraft.name || "新产品"}</h2>
+              <p>{productDraft.claim_summary || "先维护产品卖点，再创建任务。"}</p>
             </div>
-            <Badge status={selectedProduct?.status}>{selectedProduct?.material_status}</Badge>
+            <Badge status={productDraft.status}>{productDraft.material_status}</Badge>
           </div>
-          <div className="detail-grid">
-            <Info label="素材文件夹" value={selectedProduct?.source_folder} />
-            <Info label="最近入库" value={selectedProduct?.latest_intake_run || "无"} />
-            <Info label="更新时间" value={formatTime(selectedProduct?.updated_at)} />
-            <Info label="全量卖点" value={selectedProduct?.selling_points || selectedProduct?.claim_summary} />
-            <Info label="合规禁忌" value={selectedProduct?.compliance_notes} />
-            <Info label="CTA 规则" value={selectedProduct?.cta_notes} />
+          <div className="form-grid">
+            <Field label="产品名" value={productDraft.name} onChange={(value) => updateProduct("name", value)} />
+            <Field label="品牌" value={productDraft.brand} onChange={(value) => updateProduct("brand", value)} />
+            <Field label="Slug" value={productDraft.slug} onChange={(value) => updateProduct("slug", value)} />
+            <Field label="素材目录" value={productDraft.source_folder} onChange={(value) => updateProduct("source_folder", value)} />
+            <Field label="最近入库" value={productDraft.latest_intake_run} onChange={(value) => updateProduct("latest_intake_run", value)} />
+            <Field
+              label="状态"
+              value={productDraft.status}
+              onChange={(value) => updateProduct("status", value)}
+              options={[
+                { value: "needs_intake", label: "需入库" },
+                { value: "ready", label: "可生产" },
+                { value: "failed", label: "入库失败" },
+                { value: "awaiting_review", label: "待确认" }
+              ]}
+            />
+            <Field label="摘要卖点" value={productDraft.claim_summary} onChange={(value) => updateProduct("claim_summary", value)} />
+            <Field label="全量卖点" value={productDraft.selling_points} onChange={(value) => updateProduct("selling_points", value)} multiline />
+            <Field label="合规禁忌" value={productDraft.compliance_notes} onChange={(value) => updateProduct("compliance_notes", value)} multiline />
+            <Field label="CTA 规则" value={productDraft.cta_notes} onChange={(value) => updateProduct("cta_notes", value)} multiline />
+            <Field label="默认活动" value={productDraft.default_offer} onChange={(value) => updateProduct("default_offer", value)} />
           </div>
+          <div className="action-row">
+            <button type="button" className="primary" disabled={busy || !productDraft.name} onClick={handleSaveProduct}>
+              保存产品
+            </button>
+            <Field label="处理条数" type="number" value={intakeMaxVideos} onChange={(value) => setIntakeMaxVideos(Number(value))} />
+            <button
+              type="button"
+              disabled={busy || !productDraft.id || !productDraft.source_folder}
+              onClick={handleStartIntake}
+            >
+              处理素材
+            </button>
+            {message ? <span className="inline-message">{message}</span> : null}
+          </div>
+
+          {productIntakeJobs.length ? (
+            <>
+              <h3>素材处理记录</h3>
+              <div className="job-list">
+                {productIntakeJobs.map((job) => (
+                  <div key={job.id} className="job-row">
+                    <span title={job.run_dir || job.source_dir}>{job.run_dir ? compactPath(job.run_dir) : job.source_dir}</span>
+                    <Badge status={job.status}>{statusText(job.status)}</Badge>
+                    <small>{formatTime(job.finished_at || job.started_at)}</small>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
 
           <h3>创建批量任务</h3>
           <div className="form-grid">
@@ -557,13 +786,43 @@ function Products({ products, selectedProduct, brief, setBrief, setSelectedProdu
   );
 }
 
-function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, revealPath, busy }) {
+function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, retryFailedTasks, revealPath, busy }) {
   const taskJobs = state.jobs.filter((job) => job.task_id === selectedTask?.id);
   const taskArtifacts = state.artifacts.filter((artifact) => artifact.task_id === selectedTask?.id);
   const qa = state.qa_reports.find((report) => report.task_id === selectedTask?.id);
+  const batches = [...(state.batches || [])].slice(0, 6);
 
   return (
     <section className="page">
+      {batches.length ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h2>批量队列</h2>
+          </div>
+          <div className="batch-list">
+            {batches.map((batch) => {
+              const summary = batchSummary(batch, state.tasks);
+              return (
+                <div key={batch.id} className="batch-row">
+                  <div>
+                    <strong>{batch.title}</strong>
+                    <small>
+                      总数 {summary.total} · 运行 {summary.running} · 待审 {summary.review} · 失败 {summary.failed} · 完成 {summary.done}
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy || summary.failedTaskIds.length === 0}
+                    onClick={() => retryFailedTasks(summary.failedTaskIds)}
+                  >
+                    重试失败
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
       <div className="layout tasks">
         <section className="panel">
           <div className="panel-head">
@@ -664,8 +923,16 @@ function Tasks({ state, selectedTask, setSelectedTaskId, retryTask, revealPath, 
   );
 }
 
-function Outputs({ state, revealPath }) {
-  const outputTasks = state.tasks.filter((task) => ["completed", "qa_warning"].includes(task.status));
+function Outputs({ state, revealPath, reviewOutput, busy }) {
+  const [reviewNotes, setReviewNotes] = useState({});
+  const outputTasks = state.tasks.filter((task) => ["completed", "qa_warning", "awaiting_review"].includes(task.status));
+  async function handleReview(taskId, decision) {
+    await reviewOutput({
+      task_id: taskId,
+      decision,
+      note: reviewNotes[taskId] || ""
+    });
+  }
   return (
     <section className="page">
       <section className="panel">
@@ -677,18 +944,52 @@ function Outputs({ state, revealPath }) {
           <div className="output-grid">
             {outputTasks.map((task) => {
               const qa = state.qa_reports.find((report) => report.task_id === task.id);
+              const quality = (state.quality_reports || []).find((report) => report.task_id === task.id);
+              const review = (state.output_reviews || []).find((item) => item.task_id === task.id);
               const exportArtifact = state.artifacts.find((artifact) => artifact.task_id === task.id && artifact.kind === "export_record");
               const finalPath = task.task_dir ? `${task.task_dir}/hyperframes_subtitle_burn/final_subtitled.mp4` : "";
               return (
                 <article key={task.id} className="output-card">
-                  <div className="output-thumb">45s</div>
+                  <div className="output-thumb">{Math.round(task.target_duration_s || 45)}s</div>
                   <h3>{task.title}</h3>
-                  <p>{qa?.summary || "等待 QA"}</p>
-                  <Badge status={qa?.status || task.status}>{qa?.status || statusText(task.status)}</Badge>
+                  <p>{quality?.summary?.omni_final_status ? `Omni：${quality.summary.omni_final_status}` : qa?.summary || "等待 QA"}</p>
+                  <Badge status={quality?.status || qa?.status || task.status}>
+                    {statusText(quality?.status || qa?.status || task.status)}
+                  </Badge>
+                  {quality ? (
+                    <small>
+                      段落 {quality.summary?.audio_section_count || "-"} · clip {quality.summary?.selected_clip_count || "-"} · 时长{" "}
+                      {quality.summary?.final_duration_s || "-"}s
+                    </small>
+                  ) : null}
+                  {review ? <small>审核：{review.decision}</small> : null}
                   <small title={finalPath || exportArtifact?.path || ""}>{compactPath(finalPath || exportArtifact?.path || "未登记最终视频")}</small>
-                  <button type="button" onClick={() => revealPath(finalPath || exportArtifact?.path)}>
-                    打开成片
-                  </button>
+                  <textarea
+                    value={reviewNotes[task.id] || ""}
+                    rows={2}
+                    placeholder="审核备注"
+                    onChange={(event) => setReviewNotes((current) => ({ ...current, [task.id]: event.target.value }))}
+                  />
+                  <div className="output-actions">
+                    <button type="button" onClick={() => revealPath(finalPath || exportArtifact?.path)}>
+                      打开成片
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => revealPath(task.task_dir)}>
+                      任务目录
+                    </button>
+                    <button type="button" disabled={busy || !quality?.report_path} onClick={() => revealPath(quality?.report_path)}>
+                      质检报告
+                    </button>
+                    <button type="button" className="primary" disabled={busy} onClick={() => handleReview(task.id, "approved")}>
+                      通过
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => handleReview(task.id, "manual_review")}>
+                      复查
+                    </button>
+                    <button type="button" disabled={busy} onClick={() => handleReview(task.id, "rejected")}>
+                      退回
+                    </button>
+                  </div>
                 </article>
               );
             })}
@@ -701,10 +1002,12 @@ function Outputs({ state, revealPath }) {
   );
 }
 
-function Settings({ state, saveModelKey, deleteModelKey, saveSettings, busy }) {
+function Settings({ state, saveModelKey, deleteModelKey, saveSettings, previewTts, revealPath, busy }) {
   const [draftKeys, setDraftKeys] = useState({});
   const [settingsDraft, setSettingsDraft] = useState(state.settings || {});
   const [message, setMessage] = useState("");
+  const [previewText, setPreviewText] = useState("今天这款气垫，上脸是自然气色，通勤补妆也很轻薄。");
+  const [previewResult, setPreviewResult] = useState(state.tts_previews?.[0] || null);
   const modules = state.model_keys?.modules || browserPreviewModelModules.map((item) => ({ ...item, has_key: false, masked_key: "" }));
 
   function setDraft(moduleId, value) {
@@ -800,6 +1103,32 @@ function Settings({ state, saveModelKey, deleteModelKey, saveSettings, busy }) {
     setMessage(result?.ok ? "设置已保存" : result?.message || "设置保存失败");
   }
 
+  async function handlePreviewTts() {
+    const selectedVoice = TTS_VOICE_OPTIONS.find((item) => item.id === settingsDraft.tts?.voice_id);
+    const result = await previewTts({
+      text: previewText,
+      settings: state.settings || {},
+      tts: {
+        ...(settingsDraft.tts || {}),
+        voice_label: selectedVoice?.label || settingsDraft.tts?.voice_label || "",
+        speed: toNumber(settingsDraft.tts?.speed, 1.1),
+        vol: toNumber(settingsDraft.tts?.vol, 1),
+        pitch: toNumber(settingsDraft.tts?.pitch, 0),
+        voice_modify: {
+          pitch: toNumber(settingsDraft.tts?.voice_modify?.pitch, 20),
+          intensity: toNumber(settingsDraft.tts?.voice_modify?.intensity, 20),
+          timbre: toNumber(settingsDraft.tts?.voice_modify?.timbre, 0)
+        }
+      }
+    });
+    if (result?.ok) {
+      setPreviewResult(result.preview);
+      setMessage("试听已生成");
+      return;
+    }
+    setMessage(result?.message || "试听失败");
+  }
+
   const copy = settingsDraft.copy || {};
   const tts = settingsDraft.tts || {};
   const voiceModify = tts.voice_modify || {};
@@ -884,6 +1213,23 @@ function Settings({ state, saveModelKey, deleteModelKey, saveSettings, busy }) {
             <Field label="Pitch" type="number" value={voiceModify.pitch ?? 20} onChange={(value) => updateVoiceModify("pitch", value)} />
             <Field label="Intensity" type="number" value={voiceModify.intensity ?? 20} onChange={(value) => updateVoiceModify("intensity", value)} />
             <Field label="Timbre" type="number" value={voiceModify.timbre ?? 0} onChange={(value) => updateVoiceModify("timbre", value)} />
+            <Field label="试听文本" value={previewText} onChange={setPreviewText} multiline />
+            <div className="preview-box">
+              <button type="button" className="primary" disabled={busy || !previewText.trim()} onClick={handlePreviewTts}>
+                生成试听
+              </button>
+              {previewResult?.audio_path ? (
+                <>
+                  <audio controls src={mediaSrc(previewResult.audio_path)} />
+                  <small title={previewResult.audio_path}>{compactPath(previewResult.audio_path)}</small>
+                  <button type="button" onClick={() => revealPath(previewResult.audio_path)}>
+                    打开试听
+                  </button>
+                </>
+              ) : (
+                <small>还没有试听音频</small>
+              )}
+            </div>
           </div>
 
           <div className="settings-block">
@@ -921,15 +1267,6 @@ function Metric({ label, value, tone }) {
 
 function Badge({ status, children }) {
   return <span className={`badge ${statusTone(status)}`}>{children}</span>;
-}
-
-function Info({ label, value }) {
-  return (
-    <div className="info">
-      <span>{label}</span>
-      <strong>{value || "未设置"}</strong>
-    </div>
-  );
 }
 
 function Field({ label, value, onChange, type = "text", step, options, multiline = false }) {

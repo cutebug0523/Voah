@@ -12,6 +12,14 @@
 
 ## 当前脚本
 
+### 素材入库
+
+- `voah_intake_desktop_wrapper.py`
+  - 桌面端可调用的素材入库 worker wrapper。
+  - 读取产品名/slug、源素材目录、最多 N 条视频等参数，复用 `voah-video-intake` skill 自带的 `run_intake.py`、`trim_and_upload.py`、`vectorize.py`，不重写 Omni/裁切/向量化逻辑。
+  - 输出 `cache/voah_video_intake/{product_slug}/{timestamp}_{run_label}/desktop_intake_result.json`，并补齐 `run_manifest.json`、`physical_shots.json`、`trimmed_physical/`、`vectorization_inputs.json`、`embedding_results.json`、`shot_index.json` 等桌面端/下游 worker 可读取产物。
+  - 失败时也会尽量写出结构化 `desktop_intake_result.json`，便于桌面端登记 job 状态和日志路径。
+
 ### 视频理解
 
 - `aliyun_qwen_omni_analyze.py`
@@ -25,7 +33,9 @@
   - 调用 MiniMax M3 生成 `copy_brief.json` 和 `voice_script.json`。
   - 只负责销售逻辑和连续口播，不绑定具体 shot。
   - `voice_script.full_voice_text` 是 TTS 与字幕文本真源。
+  - 会读取 `shot_index.json` 汇总素材能力，把可见画面词分成 strong/high-evidence/weak；开头和产品段不得把弱证据词写成确定视觉诉求。
   - 会限制 `required_visual` 只能使用产品、粉扑、上脸、妆效、测试、陈列等可泛化画面需求，避免办公室、海边、车内等素材未证实硬场景词污染召回。
+  - 当前会主动规避素材证据不足的“卡纹/泛油/油光/高浓度精华/奶油肌”等表达，改写成补妆、自然气色、轻薄服帖、自然柔焦等可由素材支撑的说法。
 
 - `voah_run_oneshot_minimax_tts.py`
   - 读取 `voice_script.json`。
@@ -63,6 +73,11 @@
   - 从 `caption_plan.json` 创建 HyperFrames 字幕烧录工程。
   - 输出 `hyperframes_subtitle_burn/`。
 
+- `voah_burn_subtitles_overlay.py`
+  - HyperFrames render 超时或失败时的字幕烧录兜底。
+  - 读取同一份 `caption_plan.json`，用 Pillow 生成透明字幕 PNG，再用 ffmpeg `overlay` 叠加到视频上。
+  - 不依赖 ffmpeg `subtitles`、`ass` 或 `drawtext` 滤镜；字幕文本仍来自 `voice_script/audio_sections/caption_plan`，不会使用 ASR 或 MiniMax 字幕文本。
+
 ### Manifest / QA
 
 - `voah_omni_alignment_qa.py`
@@ -89,6 +104,7 @@ voah_generate_copy_with_m3.py
   -> voah_build_caption_plan.py
   -> voah_create_hyperframes_subtitle_project.py
   -> hyperframes render
+     -> 若 HyperFrames 超时/失败，voah_burn_subtitles_overlay.py 兜底
   -> voah_omni_alignment_qa.py
   -> voah_write_full_pipeline_manifest.py
 ```

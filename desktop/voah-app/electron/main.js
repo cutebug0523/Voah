@@ -70,6 +70,38 @@ ipcMain.handle("voah:createBatch", async (_event, payload) => {
   return { schema_version: "voah-create-batch-response.v1", tasks };
 });
 
+ipcMain.handle("voah:saveProduct", async (_event, payload = {}) => {
+  const { storeService: store } = getServices();
+  const next = await store.mutate(async (draft) => {
+    const product = payload.product || {};
+    const productId = product.id || `product_${Date.now()}`;
+    const existingIndex = draft.products.findIndex((item) => item.id === productId);
+    const saved = {
+      ...(existingIndex >= 0 ? draft.products[existingIndex] : {}),
+      ...product,
+      id: productId,
+      updated_at: new Date().toISOString()
+    };
+    saved.status = saved.latest_intake_run ? "ready" : saved.status || "needs_intake";
+    saved.material_status = saved.status === "ready" ? "可生产" : saved.material_status || "需处理素材";
+    if (existingIndex >= 0) {
+      draft.products[existingIndex] = saved;
+    } else {
+      draft.products.push(saved);
+    }
+    return draft;
+  });
+  return {
+    schema_version: "voah-save-product-response.v1",
+    product: next.products.find((item) => item.id === (payload.product?.id || "")) || next.products.at(-1)
+  };
+});
+
+ipcMain.handle("voah:startIntakeJob", async (_event, payload = {}) => {
+  const { productionRecipe: recipe } = getServices();
+  return recipe.startIntakeJob(payload);
+});
+
 ipcMain.handle("voah:runTask", async (_event, payload) => {
   const { productionRecipe: recipe } = getServices();
   return recipe.runTask(payload.task_id, { failStage: payload.fail_stage || null });
@@ -78,6 +110,51 @@ ipcMain.handle("voah:runTask", async (_event, payload) => {
 ipcMain.handle("voah:retryTask", async (_event, payload) => {
   const { productionRecipe: recipe } = getServices();
   return recipe.retryFailedTask(payload.task_id);
+});
+
+ipcMain.handle("voah:previewTts", async (_event, payload = {}) => {
+  const { productionRecipe: recipe } = getServices();
+  return recipe.previewTts(payload);
+});
+
+ipcMain.handle("voah:reviewOutput", async (_event, payload = {}) => {
+  const { storeService: store } = getServices();
+  const next = await store.mutate(async (draft) => {
+    const task = draft.tasks.find((item) => item.id === payload.task_id);
+    if (!task) {
+      throw new Error("未找到任务");
+    }
+    const review = {
+      id: `review_${Date.now()}`,
+      task_id: task.id,
+      decision: payload.decision || "manual_review",
+      note: payload.note || "",
+      created_at: new Date().toISOString()
+    };
+    draft.output_reviews = [review, ...(draft.output_reviews || [])];
+    if (review.decision === "approved") {
+      task.status = "completed";
+    }
+    if (review.decision === "rejected") {
+      task.status = "failed";
+      task.human_error = {
+        task: task.title,
+        failed_step: "人工审核",
+        reason: review.note || "成品未通过人工审核",
+        impact: "该成品不会进入发布队列。",
+        suggested_action: "重试失败步骤"
+      };
+    }
+    if (review.decision === "manual_review") {
+      task.status = "awaiting_review";
+    }
+    task.updated_at = new Date().toISOString();
+    return draft;
+  });
+  return {
+    schema_version: "voah-output-review-response.v1",
+    reviews: next.output_reviews
+  };
 });
 
 ipcMain.handle("voah:revealPath", async (_event, targetPath) => {
