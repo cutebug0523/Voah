@@ -1,0 +1,17 @@
+{
+  "name": "voah-cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "voah": "./src/bin/voah.js"
+  },
+  "scripts": {
+    "voah": "node src/bin/voah.js",
+    "doctor": "node src/bin/voah.js doctor",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

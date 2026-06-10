@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voah.local/schemas/stageManifest.schema.json",
+  "title": "Voah Stage Manifest",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {
+      "enum": ["pending", "running", "succeeded", "failed", "skipped", "needs_review", "stale"]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "log": {
+      "type": "string"
+    },
+    "stdout_log": {
+      "type": "string"
+    },
+    "stderr_log": {
+      "type": "string"
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "error_message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

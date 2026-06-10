@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voah.local/schemas/resourceManifest.schema.json",
+  "title": "Voah Resource Manifest",
+  "type": "object",
+  "required": ["schema_version", "resources"],
+  "properties": {
+    "schema_version": {
+      "const": "voah.resource_manifest.v1"
+    },
+    "run_dir": {
+      "type": "string"
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["schema_version", "resource_id", "local_path", "purpose", "provider", "remote_url_present", "status"],
+        "properties": {
+          "schema_version": {
+            "const": "voah.resource.v1"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "local_path": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "remote_url_present": {
+            "type": "boolean"
+          },
+          "headers_required": {
+            "type": "object"
+          },
+          "status": {
+            "enum": ["ready", "missing", "upload_failed", "resolve_failed", "access_denied", "expired", "provider_error"]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
