@@ -1,9 +1,8 @@
 import { useStore } from "../hooks/useStore.js";
 import { StageBar } from "../components/StageBar.jsx";
 import { StatusTag } from "../components/StatusTag.jsx";
-import { STAGE_LABELS } from "../lib/status.js";
 
-export function QueuePage() {
+export function QueuePage({ onOpenTask }) {
   const batches = useStore((s) => s.batches);
   const loading = useStore((s) => s.loading);
   const lastError = useStore((s) => s.lastError);
@@ -21,13 +20,13 @@ export function QueuePage() {
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-4">
       {batches.map((b) => (
-        <BatchCard key={b.batch_dir} batch={b} />
+        <BatchCard key={b.batch_dir} batch={b} onOpenTask={onOpenTask} />
       ))}
     </div>
   );
 }
 
-function BatchCard({ batch }) {
+function BatchCard({ batch, onOpenTask }) {
   const retryTask = useStore((s) => s.retryTask);
   const done = batch.counts.succeeded;
   const pct = batch.total ? Math.round((done / batch.total) * 100) : 0;
@@ -69,17 +68,22 @@ function BatchCard({ batch }) {
 
       <div className="divide-y divide-slate-50">
         {batch.tasks.map((t) => (
-          <TaskRow key={t.task_dir || t.task_id} task={t} onRetry={() => retryTask(t.task_dir, t.failed_stage)} />
+          <TaskRow
+            key={t.task_dir || t.task_id}
+            task={t}
+            onRetry={() => retryTask(t.task_dir, t.failed_stage)}
+            onOpen={() => onOpenTask?.(t.task_dir)}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function TaskRow({ task, onRetry }) {
+function TaskRow({ task, onRetry, onOpen }) {
   const idx = task.index != null ? String(task.index).padStart(2, "0") : task.task_id?.slice(-2);
   return (
-    <div className="row-hover px-4 py-2.5 flex items-center gap-4">
+    <div className="row-hover px-4 py-2.5 flex items-center gap-4 cursor-pointer" onClick={onOpen}>
       <span className="w-10 text-ink-400 text-xs font-mono">#{idx}</span>
       <StageBar segments={task.segments} />
       <span className="w-20 text-right">
@@ -87,17 +91,23 @@ function TaskRow({ task, onRetry }) {
       </span>
       {task.status === "failed" ? (
         <button
-          onClick={onRetry}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRetry();
+          }}
           className="w-16 text-xs px-2 py-1 rounded-md bg-err/10 text-err hover:bg-err/20 font-medium"
         >
           重试
         </button>
       ) : (
         <button
-          onClick={() => task.task_dir && window.voah?.reveal(task.task_dir)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen?.();
+          }}
           className="w-16 text-xs text-brand-600 hover:underline"
         >
-          {task.current_stage ? STAGE_LABELS[task.current_stage] : "详情"}
+          详情
         </button>
       )}
     </div>

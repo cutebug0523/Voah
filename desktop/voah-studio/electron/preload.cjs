@@ -4,7 +4,9 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("voah", {
   listProducts: () => ipcRenderer.invoke("voah:listProducts"),
   listBatches: () => ipcRenderer.invoke("voah:listBatches"),
+  taskDetail: (taskDir) => ipcRenderer.invoke("voah:taskDetail", taskDir),
   createBatch: (params) => ipcRenderer.invoke("voah:createBatch", params),
   retryTask: (params) => ipcRenderer.invoke("voah:retryTask", params),
-  reveal: (target) => ipcRenderer.invoke("voah:reveal", target)
+  reveal: (target) => ipcRenderer.invoke("voah:reveal", target),
+  openFile: (target) => ipcRenderer.invoke("voah:openFile", target)
 });

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useStore, startPolling, computeSummary } from "../hooks/useStore.js";
 import { QueuePage } from "../pages/QueuePage.jsx";
 import { NewBatchDrawer } from "../features/NewBatchDrawer.jsx";
+import { TaskDetailDrawer } from "../features/TaskDetailDrawer.jsx";
 
 const DAILY_TARGET = 150;
 
@@ -15,6 +16,7 @@ const NAV = [
 export default function App() {
   const [nav, setNav] = useState("queue");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [openTaskDir, setOpenTaskDir] = useState(null);
   const refresh = useStore((s) => s.refresh);
   const batches = useStore((s) => s.batches);
   const summary = useMemo(() => computeSummary(batches), [batches]);
@@ -43,10 +45,11 @@ export default function App() {
 
         {nav === "queue" && <OverviewBar summary={summary} />}
 
-        {nav === "queue" ? <QueuePage /> : <Placeholder nav={nav} />}
+        {nav === "queue" ? <QueuePage onOpenTask={setOpenTaskDir} /> : <Placeholder nav={nav} />}
       </main>
 
       <NewBatchDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <TaskDetailDrawer taskDir={openTaskDir} onClose={() => setOpenTaskDir(null)} />
     </div>
   );
 }

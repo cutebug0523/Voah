@@ -19,9 +19,11 @@ const STAGE_ORDER = ["copy", "tts", "retrieve", "subtitle", "render", "qa"];
 export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:listProducts", () => listProducts());
   ipcMain.handle("voah:listBatches", () => listBatches());
+  ipcMain.handle("voah:taskDetail", (_e, taskDir) => taskDetail(taskDir));
   ipcMain.handle("voah:createBatch", (_e, params) => createBatch(params));
   ipcMain.handle("voah:retryTask", (_e, params) => retryTask(params));
   ipcMain.handle("voah:reveal", (_e, target) => revealPath(target));
+  ipcMain.handle("voah:openFile", (_e, target) => openFile(target));
 }
 
 // ---- 读取：产品与入库 run ----
@@ -121,6 +123,40 @@ function failedStage(segments) {
   return segments.find((s) => s.status === "failed")?.stage || null;
 }
 
+// ---- 读取：单任务详情（成品 / QA / 阶段） ----
+
+async function taskDetail(taskDir) {
+  if (!taskDir || !existsSync(taskDir)) return { ok: false, error: "任务目录不存在" };
+  const manifest = await readJsonSafe(path.join(taskDir, "task_manifest.json"));
+  const full = await readJsonSafe(path.join(taskDir, "full_pipeline_manifest.json"));
+  const stages = (manifest && manifest.stages) || {};
+  const segments = STAGE_ORDER.map((stage) => ({ stage, status: stages[stage]?.status || "pending" }));
+
+  const finalVideoRel = manifest?.active_artifacts?.final_subtitled || "hyperframes_subtitle_burn/final_subtitled.mp4";
+  const finalVideo = path.join(taskDir, finalVideoRel);
+  const previewNoSub = path.join(taskDir, "preview_no_subtitles.mp4");
+
+  const qa = (full && (full.qa || full.export_gate)) || manifest?.qa || {};
+
+  return {
+    ok: true,
+    task_dir: taskDir,
+    task_id: manifest?.task_id || path.basename(taskDir),
+    status: manifest?.status || "queued",
+    target_duration_s: manifest?.target_duration_s ?? null,
+    product_name: manifest?.product_name || manifest?.product_slug || "",
+    segments,
+    failed_stage: failedStage(segments),
+    final_video: existsSync(finalVideo) ? finalVideo : null,
+    preview_no_subtitles: existsSync(previewNoSub) ? previewNoSub : null,
+    qa: {
+      status: qa.status || "pending",
+      warnings: Array.isArray(qa.warnings) ? qa.warnings : [],
+      resolved_warnings: Array.isArray(qa.resolved_warnings) ? qa.resolved_warnings : []
+    }
+  };
+}
+
 function tallyTasks(tasks) {
   const c = { queued: 0, running: 0, needs_review: 0, failed: 0, succeeded: 0 };
   for (const t of tasks) {
@@ -184,6 +220,15 @@ async function revealPath(target) {
     return { ok: true };
   }
   return { ok: false, error: "路径不存在" };
+}
+
+// 用系统默认播放器打开成品视频。
+async function openFile(target) {
+  if (target && existsSync(target)) {
+    const err = await shell.openPath(target);
+    return err ? { ok: false, error: err } : { ok: true };
+  }
+  return { ok: false, error: "文件不存在" };
 }
 
 // ---- 工具 ----
