@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs, requireOption, optionalInt, optionalNumber } from "../core/args.js";
 import { UserError } from "../core/errors.js";
@@ -9,8 +10,16 @@ import { runPipeline, writeTaskBrief } from "../core/taskPipeline.js";
 
 export async function runBatchCommand({ argv }) {
   const [subcommand, ...rest] = argv;
+  if (subcommand === "pause") {
+    await pauseBatch(rest);
+    return;
+  }
+  if (subcommand === "resume") {
+    await resumeBatch(rest);
+    return;
+  }
   if (subcommand !== "run") {
-    throw new UserError("用法：voah batch run --product <slug> --intake-run <dir> --count N [--concurrency K]");
+    throw new UserError("用法：voah batch run|pause|resume");
   }
   const options = parseArgs(rest, {
     boolean: ["skip-omni", "create-only", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
@@ -103,8 +112,14 @@ async function runQueue({ workspace, batchDir, tasks, concurrency, options }) {
   const workerCount = Math.min(concurrency, tasks.length);
   async function worker() {
     while (cursor < tasks.length) {
+      if (await shouldStopForPause(batchDir, tasks)) {
+        return;
+      }
       const task = tasks[cursor];
       cursor += 1;
+      if (task.status !== "queued") {
+        continue;
+      }
       task.status = "running";
       await updateBatch(batchDir, tasks, "running");
       try {
@@ -120,8 +135,98 @@ async function runQueue({ workspace, batchDir, tasks, concurrency, options }) {
     }
   }
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  await updateBatch(batchDir, tasks, finalBatchStatus(tasks));
+  if (existsSync(batchPauseControlPath(batchDir))) {
+    await updateBatch(batchDir, tasks, "paused", { paused: true });
+    return;
+  }
+  await updateBatch(batchDir, tasks, finalBatchStatus(tasks), { paused: false });
   await writeBatchResultLists(batchDir, tasks);
+}
+
+async function pauseBatch(argv) {
+  const options = parseArgs(argv);
+  const workspace = resolveWorkspace(options.workspace);
+  const batchArg = options._[0] || options.batch || options["batch-dir"];
+  if (!batchArg) {
+    throw new UserError("用法：voah batch pause <batch_dir>");
+  }
+  const batchDir = resolvePath(batchArg, workspace);
+  const manifestPath = path.join(batchDir, "batch_manifest.json");
+  if (!existsSync(manifestPath)) {
+    throw new UserError(`缺少 batch_manifest.json：${manifestPath}`);
+  }
+  await writeJson(batchPauseControlPath(batchDir), {
+    schema_version: "voah.batch_control.v1",
+    paused: true,
+    updated_at: new Date().toISOString()
+  });
+  const manifest = await readJson(manifestPath);
+  manifest.status = "paused";
+  manifest.control = {
+    ...(manifest.control || {}),
+    paused: true,
+    paused_at: new Date().toISOString()
+  };
+  await writeBatchFiles(batchDir, manifest);
+  console.log(`batch_dir=${batchDir}`);
+  console.log("paused=true");
+}
+
+async function resumeBatch(argv) {
+  const options = parseArgs(argv, {
+    boolean: ["skip-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+  });
+  const workspace = resolveWorkspace(options.workspace);
+  const batchArg = options._[0] || options.batch || options["batch-dir"];
+  if (!batchArg) {
+    throw new UserError("用法：voah batch resume <batch_dir> [--concurrency K]");
+  }
+  const batchDir = resolvePath(batchArg, workspace);
+  const manifestPath = path.join(batchDir, "batch_manifest.json");
+  if (!existsSync(manifestPath)) {
+    throw new UserError(`缺少 batch_manifest.json：${manifestPath}`);
+  }
+  if (existsSync(batchPauseControlPath(batchDir))) {
+    await rm(batchPauseControlPath(batchDir), { force: true });
+  }
+  const manifest = await readJson(manifestPath);
+  const tasks = (manifest.tasks || []).map((task) => ({ ...task }));
+  const concurrency = Math.max(1, optionalInt(options.concurrency ?? manifest.concurrency, 2));
+  const queued = tasks.filter((task) => task.status === "queued");
+  const running = tasks.filter((task) => task.status === "running");
+  manifest.control = {
+    ...(manifest.control || {}),
+    paused: false,
+    resumed_at: new Date().toISOString()
+  };
+  manifest.status = queued.length ? "running" : finalBatchStatus(tasks);
+  manifest.tasks = tasks;
+  manifest.concurrency = concurrency;
+  await writeBatchFiles(batchDir, manifest);
+  if (running.length) {
+    await updateBatch(batchDir, tasks, "running", { paused: false });
+  } else if (queued.length) {
+    await runQueue({ workspace, batchDir, tasks, concurrency, options });
+  } else {
+    await updateBatch(batchDir, tasks, manifest.status, { paused: false });
+    await writeBatchResultLists(batchDir, tasks);
+  }
+  console.log(`batch_dir=${batchDir}`);
+  console.log("paused=false");
+  console.log(`queued=${queued.length}`);
+  console.log(`running=${running.length}`);
+}
+
+function batchPauseControlPath(batchDir) {
+  return path.join(batchDir, "batch_control.json");
+}
+
+async function shouldStopForPause(batchDir, tasks) {
+  if (!existsSync(batchPauseControlPath(batchDir))) {
+    return false;
+  }
+  await updateBatch(batchDir, tasks, "paused", { paused: true });
+  return true;
 }
 
 async function runSingleTask({ workspace, task, options }) {
@@ -155,11 +260,17 @@ async function writeBatchFiles(batchDir, manifest) {
   });
 }
 
-async function updateBatch(batchDir, tasks, status) {
+async function updateBatch(batchDir, tasks, status, controlPatch = null) {
   const manifestPath = path.join(batchDir, "batch_manifest.json");
   const manifest = await readJson(manifestPath);
   manifest.status = status;
   manifest.tasks = tasks;
+  if (controlPatch) {
+    manifest.control = {
+      ...(manifest.control || {}),
+      ...controlPatch
+    };
+  }
   manifest.summary = {
     queued: tasks.filter((item) => item.status === "queued").length,
     running: tasks.filter((item) => item.status === "running").length,

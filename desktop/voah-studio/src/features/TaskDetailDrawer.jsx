@@ -19,6 +19,8 @@ export function TaskDetailDrawer({ taskDir, onClose }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [logStage, setLogStage] = useState("copy");
+  const [logs, setLogs] = useState(null);
 
   useEffect(() => {
     if (!taskDir) {
@@ -48,6 +50,11 @@ export function TaskDetailDrawer({ taskDir, onClose }) {
     const d = await window.voah.taskDetail(taskDir);
     setDetail(d);
     setBusy(false);
+  }
+
+  async function loadLogs(stage = logStage) {
+    const res = await window.voah.readTaskLog({ taskDir, stage });
+    setLogs(res);
   }
 
   return (
@@ -140,6 +147,51 @@ export function TaskDetailDrawer({ taskDir, onClose }) {
                     </li>
                   ))}
                 </ul>
+              )}
+            </div>
+
+            {/* 日志 */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium text-ink-700">日志</span>
+                <div className="flex gap-2">
+                  <select
+                    value={logStage}
+                    onChange={(e) => {
+                      setLogStage(e.target.value);
+                      setLogs(null);
+                    }}
+                    className="px-2 py-1 rounded-md border border-slate-200 bg-white text-xs outline-none"
+                  >
+                    {STAGE_ORDER.map((s) => (
+                      <option key={s} value={s}>
+                        {STAGE_LABELS[s]}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => loadLogs()}
+                    className="px-2.5 py-1 rounded-md text-xs border border-slate-200 text-ink-700 hover:bg-slate-50"
+                  >
+                    读取
+                  </button>
+                </div>
+              </div>
+              {logs?.files?.length ? (
+                <div className="space-y-2">
+                  {logs.files.map((file) => (
+                    <details key={file.file} className="rounded-lg border border-slate-200 overflow-hidden">
+                      <summary className="px-3 py-2 text-xs bg-slate-50 cursor-pointer">{file.name}</summary>
+                      <pre className="max-h-56 overflow-auto p-3 text-[11px] leading-5 text-ink-700 whitespace-pre-wrap bg-white">
+                        {file.text || "空日志"}
+                      </pre>
+                    </details>
+                  ))}
+                </div>
+              ) : logs ? (
+                <div className="text-xs text-ink-400 bg-slate-50 border border-slate-200 rounded-lg p-3">没有找到该阶段日志。</div>
+              ) : (
+                <div className="text-xs text-ink-400 bg-slate-50 border border-slate-200 rounded-lg p-3">选择阶段后读取日志。</div>
               )}
             </div>
           </div>

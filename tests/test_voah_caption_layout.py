@@ -34,7 +34,7 @@ class CaptionLayoutTest(unittest.TestCase):
 
         self.assertGreaterEqual(len(chunks), 2)
         self.assertTrue(all(caption_plan.display_units(chunk) <= 12 for chunk in chunks))
-        self.assertEqual("".join(chunks), text)
+        self.assertEqual("".join(chunks), "这块防晒气垫刚好对症防晒和底妆二合一")
 
     def test_long_caption_without_punctuation_is_hard_wrapped(self):
         text = "早八通勤临时补妆越是赶时间越要快"
@@ -44,6 +44,18 @@ class CaptionLayoutTest(unittest.TestCase):
         self.assertGreaterEqual(len(chunks), 2)
         self.assertTrue(all(caption_plan.display_units(chunk) <= 12 for chunk in chunks))
         self.assertEqual("".join(chunks), text)
+
+    def test_caption_text_removes_commas_and_full_stops_but_keeps_emphasis_marks(self):
+        text = "这块气垫，真的适合早八通勤。会卡粉吗？不会！《日常底妆》很稳——放心拍。"
+
+        chunks = caption_plan.split_caption_text(text)
+        joined = "".join(chunks)
+
+        for char in "，。.,":
+            self.assertNotIn(char, joined)
+        for char in ["？", "！", "《", "》", "——"]:
+            self.assertIn(char, joined)
+        self.assertEqual(joined, "这块气垫真的适合早八通勤会卡粉吗？不会！《日常底妆》很稳——放心拍")
 
     def test_issue_59_caption_plan_keeps_known_risky_lines_under_12_units(self):
         risky_lines = [
@@ -56,7 +68,7 @@ class CaptionLayoutTest(unittest.TestCase):
             with self.subTest(text=text):
                 chunks = caption_plan.split_caption_text(text)
                 self.assertTrue(all(caption_plan.display_units(chunk) <= 12 for chunk in chunks))
-                self.assertEqual("".join(chunks), text)
+                self.assertEqual("".join(chunks), caption_plan.sanitize_caption_text(text))
 
     def test_songti_caption_css_contains_overflow_guards(self):
         css = hyperframes.style_css_for_preset("songti_white_gold_lower")
@@ -81,6 +93,12 @@ class CaptionLayoutTest(unittest.TestCase):
                 self.assertGreaterEqual(len(lines), 2)
                 self.assertEqual("".join(lines), text)
                 self.assertTrue(all(overlay.line_width_px(line, font) <= max_width for line in lines))
+
+    def test_overlay_line_start_punctuation_matches_clean_caption_policy(self):
+        self.assertFalse(overlay.is_line_start_punctuation("，"))
+        self.assertFalse(overlay.is_line_start_punctuation("。"))
+        self.assertTrue(overlay.is_line_start_punctuation("？"))
+        self.assertTrue(overlay.is_line_start_punctuation("！"))
 
 
 if __name__ == "__main__":

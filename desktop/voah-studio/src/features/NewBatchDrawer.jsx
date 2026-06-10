@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { useStore } from "../hooks/useStore.js";
 import { DURATION_PRESETS } from "../lib/status.js";
 
-export function NewBatchDrawer({ open, onClose }) {
+export function NewBatchDrawer({ open, onClose, onOpenSample }) {
   const products = useStore((s) => s.products);
+  const studioSettings = useStore((s) => s.studioSettings);
+  const loadSettings = useStore((s) => s.loadSettings);
   const createBatch = useStore((s) => s.createBatch);
 
   const [product, setProduct] = useState("");
@@ -12,11 +14,16 @@ export function NewBatchDrawer({ open, onClose }) {
   const [customDuration, setCustomDuration] = useState("");
   const [concurrency, setConcurrency] = useState(3);
   const [submitting, setSubmitting] = useState(false);
+  const [sampling, setSampling] = useState(false);
   const [result, setResult] = useState(null);
 
   useEffect(() => {
     if (open && products.length && !product) setProduct(products[0].slug);
   }, [open, products, product]);
+
+  useEffect(() => {
+    if (open) loadSettings();
+  }, [open, loadSettings]);
 
   const selected = products.find((p) => p.slug === product);
   const targetDuration = duration === "custom" ? Number(customDuration) || 45 : duration;
@@ -31,12 +38,35 @@ export function NewBatchDrawer({ open, onClose }) {
       count: Number(count),
       targetDuration,
       intakeRun: selected.latest_intake_run,
-      concurrency: Number(concurrency)
+      concurrency: Number(concurrency),
+      extraArgs: productionArgs(studioSettings)
     });
     setSubmitting(false);
     setResult(res);
     if (res?.ok) {
       setTimeout(onClose, 600);
+    }
+  }
+
+  async function handleSample() {
+    if (!canSubmit) return;
+    setSampling(true);
+    setResult(null);
+    const res = await window.voah.createSampleTask({
+      product,
+      productName: selected?.name || product,
+      targetDuration,
+      intakeRun: selected.latest_intake_run,
+      extraArgs: productionArgs(studioSettings)
+    });
+    setSampling(false);
+    setResult(res);
+    if (res?.ok) {
+      const taskDir = res.stdout.match(/task_dir=(.*)/)?.[1]?.trim();
+      if (taskDir) {
+        onOpenSample?.(taskDir);
+        onClose?.();
+      }
     }
   }
 
@@ -137,11 +167,11 @@ export function NewBatchDrawer({ open, onClose }) {
 
         <div className="p-5 border-t border-slate-100 flex gap-2">
           <button
-            disabled
-            title="精修打样将在 M2 提供"
-            className="flex-1 py-2.5 rounded-lg border border-slate-200 text-ink-300 font-medium cursor-not-allowed"
+            onClick={handleSample}
+            disabled={!canSubmit || sampling}
+            className="flex-1 py-2.5 rounded-lg border border-slate-200 text-ink-700 hover:bg-slate-50 disabled:text-ink-300 disabled:cursor-not-allowed font-medium"
           >
-            <i className="fa fa-flask" /> 打样 1 条
+            <i className={`fa ${sampling ? "fa-spinner fa-spin" : "fa-flask"}`} /> {sampling ? "打样中…" : "打样 1 条"}
           </button>
           <button
             onClick={handleRun}
@@ -154,6 +184,30 @@ export function NewBatchDrawer({ open, onClose }) {
       </div>
     </>
   );
+}
+
+function productionArgs(settings) {
+  const args = [];
+  const copy = settings?.copy || {};
+  const tts = settings?.tts || {};
+  const mapping = [
+    ["--platform", copy.platform],
+    ["--style", copy.style],
+    ["--audience", copy.audience],
+    ["--forbidden", copy.forbidden],
+    ["--cta", copy.cta],
+    ["--tts-provider", tts.provider],
+    ["--tts-model", tts.model],
+    ["--voice-id", tts.voice_id],
+    ["--speed", tts.speed],
+    ["--emotion", tts.emotion]
+  ];
+  for (const [flag, value] of mapping) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      args.push(flag, String(value));
+    }
+  }
+  return args;
 }
 
 function Field({ label, children }) {

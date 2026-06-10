@@ -73,6 +73,7 @@ function printHelp() {
   voah copy|tts|retrieve|subtitle|render|qa run <task_dir>
   voah tts preview --text <文本> | --text-file <文件> [--provider ...] [--voice-id ...] [--dry-run]
   voah batch run --product <slug> --intake-run <dir> --count N [--concurrency K]
+  voah batch pause|resume <batch_dir>
   voah resource upload --file <path> --purpose <purpose>
   voah resource cleanup --run <dir> [--expired-only]
 `);

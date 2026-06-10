@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore, startPolling, computeSummary } from "../hooks/useStore.js";
 import { QueuePage } from "../pages/QueuePage.jsx";
+import { ProductsPage } from "../pages/ProductsPage.jsx";
+import { OutputsPage } from "../pages/OutputsPage.jsx";
+import { SettingsPage } from "../pages/SettingsPage.jsx";
 import { NewBatchDrawer } from "../features/NewBatchDrawer.jsx";
+import { SampleDrawer } from "../features/SampleDrawer.jsx";
 import { TaskDetailDrawer } from "../features/TaskDetailDrawer.jsx";
 
 const DAILY_TARGET = 150;
@@ -17,6 +21,7 @@ export default function App() {
   const [nav, setNav] = useState("queue");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openTaskDir, setOpenTaskDir] = useState(null);
+  const [sampleTaskDir, setSampleTaskDir] = useState(null);
   const refresh = useStore((s) => s.refresh);
   const batches = useStore((s) => s.batches);
   const summary = useMemo(() => computeSummary(batches), [batches]);
@@ -45,10 +50,14 @@ export default function App() {
 
         {nav === "queue" && <OverviewBar summary={summary} />}
 
-        {nav === "queue" ? <QueuePage onOpenTask={setOpenTaskDir} /> : <Placeholder nav={nav} />}
+        {nav === "queue" && <QueuePage onOpenTask={setOpenTaskDir} />}
+        {nav === "products" && <ProductsPage />}
+        {nav === "outputs" && <OutputsPage />}
+        {nav === "settings" && <SettingsPage />}
       </main>
 
-      <NewBatchDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <NewBatchDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onOpenSample={setSampleTaskDir} />
+      <SampleDrawer taskDir={sampleTaskDir} onClose={() => setSampleTaskDir(null)} />
       <TaskDetailDrawer taskDir={openTaskDir} onClose={() => setOpenTaskDir(null)} />
     </div>
   );
@@ -122,18 +131,5 @@ function Item({ label, value, color }) {
     <span className="text-ink-500">
       {label} <b className={`${color} text-sm`}>{value}</b>
     </span>
-  );
-}
-
-function Placeholder({ nav }) {
-  const label = NAV.find((n) => n.id === nav)?.label;
-  return (
-    <div className="flex-1 grid place-items-center text-center">
-      <div>
-        <i className="fa fa-wrench text-4xl text-ink-300 mb-4" />
-        <div className="font-medium text-ink-700">{label}</div>
-        <div className="text-xs text-ink-400 mt-1">该模块将在后续里程碑实现。</div>
-      </div>
-    </div>
   );
 }

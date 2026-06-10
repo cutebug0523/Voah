@@ -4,6 +4,9 @@ import { create } from "zustand";
 export const useStore = create((set, get) => ({
   batches: [],
   products: [],
+  outputs: [],
+  config: null,
+  studioSettings: null,
   loading: true,
   lastError: "",
 
@@ -13,11 +16,45 @@ export const useStore = create((set, get) => ({
       return;
     }
     try {
-      const [batches, products] = await Promise.all([window.voah.listBatches(), window.voah.listProducts()]);
-      set({ batches, products, loading: false, lastError: "" });
+      const [batches, products, outputs] = await Promise.all([
+        window.voah.listBatches(),
+        window.voah.listProducts(),
+        window.voah.listOutputs()
+      ]);
+      set({ batches, products, outputs, loading: false, lastError: "" });
     } catch (err) {
       set({ loading: false, lastError: String(err?.message || err) });
     }
+  },
+
+  async loadSettings() {
+    const [config, studioSettings] = await Promise.all([window.voah.getConfig(), window.voah.getStudioSettings()]);
+    set({ config, studioSettings });
+    return { config, studioSettings };
+  },
+
+  async saveStudioSettings(settings) {
+    const res = await window.voah.saveStudioSettings(settings);
+    await get().loadSettings();
+    return res;
+  },
+
+  async setConfig(key, value) {
+    const res = await window.voah.setConfig({ key, value });
+    await get().loadSettings();
+    return res;
+  },
+
+  async createProduct(params) {
+    const res = await window.voah.createProduct(params);
+    await get().refresh();
+    return res;
+  },
+
+  async startIntake(params) {
+    const res = await window.voah.startIntake(params);
+    await get().refresh();
+    return res;
   },
 
   async createBatch(params) {
@@ -28,6 +65,24 @@ export const useStore = create((set, get) => ({
 
   async retryTask(taskDir, fromStage) {
     const res = await window.voah.retryTask({ taskDir, fromStage });
+    await get().refresh();
+    return res;
+  },
+
+  async pauseBatch(batchDir) {
+    const res = await window.voah.pauseBatch(batchDir);
+    await get().refresh();
+    return res;
+  },
+
+  async resumeBatch(batchDir) {
+    const res = await window.voah.resumeBatch(batchDir);
+    await get().refresh();
+    return res;
+  },
+
+  async saveReview(params) {
+    const res = await window.voah.saveReview(params);
     await get().refresh();
     return res;
   }

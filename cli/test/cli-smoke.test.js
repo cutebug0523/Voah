@@ -87,6 +87,43 @@ test("batch run --create-only writes batch and task manifests", async () => {
   }
 });
 
+test("batch pause and resume update manifest control state", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-batch-pause-test-"));
+  const intakeRun = path.join(workspace, "cache", "voah_video_intake", "demo", "run");
+  await mkdir(intakeRun, { recursive: true });
+  await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
+  const create = await run([
+    "batch",
+    "run",
+    "--workspace",
+    workspace,
+    "--product",
+    "demo",
+    "--intake-run",
+    intakeRun,
+    "--count",
+    "1",
+    "--create-only"
+  ]);
+  assert.equal(create.code, 0, create.stderr);
+  const batchDir = create.stdout.match(/batch_dir=(.*)/)?.[1].trim();
+  const pause = await run(["batch", "pause", "--workspace", workspace, batchDir]);
+  assert.equal(pause.code, 0, pause.stderr);
+  assert.ok(existsSync(path.join(batchDir, "batch_control.json")));
+  const paused = JSON.parse(await readFile(path.join(batchDir, "batch_manifest.json"), "utf8"));
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.control.paused, true);
+  paused.tasks[0].status = "succeeded";
+  paused.tasks[0].qa_status = "ok";
+  await writeFile(path.join(batchDir, "batch_manifest.json"), `${JSON.stringify(paused, null, 2)}\n`);
+
+  const resume = await run(["batch", "resume", "--workspace", workspace, batchDir]);
+  assert.equal(resume.code, 0, resume.stderr);
+  assert.equal(existsSync(path.join(batchDir, "batch_control.json")), false);
+  const resumed = JSON.parse(await readFile(path.join(batchDir, "batch_manifest.json"), "utf8"));
+  assert.equal(resumed.control.paused, false);
+});
+
 test("resource cleanup records resource manifest without secrets", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-resource-test-"));
   const runDir = path.join(workspace, "cache", "task");
@@ -315,4 +352,3 @@ test("pipeline records stage output hashes and detects upstream change", async (
   await writeFile(path.join(taskDir, "voice_script.json"), JSON.stringify({ full_voice_text: "v2-changed" }));
   assert.equal(await detectUpstreamChange(taskDir, "tts"), "copy");
 });
-

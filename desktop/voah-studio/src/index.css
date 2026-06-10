@@ -16,6 +16,9 @@
 }
 
 @layer components {
+  .input {
+    @apply w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none;
+  }
   .seg {
     height: 4px;
     border-radius: 9999px;

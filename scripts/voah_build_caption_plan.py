@@ -34,9 +34,11 @@ def as_abs(path: str | Path, base: Path | None = None) -> Path:
     return value.resolve()
 
 
-PUNCT_RE = re.compile(r"([。！？!?；;，,])")
+SEMANTIC_BREAK_RE = re.compile(r"([。！？!?；;，,、：:])")
+REMOVE_CAPTION_PUNCT_RE = re.compile(r"[，。,\.]")
 WEIGHT_RE = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’（）()\[\]【】《》<>+\-_/]+")
 PUNCTUATION_RE = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’（）()\[\]【】《》<>+\-_/]")
+LINE_START_PUNCTUATION_RE = re.compile(r"[！？、!?；;：:\"'“”‘’）)\]】》]")
 
 
 def speech_units(text: str) -> int:
@@ -64,11 +66,15 @@ def display_units(text: str) -> float:
 
 
 def is_line_start_punctuation(char: str) -> bool:
-    return bool(char and PUNCTUATION_RE.match(char))
+    return bool(char and LINE_START_PUNCTUATION_RE.match(char))
+
+
+def sanitize_caption_text(text: str) -> str:
+    return REMOVE_CAPTION_PUNCT_RE.sub("", str(text or "")).strip()
 
 
 def split_caption_chunk(chunk: str, max_units: int) -> list[str]:
-    chunk = str(chunk or "").strip()
+    chunk = sanitize_caption_text(chunk)
     if not chunk:
         return []
     if display_units(chunk) <= max_units:
@@ -98,7 +104,7 @@ def split_caption_text(text: str, max_units: int = 12) -> list[str]:
         return [""]
     parts = []
     start = 0
-    for match in PUNCT_RE.finditer(text):
+    for match in SEMANTIC_BREAK_RE.finditer(text):
         end = match.end()
         chunk = text[start:end].strip()
         if chunk:
@@ -111,10 +117,13 @@ def split_caption_text(text: str, max_units: int = 12) -> list[str]:
     merged: list[str] = []
     buffer = ""
     for part in parts or [text]:
-        candidate = buffer + part if buffer else part
+        clean_part = sanitize_caption_text(part)
+        if not clean_part:
+            continue
+        candidate = buffer + clean_part if buffer else clean_part
         if buffer and display_units(candidate) > max_units:
             merged.append(buffer)
-            buffer = part
+            buffer = clean_part
         else:
             buffer = candidate
     if buffer:
@@ -125,7 +134,7 @@ def split_caption_text(text: str, max_units: int = 12) -> list[str]:
         if display_units(chunk) <= max_units:
             output.append(chunk)
             continue
-        subparts = [item for item in re.split(r"(?<=、)", chunk) if item]
+        subparts = [sanitize_caption_text(item) for item in re.split(r"(?<=、)", chunk) if sanitize_caption_text(item)]
         if len(subparts) <= 1:
             output.extend(split_caption_chunk(chunk, max_units))
         else:
@@ -139,7 +148,7 @@ def split_caption_text(text: str, max_units: int = 12) -> list[str]:
                     buffer = candidate
             if buffer:
                 output.extend(split_caption_chunk(buffer, max_units))
-    return output or [text]
+    return output or [sanitize_caption_text(text)]
 
 
 def caption_fragments(section: dict[str, Any], split_punctuation: bool) -> list[dict[str, Any]]:
@@ -147,7 +156,7 @@ def caption_fragments(section: dict[str, Any], split_punctuation: bool) -> list[
     start_s = float(section.get("caption_start_s", section.get("timeline_start_s", 0)) or 0)
     end_s = float(section.get("caption_end_s", section.get("timeline_end_s", start_s)) or start_s)
     if not split_punctuation:
-        return [{"text": text, "start_s": start_s, "end_s": end_s}]
+        return [{"text": sanitize_caption_text(text), "start_s": start_s, "end_s": end_s}]
     chunks = split_caption_text(text)
     weights = [speech_units(chunk) for chunk in chunks]
     total = max(1, sum(weights))
@@ -223,8 +232,8 @@ def main() -> int:
         fragments = caption_fragments(section, args.split_punctuation)
         section_text = "".join(fragment["text"] for fragment in fragments)
         original_text = str(section.get("subtitle_text") or section.get("voice_text") or "").strip()
-        if section_text != original_text:
-            warnings.append(f"section {index} caption fragments do not concatenate to original text")
+        if section_text != sanitize_caption_text(original_text):
+            warnings.append(f"section {index} caption fragments do not concatenate to sanitized original text")
         for fragment_index, fragment in enumerate(fragments, start=1):
             text = str(fragment.get("text") or "").strip()
             if not text:
@@ -279,6 +288,11 @@ def main() -> int:
         "style": {
             "preset": args.preset,
             "split_punctuation": args.split_punctuation,
+            "punctuation_policy": {
+                "remove": ["，", "。", ",", "."],
+                "preserve": ["？", "?", "《", "》", "“", "”", "\"", "！", "!", "——", "、", "；", ";", "：", ":"],
+                "line_break_policy": "semantic breaks use original punctuation before removing comma/full-stop",
+            },
             "style_source": str(as_abs(args.style_source)),
             "font_source": str(as_abs(args.font_source)),
             "font_family": "VoahSongti",

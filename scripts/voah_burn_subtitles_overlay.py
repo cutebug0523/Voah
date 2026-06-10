@@ -99,7 +99,7 @@ def caption_text_max_width(canvas_width: int, preset: str) -> int:
 
 
 def is_line_start_punctuation(char: str) -> bool:
-    return char in "，。！？、,.!?；;：:\"'”’）)]】》"
+    return char in "！？、!?；;：:\"'”’）)]】》"
 
 
 def wrap_caption(text: str, font: ImageFont.ImageFont, max_width_px: int) -> str:
