@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    -webkit-font-smoothing: antialiased;
+    @apply bg-slate-100 text-ink-900;
+    font-size: 13px;
+  }
+}
+
+@layer components {
+  .seg {
+    height: 4px;
+    border-radius: 9999px;
+  }
+  .row-hover:hover {
+    @apply bg-slate-50;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voah 生产工作台 · 原型</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        ink: { 900:'#0f172a',700:'#334155',500:'#64748b',400:'#94a3b8',300:'#cbd5e1' },
+        brand: { 50:'#eef2ff',100:'#e0e7ff',500:'#6366f1',600:'#4f46e5',700:'#4338ca' },
+        ok:'#16a34a', warn:'#d97706', err:'#dc2626', run:'#2563eb'
+      },
+      fontFamily: { sans:['-apple-system','BlinkMacSystemFont','"Segoe UI"','sans-serif'] }
+    }
+  }
+}
+</script>
+<style>
+  body { -webkit-font-smoothing: antialiased; }
+  .seg { height: 4px; border-radius: 9999px; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+  .row-hover:hover { background: #f8fafc; }
+</style>
+</head>
+<body class="bg-slate-100 text-ink-900 text-[13px]">
+
+<div class="flex h-screen overflow-hidden">
+
+  <!-- 左侧导航 -->
+  <aside class="w-52 shrink-0 bg-white border-r border-slate-200 flex flex-col">
+    <div class="px-4 h-14 flex items-center gap-2 border-b border-slate-100">
+      <div class="w-7 h-7 rounded-lg bg-brand-600 text-white grid place-items-center font-bold">V</div>
+      <span class="font-semibold text-[15px]">Voah</span>
+    </div>
+    <nav class="flex-1 p-2 space-y-0.5">
+      <a class="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-brand-50 text-brand-700 font-medium">
+        <i class="fa fa-list-ul w-4 text-center"></i> 队列</a>
+      <a class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-ink-700 hover:bg-slate-50">
+        <i class="fa fa-cube w-4 text-center"></i> 产品</a>
+      <a class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-ink-700 hover:bg-slate-50">
+        <i class="fa fa-film w-4 text-center"></i> 成品库</a>
+      <a class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-ink-700 hover:bg-slate-50">
+        <i class="fa fa-cog w-4 text-center"></i> 设置</a>
+    </nav>
+    <!-- 今日产能简报 -->
+    <div class="m-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
+      <div class="text-[11px] text-ink-500 mb-2 font-medium">今日产能</div>
+      <div class="flex items-end gap-1 mb-2">
+        <span class="text-2xl font-bold leading-none">32</span>
+        <span class="text-ink-400 text-xs mb-0.5">/ 150</span>
+      </div>
+      <div class="h-1.5 rounded-full bg-slate-200 overflow-hidden mb-3">
+        <div class="h-full bg-brand-500" style="width:21%"></div>
+      </div>
+      <div class="grid grid-cols-3 gap-1 text-center">
+        <div><div class="text-run font-bold">3</div><div class="text-[10px] text-ink-400">运行</div></div>
+        <div><div class="text-warn font-bold">5</div><div class="text-[10px] text-ink-400">待审</div></div>
+        <div><div class="text-err font-bold">2</div><div class="text-[10px] text-ink-400">失败</div></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主工作区 -->
+  <main class="flex-1 flex flex-col overflow-hidden">
+    <!-- 顶栏 -->
+    <header class="h-14 shrink-0 bg-white border-b border-slate-200 px-6 flex items-center justify-between">
+      <div>
+        <h1 class="font-semibold text-[15px]">今日队列</h1>
+      </div>
+      <button onclick="document.getElementById('drawer').classList.remove('translate-x-full')"
+        class="flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-medium shadow-sm">
+        <i class="fa fa-plus text-xs"></i> 新建批量
+      </button>
+    </header>
+
+    <!-- 概览条 -->
+    <div class="px-6 py-3 bg-white border-b border-slate-100 flex gap-6 text-xs">
+      <span class="text-ink-500">今日 <b class="text-ink-900 text-sm">32</b>/150</span>
+      <span class="text-ink-500">运行 <b class="text-run text-sm">3</b></span>
+      <span class="text-ink-500">待审 <b class="text-warn text-sm">5</b></span>
+      <span class="text-ink-500">失败 <b class="text-err text-sm">2</b></span>
+      <span class="text-ink-500">完成 <b class="text-ok text-sm">22</b></span>
+    </div>
+
+    <!-- 队列列表 -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-4">
+
+      <!-- 批次卡片 1 -->
+      <section class="bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="px-4 py-3 flex items-center justify-between border-b border-slate-100">
+          <div class="flex items-center gap-3">
+            <span class="font-semibold">花西子气垫</span>
+            <span class="text-ink-400">·</span>
+            <span class="text-ink-500">45秒 抖音投放</span>
+            <span class="text-ink-300 text-xs">14:30 创建</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-ink-500"><b class="text-ink-900">12</b>/20</span>
+            <div class="w-28 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+              <div class="h-full bg-brand-500" style="width:60%"></div>
+            </div>
+            <button class="px-2.5 py-1 rounded-md text-xs text-ink-700 hover:bg-slate-100 border border-slate-200"><i class="fa fa-pause"></i> 暂停</button>
+          </div>
+        </div>
+        <div class="divide-y divide-slate-50">
+          <!-- 任务行模板 -->
+          <div class="row-hover px-4 py-2.5 flex items-center gap-4">
+            <span class="w-10 text-ink-400 text-xs font-mono">#03</span>
+            <div class="flex-1 grid grid-cols-5 gap-1.5 max-w-md">
+              <div class="seg bg-ok" title="文案 ✓"></div>
+              <div class="seg bg-ok" title="配音 ✓"></div>
+              <div class="seg bg-ok" title="召回 ✓"></div>
+              <div class="seg bg-ok" title="渲染 ✓"></div>
+              <div class="seg bg-ok" title="QA ✓"></div>
+            </div>
+            <span class="w-20 text-right"><span class="inline-flex items-center gap-1 text-ok text-xs font-medium"><i class="fa fa-check-circle"></i> 完成</span></span>
+            <button class="w-16 text-xs text-brand-600 hover:underline">详情</button>
+          </div>
+
+          <div class="row-hover px-4 py-2.5 flex items-center gap-4">
+            <span class="w-10 text-ink-400 text-xs font-mono">#04</span>
+            <div class="flex-1 grid grid-cols-5 gap-1.5 max-w-md">
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-run animate-pulse"></div>
+              <div class="seg bg-slate-200"></div>
+            </div>
+            <span class="w-20 text-right"><span class="inline-flex items-center gap-1 text-run text-xs font-medium"><i class="fa fa-spinner fa-spin"></i> 渲染中</span></span>
+            <button class="w-16 text-xs text-brand-600 hover:underline">详情</button>
+          </div>
+
+          <div class="row-hover px-4 py-2.5 flex items-center gap-4">
+            <span class="w-10 text-ink-400 text-xs font-mono">#05</span>
+            <div class="flex-1 grid grid-cols-5 gap-1.5 max-w-md">
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-warn"></div>
+            </div>
+            <span class="w-20 text-right"><span class="inline-flex items-center gap-1 text-warn text-xs font-medium"><i class="fa fa-exclamation-circle"></i> 待审</span></span>
+            <button class="w-16 text-xs text-brand-600 hover:underline">详情</button>
+          </div>
+
+          <div class="row-hover px-4 py-2.5 flex items-center gap-4">
+            <span class="w-10 text-ink-400 text-xs font-mono">#06</span>
+            <div class="flex-1 grid grid-cols-5 gap-1.5 max-w-md">
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-ok"></div>
+              <div class="seg bg-err"></div>
+              <div class="seg bg-slate-200"></div>
+              <div class="seg bg-slate-200"></div>
+            </div>
+            <span class="w-20 text-right"><span class="inline-flex items-center gap-1 text-err text-xs font-medium"><i class="fa fa-times-circle"></i> 失败</span></span>
+            <button class="w-16 text-xs px-2 py-1 rounded-md bg-err/10 text-err hover:bg-err/20 font-medium">重试</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 批次卡片 2 -->
+      <section class="bg-white rounded-xl border border-slate-200 shadow-sm">
+        <div class="px-4 py-3 flex items-center justify-between border-b border-slate-100">
+          <div class="flex items-center gap-3">
+            <span class="font-semibold">防晒气垫</span>
+            <span class="text-ink-400">·</span>
+            <span class="text-ink-500">30秒</span>
+            <span class="text-ink-300 text-xs">11:00 创建</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-ok font-medium"><i class="fa fa-check"></i> 全部完成 12/12</span>
+            <button class="px-2.5 py-1 rounded-md text-xs text-white bg-brand-600 hover:bg-brand-700"><i class="fa fa-download"></i> 导出</button>
+          </div>
+        </div>
+        <div class="px-4 py-2.5 flex items-center gap-1.5">
+          <div class="seg bg-ok flex-1" style="max-width:none"></div>
+          <span class="text-xs text-ink-400 ml-2">全部通过 QA</span>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- 新建批量抽屉 -->
+<div id="drawer" class="fixed inset-y-0 right-0 w-96 bg-white shadow-2xl border-l border-slate-200 translate-x-full transition-transform duration-300 z-50 flex flex-col">
+  <div class="h-14 px-5 flex items-center justify-between border-b border-slate-100">
+    <h2 class="font-semibold text-[15px]">新建批量</h2>
+    <button onclick="document.getElementById('drawer').classList.add('translate-x-full')" class="text-ink-400 hover:text-ink-700"><i class="fa fa-times"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto p-5 space-y-5">
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1.5">产品</label>
+      <select class="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none">
+        <option>花西子气垫</option>
+        <option>防晒气垫</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1.5">数量</label>
+      <div class="flex items-center gap-2">
+        <input type="number" value="20" class="w-24 px-3 py-2 rounded-lg border border-slate-200 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none">
+        <span class="text-ink-500 text-xs">条</span>
+      </div>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-ink-700 mb-1.5">时长</label>
+      <div class="grid grid-cols-3 gap-2">
+        <button class="py-2 rounded-lg border border-slate-200 text-ink-700 hover:border-brand-500">15秒</button>
+        <button class="py-2 rounded-lg border-2 border-brand-500 bg-brand-50 text-brand-700 font-medium">45秒</button>
+        <button class="py-2 rounded-lg border border-slate-200 text-ink-700 hover:border-brand-500">自定义</button>
+      </div>
+    </div>
+    <details class="border-t border-slate-100 pt-3">
+      <summary class="text-xs text-ink-500 cursor-pointer hover:text-ink-700">高级（平台 / 文案 / 音色…）</summary>
+      <div class="mt-3 space-y-3 text-xs text-ink-400">默认走产品库参数，需要时在此覆盖。</div>
+    </details>
+  </div>
+  <div class="p-5 border-t border-slate-100 flex gap-2">
+    <button class="flex-1 py-2.5 rounded-lg border border-slate-200 text-ink-700 hover:bg-slate-50 font-medium"><i class="fa fa-flask"></i> 打样 1 条</button>
+    <button class="flex-1 py-2.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-medium shadow-sm">直接开跑</button>
+  </div>
+</div>
+
+</body>
+</html>
