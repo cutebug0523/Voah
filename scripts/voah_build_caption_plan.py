@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ def as_abs(path: str | Path, base: Path | None = None) -> Path:
 
 PUNCT_RE = re.compile(r"([。！？!?；;，,])")
 WEIGHT_RE = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’（）()\[\]【】《》<>+\-_/]+")
+PUNCTUATION_RE = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’（）()\[\]【】《》<>+\-_/]")
 
 
 def speech_units(text: str) -> int:
@@ -45,29 +47,52 @@ def visible_units(text: str) -> int:
     return len(WEIGHT_RE.sub("", text or ""))
 
 
+def display_units(text: str) -> float:
+    total = 0.0
+    for char in str(text or ""):
+        if char.isspace():
+            continue
+        if unicodedata.east_asian_width(char) in {"W", "F"}:
+            total += 1.0
+        elif char.isascii() and char.isalnum():
+            total += 0.5
+        elif PUNCTUATION_RE.match(char):
+            total += 0.5
+        else:
+            total += 1.0
+    return round(total, 3)
+
+
+def is_line_start_punctuation(char: str) -> bool:
+    return bool(char and PUNCTUATION_RE.match(char))
+
+
 def split_caption_chunk(chunk: str, max_units: int) -> list[str]:
     chunk = str(chunk or "").strip()
     if not chunk:
         return []
-    if speech_units(chunk) <= max_units:
+    if display_units(chunk) <= max_units:
         return [chunk]
 
     output: list[str] = []
     buffer = ""
-    units = 0
     for char in chunk:
-        buffer += char
-        units += visible_units(char)
-        if units >= max_units:
-            output.append(buffer.strip())
-            buffer = ""
-            units = 0
+        candidate = buffer + char
+        if buffer and display_units(candidate) > max_units:
+            if is_line_start_punctuation(char) and len(buffer) > 1:
+                output.append(buffer[:-1].strip())
+                buffer = buffer[-1] + char
+            else:
+                output.append(buffer.strip())
+                buffer = char
+        else:
+            buffer = candidate
     if buffer.strip():
         output.append(buffer.strip())
     return output or [chunk]
 
 
-def split_caption_text(text: str, max_units: int = 14) -> list[str]:
+def split_caption_text(text: str, max_units: int = 12) -> list[str]:
     text = str(text or "").strip()
     if not text:
         return [""]
@@ -87,7 +112,7 @@ def split_caption_text(text: str, max_units: int = 14) -> list[str]:
     buffer = ""
     for part in parts or [text]:
         candidate = buffer + part if buffer else part
-        if buffer and speech_units(candidate) > max_units:
+        if buffer and display_units(candidate) > max_units:
             merged.append(buffer)
             buffer = part
         else:
@@ -97,7 +122,7 @@ def split_caption_text(text: str, max_units: int = 14) -> list[str]:
 
     output: list[str] = []
     for chunk in merged:
-        if speech_units(chunk) <= max_units:
+        if display_units(chunk) <= max_units:
             output.append(chunk)
             continue
         subparts = [item for item in re.split(r"(?<=、)", chunk) if item]
@@ -107,7 +132,7 @@ def split_caption_text(text: str, max_units: int = 14) -> list[str]:
             buffer = ""
             for part in subparts:
                 candidate = buffer + part if buffer else part
-                if buffer and speech_units(candidate) > max_units:
+                if buffer and display_units(candidate) > max_units:
                     output.extend(split_caption_chunk(buffer, max_units))
                     buffer = part
                 else:

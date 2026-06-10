@@ -7,7 +7,6 @@ import argparse
 import json
 import shutil
 import subprocess
-import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -67,17 +66,64 @@ def load_font(font_source: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default(size=size)
 
 
-def text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
-    box = draw.multiline_textbbox((0, 0), text, font=font, spacing=4, align="center")
+def text_size(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    stroke_width: int = 0,
+) -> tuple[int, int]:
+    box = draw.multiline_textbbox(
+        (0, 0),
+        text,
+        font=font,
+        spacing=4,
+        align="center",
+        stroke_width=stroke_width,
+    )
     return int(box[2] - box[0]), int(box[3] - box[1])
 
 
-def wrap_caption(text: str, max_chars: int = 15) -> str:
+def line_width_px(text: str, font: ImageFont.ImageFont) -> float:
+    if hasattr(font, "getlength"):
+        return float(font.getlength(text))
+    image = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    box = draw.textbbox((0, 0), text, font=font)
+    return float(box[2] - box[0])
+
+
+def caption_text_max_width(canvas_width: int, preset: str) -> int:
+    if preset == "live_bar_lower":
+        return max(1, canvas_width - 2 * (46 + 30))
+    return max(1, canvas_width - 2 * 34)
+
+
+def is_line_start_punctuation(char: str) -> bool:
+    return char in "，。！？、,.!?；;：:\"'”’）)]】》"
+
+
+def wrap_caption(text: str, font: ImageFont.ImageFont, max_width_px: int) -> str:
     value = str(text or "").strip()
-    if len(value) <= max_chars:
+    if not value or line_width_px(value, font) <= max_width_px:
         return value
-    pieces = textwrap.wrap(value, width=max_chars, break_long_words=True, replace_whitespace=False)
-    return "\n".join(pieces[:3])
+
+    lines: list[str] = []
+    for raw_line in value.splitlines() or [value]:
+        buffer = ""
+        for char in raw_line:
+            candidate = buffer + char
+            if buffer and line_width_px(candidate, font) > max_width_px:
+                if is_line_start_punctuation(char) and len(buffer) > 1:
+                    lines.append(buffer[:-1].strip())
+                    buffer = buffer[-1] + char
+                else:
+                    lines.append(buffer.strip())
+                    buffer = char
+            else:
+                buffer = candidate
+        if buffer.strip():
+            lines.append(buffer.strip())
+    return "\n".join(line for line in lines if line) or value
 
 
 def render_caption_png(caption: dict[str, Any], plan: dict[str, Any], output: Path) -> None:
@@ -88,11 +134,13 @@ def render_caption_png(caption: dict[str, Any], plan: dict[str, Any], output: Pa
     preset = str(style.get("preset") or "songti_white_gold_lower")
     font_size = 43 if preset == "live_bar_lower" else 54
     font = load_font(str(style.get("font_source") or ""), font_size)
-    text = wrap_caption(str(caption.get("text") or ""))
+    max_text_width = caption_text_max_width(width, preset)
+    text = wrap_caption(str(caption.get("text") or ""), font, max_text_width)
 
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    text_w, text_h = text_size(draw, text, font)
+    stroke = 4 if preset != "live_bar_lower" else 3
+    text_w, text_h = text_size(draw, text, font, stroke_width=stroke)
     x = max(24, int((width - text_w) / 2))
     bottom = 246 if preset == "live_bar_lower" else 260
     y = max(24, height - bottom - text_h)
@@ -108,7 +156,6 @@ def render_caption_png(caption: dict[str, Any], plan: dict[str, Any], output: Pa
         ]
         draw.rounded_rectangle(rect, radius=8, fill=(18, 22, 20, 210), outline=(244, 209, 155, 200), width=2)
 
-    stroke = 4 if preset != "live_bar_lower" else 3
     draw.multiline_text(
         (x, y),
         text,
