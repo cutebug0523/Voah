@@ -477,10 +477,11 @@ def sanitize_section_copy(section: dict[str, Any]) -> dict[str, Any]:
 
 
 def target_voice_char_range(target_duration_s: float) -> tuple[int, int]:
-    # MiniMax speech-2.8-hd 当前女声 speed=1.1 实测约 5.8-6.2 字/秒。
-    # 目标是让 45s 任务落在 40-50s 成片区间，避免过短或超过 55s。
-    min_voice_chars = max(150, int(target_duration_s * 5.1))
-    max_voice_chars = max(min_voice_chars + 28, int(target_duration_s * 6.0))
+    # MiniMax speech-2.8-hd 当前女声 speed=1.1 含停顿实测约 4.6-5.3 字/秒（多任务抽样）。
+    # 取保守值 ~4.8 字/秒估算，宁短勿长：短了素材多填一点，长了会整体超时。
+    # 不设字数硬底，短视频（15-25s）才能真正控制在目标区间。
+    min_voice_chars = max(40, int(target_duration_s * 4.4))
+    max_voice_chars = max(min_voice_chars + 16, int(target_duration_s * 4.8))
     return min_voice_chars, max_voice_chars
 
 
