@@ -89,9 +89,10 @@ TERM_ALIASES = {
     "紫外线": ["UV"],
     "测试卡": ["感应卡"],
     "防晒": ["防晒值", "防晒力"],
-    "遇水": ["泼水", "倒水", "水流", "喷洒", "防水"],
-    "倒水": ["泼水", "水流", "倾倒", "遇水"],
-    "泼水": ["倒水", "水流", "遇水"],
+    "遇水": ["泼水", "倒水", "水流", "喷洒", "喷水", "水珠", "水滴", "防水"],
+    "倒水": ["泼水", "水流", "倾倒", "遇水", "喷水"],
+    "泼水": ["倒水", "水流", "遇水", "喷洒", "喷水", "水珠", "水滴"],
+    "防水": ["遇水", "泼水", "喷水", "水珠", "水滴", "水流"],
     "出汗": ["汗", "高温"],
     "脱妆": ["斑驳", "花妆", "掉妆"],
     "卡粉": ["卡纹", "细纹"],
@@ -528,7 +529,7 @@ def term_variants(term: str) -> list[str]:
 
 
 def term_hit_info(record: dict[str, Any], section: dict[str, Any]) -> list[dict[str, Any]]:
-    blob = normalized(text_blob(record))
+    blob = normalized(candidate_full_text_blob(record))
     hits: list[dict[str, Any]] = []
     for term, weight in section_terms(section):
         variants = term_variants(term)
@@ -933,13 +934,68 @@ def section_is_cta_packaging(section: dict[str, Any]) -> bool:
 
 def required_visual_hits(record: dict[str, Any], section: dict[str, Any]) -> list[str]:
     terms = required_visual_terms(section)
-    blob = normalized(text_blob(record))
+    blob = normalized(candidate_full_text_blob(record))
     return [term for term in terms if term_in_blob(term, blob)]
 
 
 def required_visual_score(record: dict[str, Any], section: dict[str, Any]) -> float:
     hits = required_visual_hits(record, section)
     return round(sum(1.25 if term in DOMAIN_TERMS else 0.8 for term in hits), 3)
+
+
+def section_requires_child_visual_hit(section: dict[str, Any]) -> bool:
+    if not (required_visual_terms(section) or hard_visual_terms(section)):
+        return False
+    if required_visual_terms(section):
+        return True
+    if str(section.get("role") or "") == "proof":
+        return True
+    query = section_query(section)
+    return any(term in query for term in PRODUCT_DETAIL_TERMS)
+
+
+def child_required_visual_hits(child: dict[str, Any], section: dict[str, Any]) -> list[str]:
+    terms = required_visual_terms(section) or hard_visual_terms(section)
+    blob = normalized(child_text_blob(child))
+    return [term for term in terms if term_in_blob(term, blob)]
+
+
+def child_has_hard_visual_hit(child: dict[str, Any], section: dict[str, Any]) -> bool:
+    return bool(child_required_visual_hits(child, section))
+
+
+def candidate_hard_visual_child_hits(candidate: dict[str, Any], section: dict[str, Any]) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    for child in candidate.get("child_physical_shots") or []:
+        if not isinstance(child, dict) or not is_child_renderable(child):
+            continue
+        child_hits = child_required_visual_hits(child, section)
+        if child_hits:
+            hits.append(
+                {
+                    "child_physical_shot_id": child.get("shot_id") or "",
+                    "hits": child_hits,
+                    "metadata_precision": child_metadata_precision(child),
+                }
+            )
+    return hits
+
+
+def candidate_has_child_visual_hit(candidate: dict[str, Any], section: dict[str, Any]) -> bool:
+    return bool(candidate_hard_visual_child_hits(candidate, section))
+
+
+def hard_visual_candidate_pool(candidates: list[dict[str, Any]], section: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    if not section_requires_child_visual_hit(section):
+        return candidates, False
+    hard_hit_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate_renderable(candidate) and candidate_has_child_visual_hit(candidate, section)
+    ]
+    if hard_hit_candidates:
+        return hard_hit_candidates, False
+    return candidates, True
 
 
 def semantic_match_bonus(record: dict[str, Any], section: dict[str, Any]) -> tuple[float, list[str]]:
@@ -1172,6 +1228,9 @@ def hard_visual_terms(section: dict[str, Any]) -> list[str]:
     for term in DOMAIN_TERMS:
         if term in value and term not in terms:
             terms.append(term)
+    for term in PRODUCT_DETAIL_TERMS:
+        if term in value and term not in terms:
+            terms.append(term)
     for keyword in section.get("keywords") or []:
         text = str(keyword).strip()
         if text and text not in terms:
@@ -1206,13 +1265,26 @@ def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, An
     ]
     target_terms = hard_visual_terms(section)
     term_positions = section_term_positions(candidate, section, target_terms)
+    hard_required = section_requires_child_visual_hit(section)
+    hard_hits_by_child_id = {
+        str(child.get("shot_id") or ""): child_required_visual_hits(child, section)
+        for child in children
+        if child_required_visual_hits(child, section)
+    }
+    hard_hit_exists = bool(hard_required and hard_hits_by_child_id)
     scored: list[tuple[float, int, dict[str, Any], list[str]]] = []
     target_duration = float(section.get("audio_duration_s") or 0)
     for child_index, child in enumerate(children):
+        child_id = str(child.get("shot_id") or "")
+        hard_hits = hard_hits_by_child_id.get(child_id, [])
+        if hard_hit_exists and not hard_hits:
+            continue
         hit_info = child_term_hit_info(child, section)
-        hits = [str(item["term"]) for item in hit_info]
+        hits = list(dict.fromkeys([*hard_hits, *[str(item["term"]) for item in hit_info]]))
         parent_hits = child_parent_context_hits(child, section)
         score = child_semantic_weight(child, section)
+        if hard_hits:
+            score += 1.8 + min(1.6, len(hard_hits) * 0.42)
         score += child_order_hint_score(child_index, len(children), term_positions, hits)
         proof_order_score = child_proof_action_order_score(child, section, child_index, len(children))
         if proof_order_score:
@@ -1240,6 +1312,8 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
     preferred_child_ids = [str(item) for item in candidate.get("llm_preferred_child_physical_shot_ids") or []]
     scored, term_positions, target_terms = ranked_child_physical_shots(candidate, section)
     best_scored_child_id = str(scored[0][2].get("shot_id") or "") if scored else ""
+    hard_required = section_requires_child_visual_hit(section)
+    candidate_child_hard_hits = candidate_hard_visual_child_hits(candidate, section)
     if preferred_child_ids:
         for child in candidate.get("child_physical_shots") or []:
             if not isinstance(child, dict) or not is_child_renderable(child):
@@ -1248,6 +1322,15 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
                 hits = [str(item["term"]) for item in child_term_hit_info(child, section)]
                 parent_hits = child_parent_context_hits(child, section)
                 inherited_only = bool(target_terms and parent_hits and not hits)
+                if (
+                    hard_required
+                    and target_terms
+                    and candidate_child_hard_hits
+                    and not child_has_hard_visual_hit(child, section)
+                    and best_scored_child_id
+                    and best_scored_child_id != str(child.get("shot_id") or "")
+                ):
+                    break
                 if (
                     str(section.get("role") or "") == "proof"
                     and inherited_only
@@ -1300,13 +1383,20 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
     ]
     parent_context_hits = child_parent_context_hits(best_child, section)
     inherited_only_hits = bool(target_terms and parent_context_hits and not hits)
-    requires_review = bool(target_terms and (not hits or inherited_only_hits or not child_text_is_verified(best_child)))
+    hard_visual_fallback = bool(hard_required and target_terms and not candidate_child_hard_hits)
+    requires_review = bool(
+        target_terms
+        and (not hits or inherited_only_hits or not child_text_is_verified(best_child) or hard_visual_fallback)
+    )
     return {
         "mode": "child_physical_shot",
         "child_physical_shot_id": best_child.get("shot_id") or "",
         "target_visual_terms": target_terms,
         "semantic_hits": hits,
         "parent_context_hits": parent_context_hits,
+        "child_required_visual_hits": child_required_visual_hits(best_child, section),
+        "hard_visual_child_hit_count": len(candidate_child_hard_hits),
+        "hard_visual_fallback": hard_visual_fallback,
         "child_metadata_precision": child_metadata_precision(best_child),
         "semantic_score": round(best_score, 3),
         "missing_target_terms": missing_terms,
@@ -1314,6 +1404,7 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
             f"story unit 内子镜头匹配：{best_child.get('shot_id')}；命中 "
             f"{'、'.join(hits) if hits else '无硬视觉词'}"
             f"{'；硬词仅见于父级上下文：' + '、'.join(parent_context_hits[:6]) if inherited_only_hits else ''}"
+            f"{'；未找到 child 硬画面命中，回退软评分' if hard_visual_fallback else ''}"
             f"{'；按父级证明动作顺序定位' if child_proof_action_order_score(best_child, section, _child_index, len([child for child in candidate.get('child_physical_shots') or [] if isinstance(child, dict) and is_child_renderable(child)])) else ''}"
             f"{'；使用 story 文本顺序定位' if term_positions else ''}"
         ),
@@ -1428,7 +1519,8 @@ def clip_segment_from_parent_story_unit(
         for term in target_terms
         if term not in parent_hits and not any(alias in parent_hits for alias in TERM_ALIASES.get(term, []))
     ]
-    requires_review = bool(target_terms and not parent_hits)
+    hard_visual_fallback = bool(intra.get("hard_visual_fallback"))
+    requires_review = bool(target_terms and (not parent_hits or hard_visual_fallback))
     selection_reasons = list(candidate.get("fill_reasons", []))
     selection_reasons.append(
         "使用 story unit 父级连续片段裁切，避免同一父素材拆成过多 child clip 连续铺开"
@@ -1437,7 +1529,10 @@ def clip_segment_from_parent_story_unit(
         selection_reasons.append(str(intra.get("reason")))
     selection_risks = list(candidate.get("fill_risks", []))
     if requires_review:
-        selection_risks.append("目标视觉词未能在 story unit 父级文本中明确命中，需抽帧或 Omni 复核")
+        if hard_visual_fallback:
+            selection_risks.append("目标视觉词只在父级 story unit 命中，未找到 child 级硬画面命中，需抽帧或 Omni 复核")
+        else:
+            selection_risks.append("目标视觉词未能在 story unit 父级文本中明确命中，需抽帧或 Omni 复核")
     return {
         "shot_id": candidate.get("shot_id"),
         "story_unit_id": candidate.get("story_unit_id") or candidate.get("shot_id"),
@@ -1466,6 +1561,8 @@ def clip_segment_from_parent_story_unit(
         "selection_risks": selection_risks,
         "semantic_hits": semantic_hits,
         "parent_context_hits": intra.get("parent_context_hits", []),
+        "child_required_visual_hits": intra.get("child_required_visual_hits", []),
+        "hard_visual_fallback": hard_visual_fallback,
         "child_metadata_precision": intra.get("child_metadata_precision", ""),
         "semantic_score": candidate.get("semantic_score"),
         "requires_visual_review": requires_review,
@@ -1483,6 +1580,7 @@ def select_child_metadata_from_child(
     parent_context_hits = child_parent_context_hits(child, section)
     score = child_semantic_weight(child, section)
     target_terms = base_intra.get("target_visual_terms") or hard_visual_terms(section)
+    child_hard_hits = child_required_visual_hits(child, section)
     missing_terms = [
         term
         for term in target_terms
@@ -1493,8 +1591,9 @@ def select_child_metadata_from_child(
         base_intra.get("inherited_only_hits")
         or (target_terms and parent_context_hits and not hits)
     )
+    hard_visual_fallback = bool(base_intra.get("hard_visual_fallback"))
     requires_review = bool(
-        target_terms and (not hits or inherited_only_hits or not child_text_is_verified(child))
+        target_terms and (not hits or inherited_only_hits or not child_text_is_verified(child) or hard_visual_fallback)
     )
     return {
         "mode": "child_physical_shot",
@@ -1502,6 +1601,8 @@ def select_child_metadata_from_child(
         "target_visual_terms": target_terms,
         "semantic_hits": hits,
         "parent_context_hits": parent_context_hits,
+        "child_required_visual_hits": child_hard_hits,
+        "hard_visual_fallback": hard_visual_fallback,
         "child_metadata_precision": child_metadata_precision(child),
         "semantic_score": round(score, 3),
         "missing_target_terms": missing_terms,
@@ -1509,6 +1610,7 @@ def select_child_metadata_from_child(
             f"story unit 内连续子镜头：{child.get('shot_id')}；命中 "
             f"{'、'.join(hits) if hits else '无硬视觉词'}"
             f"{'；硬词仅见于父级上下文：' + '、'.join(parent_context_hits[:6]) if inherited_only_hits else ''}"
+            f"{'；未找到 child 硬画面命中，回退软评分' if hard_visual_fallback else ''}"
         ),
         "source_clip_path": child.get("trimmed_clip_path") or child.get("source_clip_path") or "",
         "source_duration_s": duration,
@@ -1564,6 +1666,8 @@ def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], pl
         "selection_risks": selection_risks,
         "semantic_hits": intra.get("semantic_hits") or candidate.get("semantic_hits", []),
         "parent_context_hits": intra.get("parent_context_hits", []),
+        "child_required_visual_hits": intra.get("child_required_visual_hits", []),
+        "hard_visual_fallback": bool(intra.get("hard_visual_fallback")),
         "child_metadata_precision": intra.get("child_metadata_precision", ""),
         "semantic_score": intra.get("semantic_score") if intra.get("semantic_score") is not None else candidate.get("semantic_score"),
         "requires_visual_review": bool(intra.get("requires_review")),
@@ -1587,10 +1691,18 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
     semantic_score = semantic_hit_weight(candidate, section)
     visual_hits = required_visual_hits(candidate, section)
     visual_score = required_visual_score(candidate, section)
+    child_visual_hits = candidate_hard_visual_child_hits(candidate, section)
     if visual_hits:
         visual_bonus = min(0.42, visual_score * 0.075)
         score += visual_bonus
         reasons.append(f"required_visual 硬词命中：{'、'.join(visual_hits[:8])}")
+    if child_visual_hits:
+        child_terms = list(dict.fromkeys(term for item in child_visual_hits for term in item.get("hits", [])))
+        score += min(0.72, 0.28 + len(child_terms) * 0.12)
+        reasons.append(f"child visual_actions/文本硬词命中：{'、'.join(child_terms[:8])}")
+    elif section_requires_child_visual_hit(section) and hard_visual_terms(section):
+        score -= 0.22
+        risks.append("强画面段未找到 child 级硬词命中，需 fallback/复核")
     if bonus > 0:
         score += bonus
         reasons.append(f"口播/意图与素材字段命中：{'、'.join(semantic_terms)}")
@@ -1628,6 +1740,9 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
     output["semantic_score"] = round(semantic_score, 3)
     output["required_visual_hits"] = visual_hits
     output["required_visual_score"] = visual_score
+    output["child_required_visual_hits"] = child_visual_hits
+    output["hard_visual_child_hit_count"] = len(child_visual_hits)
+    output["hard_visual_child_filter_required"] = section_requires_child_visual_hit(section)
     output["section_forbidden_hits"] = forbidden_hits
     output["visual_theme_contract"] = theme_eval.get("contract")
     output["visual_theme_hits"] = theme_eval.get("theme_hits")
@@ -1817,6 +1932,11 @@ def top_up_selection(
 ) -> tuple[list[dict[str, Any]], str]:
     selected = list(selected)
     note = ""
+    adjusted_pool, hard_visual_fallback = hard_visual_candidate_pool(adjusted, section)
+    if section_requires_child_visual_hit(section) and not hard_visual_fallback:
+        adjusted = adjusted_pool
+    elif section_requires_child_visual_hit(section) and hard_visual_fallback:
+        note = "；强画面段没有 child 硬词命中，补齐阶段回退软评分并标记复核"
     effective_max = max(max_clips_per_section, len(selected) + max_clips_per_section)
     selected_ids = {str(item.get("shot_id") or "") for item in selected}
     selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
@@ -1935,6 +2055,8 @@ def compact_candidate_for_llm(candidate: dict[str, Any], rank: int, section: dic
         "semantic_score": candidate.get("semantic_score"),
         "semantic_hits": candidate.get("semantic_hits") or [],
         "visual_hits": candidate.get("required_visual_hits") or [],
+        "child_visual_hits": candidate.get("child_required_visual_hits") or [],
+        "hard_visual_child_hit_count": candidate.get("hard_visual_child_hit_count") or 0,
         "visual_theme": {
             "contract": candidate.get("visual_theme_contract") or visual_theme_contract(section),
             "hits": candidate.get("visual_theme_hits") or {},
@@ -1964,6 +2086,7 @@ def compact_section_for_llm(section: dict[str, Any], candidate_section: dict[str
 
 
 def candidates_for_llm(candidates: list[dict[str, Any]], section: dict[str, Any], limit: int = 8) -> list[dict[str, Any]]:
+    pool, fallback_soft = hard_visual_candidate_pool(candidates, section)
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -1975,12 +2098,15 @@ def candidates_for_llm(candidates: list[dict[str, Any]], section: dict[str, Any]
             return
         if not candidate_allowed_for_section(item, section):
             return
+        if not fallback_soft and section_requires_child_visual_hit(section) and not candidate_has_child_visual_hit(item, section):
+            return
         selected.append(item)
         seen.add(shot_id)
 
     for item in sorted(
-        candidates,
+        pool,
         key=lambda candidate: (
+            int(candidate.get("hard_visual_child_hit_count") or 0),
             float(candidate.get("required_visual_score") or 0),
             candidate_semantic_score(candidate),
             candidate_score(candidate),
@@ -1991,7 +2117,7 @@ def candidates_for_llm(candidates: list[dict[str, Any]], section: dict[str, Any]
         if len(selected) >= 3:
             break
 
-    for item in candidates:
+    for item in pool:
         add(item)
         if len(selected) >= limit:
             break
@@ -2405,6 +2531,7 @@ def apply_llm_selection(
         for key in (item.get("shot_id"), item.get("story_unit_id"), item.get("parent_shot_id")):
             if key:
                 by_id[str(key)] = item
+    _, hard_visual_fallback = hard_visual_candidate_pool(adjusted, section)
     selected: list[dict[str, Any]] = []
     invalid: list[str] = []
     seen: set[str] = set()
@@ -2422,6 +2549,9 @@ def apply_llm_selection(
             continue
         if not candidate_allowed_for_section(item, section):
             invalid.append(f"{requested_id}: forbidden or visual theme mismatch for section role")
+            continue
+        if section_requires_child_visual_hit(section) and not hard_visual_fallback and not candidate_has_child_visual_hit(item, section):
+            invalid.append(f"{requested_id}: no child hard visual hit")
             continue
         selected.append(apply_llm_child_preference(item, preferred_child_ids))
         seen.add(shot_id)
@@ -2479,6 +2609,7 @@ def build_selection_section(
     target = float(section.get("audio_duration_s") or 0)
     adjusted = [adjusted_candidate(item, section, used_counts) for item in candidates]
     adjusted.sort(key=lambda item: candidate_score(item), reverse=True)
+    hard_visual_fallback = False
 
     selected_override = apply_selection_overrides(section, adjusted, records_by_id, selection_overrides)
     has_override = selected_override is not None
@@ -2502,11 +2633,21 @@ def build_selection_section(
                 for item in adjusted
                 if candidate_renderable(item) and candidate_allowed_for_section(item, section)
             ]
+            hard_pool, hard_visual_fallback = hard_visual_candidate_pool(usable, section)
+            if section_requires_child_visual_hit(section) and hard_visual_fallback:
+                message = (
+                    f"{section.get('section_id')}: 强画面段没有 child 级硬词命中，"
+                    "回退软评分并标记复核"
+                )
+                warnings.append(message)
+                manual_reviews.append(message)
+            usable = hard_pool
             long_enough = [item for item in usable if candidate_duration(item) >= target - 0.03]
             strong_semantic = [item for item in usable if candidate_semantic_score(item) >= 1.6]
             if long_enough:
                 long_enough.sort(
                     key=lambda item: (
+                        int(item.get("hard_visual_child_hit_count") or 0),
                         float(item.get("required_visual_score") or 0),
                         candidate_semantic_score(item),
                         candidate_score(item),

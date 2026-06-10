@@ -30,6 +30,7 @@ DEFAULT_INTAKE_SCRIPTS_DIR = Path(
         "/Users/noah/.codex/skills/voah-video-intake/scripts",
     )
 )
+REPO_SCRIPTS_DIR = Path(__file__).resolve().parent
 DIMENSION = 2560
 EMBEDDING_MODEL = "qwen3-vl-embedding"
 STAGE = "material_intake"
@@ -250,6 +251,14 @@ def resolve_config(args: argparse.Namespace) -> dict[str, Any]:
             arg_or_job(args, job, "intake_scripts_dir", ("options", "intake_scripts_dir"))
             or DEFAULT_INTAKE_SCRIPTS_DIR
         ),
+        "refine_children": not (
+            bool(args.no_refine_children)
+            or as_bool(nested_get(job, "options", "no_refine_children"))
+            or as_bool(nested_get(job, "options", "skip_refine_children"))
+        ),
+        "refine_workers": int(arg_or_job(args, job, "refine_workers", ("options", "refine_workers")) or 3),
+        "refine_limit": int(arg_or_job(args, job, "refine_limit", ("options", "refine_limit")) or 0),
+        "refine_timeout_s": int(arg_or_job(args, job, "refine_timeout_s", ("options", "refine_timeout_s")) or 600),
         "skip_upload": bool(args.skip_upload) or as_bool(nested_get(job, "options", "skip_upload")),
         "skip_vectorize": bool(args.skip_vectorize) or as_bool(nested_get(job, "options", "skip_vectorize")),
     }
@@ -275,13 +284,19 @@ def validate_preflight(config: dict[str, Any]) -> None:
     required_scripts = [
         "run_intake.py",
         "trim_and_upload.py",
-        "vectorize.py",
     ]
     missing = [name for name in required_scripts if not (scripts_dir / name).exists()]
+    repo_required = [
+        "voah_run_intake_compat.py",
+        "voah_retry_trim_uploads.py",
+        "voah_refine_child_vlm.py",
+        "voah_vectorize_intake.py",
+    ]
+    missing.extend(name for name in repo_required if not (REPO_SCRIPTS_DIR / name).exists())
     if missing:
         raise WorkerError(
             "intake_scripts_missing",
-            f"missing voah-video-intake scripts in {scripts_dir}: {', '.join(missing)}",
+            f"missing intake worker scripts: {', '.join(missing)}",
         )
 
 
@@ -309,6 +324,30 @@ def run_command(
             "worker_exit_nonzero",
             f"command failed with exit code {proc.returncode}: {' '.join(cmd[:3])}",
         )
+
+
+def trim_upload_complete(run_dir: Path) -> bool:
+    shots_path = run_dir / "physical_shots.json"
+    results_path = run_dir / "trim_upload_results_physical.json"
+    if not shots_path.exists() or not results_path.exists():
+        return False
+    shots = load_json(shots_path)
+    results = load_json(results_path)
+    if not isinstance(shots, list) or not isinstance(results, list):
+        return False
+    result_by_id = {str(item.get("shot_id") or ""): item for item in results if isinstance(item, dict)}
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        shot_id = shot_id_of(shot)
+        result = result_by_id.get(shot_id) or {}
+        if result.get("status") != "ok" or not result.get("uploaded"):
+            return False
+        oss_url = str(first(shot, "trimmed_oss_url", default=result.get("oss_url", "")))
+        clip_path = str(first(shot, "trimmed_clip_path", default=result.get("trimmed_path", "")))
+        if not oss_url.startswith("oss://") or not clip_path:
+            return False
+    return True
 
 
 def parse_run_dir(stdout_text: str) -> Path | None:
@@ -586,6 +625,12 @@ def update_run_manifest(
         if (run_dir / "trim_upload_results_physical.json").exists()
         else []
     )
+    refine_results = (
+        load_json(run_dir / "child_vlm_refine_results.json")
+        if (run_dir / "child_vlm_refine_results.json").exists()
+        else {}
+    )
+    refine_summary = refine_results.get("summary") if isinstance(refine_results, dict) else {}
     uploaded_count = sum(1 for item in trim_results if isinstance(item, dict) and item.get("uploaded"))
     trim_ok = sum(1 for item in trim_results if isinstance(item, dict) and item.get("status") == "ok")
     qa_warnings = list(shot_index.get("warnings") or [])
@@ -593,6 +638,12 @@ def update_run_manifest(
         qa_warnings.append(f"{failed_channels} embedding channels failed")
     if trim_ok < len(physical_shots):
         qa_warnings.append(f"{len(physical_shots) - trim_ok} physical shots failed trim/upload")
+    remaining_refine = int(refine_summary.get("remaining_needs_vlm_refine") or 0)
+    refine_failed = int(refine_summary.get("failed_count") or 0)
+    if refine_failed:
+        qa_warnings.append(f"{refine_failed} child VLM refine calls failed")
+    if remaining_refine:
+        qa_warnings.append(f"{remaining_refine} physical shots still need VLM refine")
 
     manifest.setdefault("schema_version", "1.3.0")
     manifest["desktop_wrapper"] = {
@@ -613,6 +664,7 @@ def update_run_manifest(
             "scene_cuts": "scene_cuts.json",
             "trimmed_physical": "trimmed_physical/",
             "trim_upload_results_physical": "trim_upload_results_physical.json",
+            "child_vlm_refine_results": "child_vlm_refine_results.json",
             "vectorization_inputs": "vectorization_inputs.json",
             "embedding_results": "embedding_results.json",
             "shot_index": "shot_index.json",
@@ -631,6 +683,9 @@ def update_run_manifest(
             "physical_shot_count": len(physical_shots),
             "trimmed_physical_count": trim_ok,
             "uploaded_physical_count": uploaded_count,
+            "child_vlm_refined_count": int(refine_summary.get("refined_count") or 0),
+            "child_vlm_refine_failed_count": refine_failed,
+            "child_vlm_remaining_needs_refine_count": remaining_refine,
             "embedding_result_count": len(embedding_results),
             "embedding_channel_ok_count": ok_channels,
             "embedding_channel_failed_count": failed_channels,
@@ -668,6 +723,7 @@ def build_success_result(
         "physical_shots": str(run_dir / "physical_shots.json"),
         "trimmed_physical_dir": str(run_dir / "trimmed_physical"),
         "trim_upload_results": str(run_dir / "trim_upload_results_physical.json"),
+        "child_vlm_refine_results": str(run_dir / "child_vlm_refine_results.json"),
         "vectorization_inputs": str(run_dir / "vectorization_inputs.json"),
         "embedding_results": str(run_dir / "embedding_results.json"),
         "shot_index": str(run_dir / "shot_index.json"),
@@ -694,6 +750,9 @@ def build_success_result(
             "scene_threshold": config["scene_threshold"],
             "candidate_min_duration": config["candidate_min_duration"],
             "min_physical_duration": config["min_physical_duration"],
+            "refine_children": config["refine_children"],
+            "refine_workers": config["refine_workers"],
+            "refine_limit": config["refine_limit"],
             "skip_upload": config["skip_upload"],
             "skip_vectorize": config["skip_vectorize"],
         },
@@ -704,6 +763,7 @@ def build_success_result(
             artifact("story_units", run_dir / "story_units.json"),
             artifact("physical_shots", run_dir / "physical_shots.json"),
             artifact("trim_upload_results", run_dir / "trim_upload_results_physical.json"),
+            artifact("child_vlm_refine_results", run_dir / "child_vlm_refine_results.json"),
             artifact("vectorization_inputs", run_dir / "vectorization_inputs.json"),
             artifact("embedding_results", run_dir / "embedding_results.json"),
             artifact("shot_index", run_dir / "shot_index.json", "1.3.0"),
@@ -716,6 +776,9 @@ def build_success_result(
             "physical_shot_count": qa.get("physical_shot_count"),
             "trimmed_physical_count": qa.get("trimmed_physical_count"),
             "uploaded_physical_count": qa.get("uploaded_physical_count"),
+            "child_vlm_refined_count": qa.get("child_vlm_refined_count"),
+            "child_vlm_refine_failed_count": qa.get("child_vlm_refine_failed_count"),
+            "child_vlm_remaining_needs_refine_count": qa.get("child_vlm_remaining_needs_refine_count"),
             "embedding_channel_ok_count": qa.get("embedding_channel_ok_count"),
             "embedding_channel_failed_count": qa.get("embedding_channel_failed_count"),
             "shot_index_record_count": qa.get("shot_index_record_count"),
@@ -804,6 +867,8 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             temp_stderr = temp_dir / "stderr.log"
             run_cmd = [
                 sys.executable,
+                str(REPO_SCRIPTS_DIR / "voah_run_intake_compat.py"),
+                "--skill-runner",
                 str(scripts_dir / "run_intake.py"),
                 "--target-dir",
                 str(config["source_dir"]),
@@ -881,6 +946,9 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                         "scene_threshold": config["scene_threshold"],
                         "candidate_min_duration": config["candidate_min_duration"],
                         "min_physical_duration": config["min_physical_duration"],
+                        "refine_children": config["refine_children"],
+                        "refine_workers": config["refine_workers"],
+                        "refine_limit": config["refine_limit"],
                     },
                     "env": {"required_keys": ["DASHSCOPE_API_KEY"]},
                 },
@@ -903,7 +971,35 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                 str(run_dir / "trimmed_physical"),
                 str(run_dir / "trim_upload_results_physical.json"),
             ]
-            run_command(trim_cmd, stdout_path, stderr_path, workspace)
+            trim_retry_used = False
+            try:
+                run_command(trim_cmd, stdout_path, stderr_path, workspace)
+            except WorkerError:
+                if not (run_dir / "trim_upload_results_physical.json").exists():
+                    raise
+                retry_cmd = [
+                    sys.executable,
+                    str(REPO_SCRIPTS_DIR / "voah_retry_trim_uploads.py"),
+                    "--run-dir",
+                    str(run_dir),
+                    "--shots",
+                    str(run_dir / "physical_shots.json"),
+                    "--results",
+                    str(run_dir / "trim_upload_results_physical.json"),
+                    "--clips-dir",
+                    str(run_dir / "trimmed_physical"),
+                    "--retry-results",
+                    str(run_dir / "trim_upload_retry_results.json"),
+                    "--timeout-s",
+                    "300",
+                    "--max-attempts",
+                    "3",
+                ]
+                run_command(retry_cmd, stdout_path, stderr_path, workspace)
+                commands_for_log.append({"name": "retry_trim_uploads", "argv": retry_cmd})
+                trim_retry_used = True
+                if not trim_upload_complete(run_dir):
+                    raise WorkerError("trim_upload_incomplete", "trim/upload retry completed but some physical shots still lack OSS URLs")
             commands_for_log.append({"name": "trim_and_upload_physical", "argv": trim_cmd})
             append_step(
                 run_manifest,
@@ -915,7 +1011,9 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                     "trim_upload_results": "trim_upload_results_physical.json",
                     "qa_last_frames": "qa_last_frames.json",
                     "contact_sheet": "contact_sheet.jpg",
+                    **({"trim_upload_retry_results": "trim_upload_retry_results.json"} if trim_retry_used else {}),
                 },
+                extra={"retry_used": trim_retry_used},
             )
             write_json(run_dir / "run_manifest.json", run_manifest)
         else:
@@ -927,10 +1025,60 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             )
             write_json(run_dir / "run_manifest.json", run_manifest)
 
+        if config["refine_children"] and not config["skip_upload"]:
+            refine_cmd = [
+                sys.executable,
+                str(REPO_SCRIPTS_DIR / "voah_refine_child_vlm.py"),
+                "--run-dir",
+                str(run_dir),
+                "--inputs",
+                str(run_dir / "physical_shots.json"),
+                "--output",
+                str(run_dir / "physical_shots.json"),
+                "--results",
+                str(run_dir / "child_vlm_refine_results.json"),
+                "--only-needs-vlm-refine",
+                "--workers",
+                str(config["refine_workers"]),
+                "--timeout-s",
+                str(config["refine_timeout_s"]),
+            ]
+            if config["refine_limit"] > 0:
+                refine_cmd.extend(["--limit", str(config["refine_limit"])])
+            run_command(refine_cmd, stdout_path, stderr_path, workspace)
+            commands_for_log.append({"name": "refine_child_vlm", "argv": refine_cmd})
+            refine_results = load_json(run_dir / "child_vlm_refine_results.json")
+            append_step(
+                run_manifest,
+                "refine_child_vlm",
+                "ok",
+                outputs={
+                    "physical_shots": "physical_shots.json",
+                    "child_vlm_refine_results": "child_vlm_refine_results.json",
+                    "child_vlm_refine_dir": "child_vlm_refine/",
+                },
+                qa=refine_results.get("qa") or {},
+            )
+            write_json(run_dir / "run_manifest.json", run_manifest)
+        else:
+            append_step(
+                run_manifest,
+                "refine_child_vlm",
+                "skipped",
+                extra={
+                    "reason": (
+                        "skip_upload option set"
+                        if config["skip_upload"]
+                        else "no_refine_children option set"
+                    )
+                },
+            )
+            write_json(run_dir / "run_manifest.json", run_manifest)
+
         if not config["skip_vectorize"]:
             vector_cmd = [
                 sys.executable,
-                str(scripts_dir / "vectorize.py"),
+                str(REPO_SCRIPTS_DIR / "voah_vectorize_intake.py"),
                 "--inputs",
                 str(run_dir / "vectorization_inputs.json"),
                 "--output",
@@ -1022,6 +1170,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--omni-proxy-width", type=int, default=None)
     parser.add_argument("--omni-proxy-fps", type=int, default=None)
     parser.add_argument("--intake-scripts-dir", help="Path to voah-video-intake/scripts.")
+    parser.add_argument("--no-refine-children", action="store_true", help="Skip child-level Omni refinement before vectorization.")
+    parser.add_argument("--refine-workers", type=int, default=None, help="Concurrent child VLM refine workers.")
+    parser.add_argument("--refine-limit", type=int, default=None, help="Debug limit for child VLM refine calls; 0 means all.")
+    parser.add_argument("--refine-timeout-s", type=int, default=None, help="Timeout per child VLM refine call.")
     parser.add_argument("--skip-upload", action="store_true", help="For debugging only; final shot_index will not be built.")
     parser.add_argument("--skip-vectorize", action="store_true", help="For debugging only; final shot_index will not be built.")
     return parser.parse_args(argv)

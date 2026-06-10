@@ -16,9 +16,25 @@
 
 - `voah_intake_desktop_wrapper.py`
   - 桌面端可调用的素材入库 worker wrapper。
-  - 读取产品名/slug、源素材目录、最多 N 条视频等参数，复用 `voah-video-intake` skill 自带的 `run_intake.py`、`trim_and_upload.py`、`vectorize.py`，不重写 Omni/裁切/向量化逻辑。
-  - 输出 `cache/voah_video_intake/{product_slug}/{timestamp}_{run_label}/desktop_intake_result.json`，并补齐 `run_manifest.json`、`physical_shots.json`、`trimmed_physical/`、`vectorization_inputs.json`、`embedding_results.json`、`shot_index.json` 等桌面端/下游 worker 可读取产物。
+  - 读取产品名/slug、源素材目录、最多 N 条视频等参数，通过 `voah_run_intake_compat.py` 复用 `voah-video-intake` skill 的 `run_intake.py`，并复用 skill 的 `trim_and_upload.py`，再调用 repo 内固定 worker 做 child 级 Omni 细化与向量化。
+  - 顺序为 `run_intake -> trim_and_upload -> voah_refine_child_vlm -> voah_vectorize_intake -> build_shot_index`。
+  - 输出 `cache/voah_video_intake/{product_slug}/{timestamp}_{run_label}/desktop_intake_result.json`，并补齐 `run_manifest.json`、`physical_shots.json`、`trimmed_physical/`、`child_vlm_refine_results.json`、`vectorization_inputs.json`、`embedding_results.json`、`shot_index.json` 等桌面端/下游 worker 可读取产物。
   - 失败时也会尽量写出结构化 `desktop_intake_result.json`，便于桌面端登记 job 状态和日志路径。
+
+- `voah_run_intake_compat.py`
+  - repo 内兼容入口，加载 `voah-video-intake` skill 的 `run_intake.py` 并复用其主逻辑。
+  - 由 wrapper 通过 `--skill-runner` 显式传入实际 skill runner 路径，避免校验路径和运行路径不一致。
+  - 仅增强 Omni 返回 JSON 的尾部补全/修复能力，避免流式响应少一个 `}` 导致整条 CLI 入库失败。
+
+- `voah_refine_child_vlm.py`
+  - 对已裁切并上传的 `physical_shots.json` child 片段逐条调用 `qwen3.5-omni-plus`。
+  - 只描述 child clip 实际可见画面，成功后写回 `visual_summary`、`visual_actions`、`source_meaning` 等字段，并置 `child_metadata_precision=child_vlm_refined`、`text_embedding_policy=allow_child_text_channels`。
+  - 输出 `child_vlm_refine_results.json` 和 `child_vlm_refine/` 请求/响应复盘文件；API key 只从本地私有配置读取。
+
+- `voah_vectorize_intake.py`
+  - 入库向量化 worker。
+  - `video_chunk` 使用裁切片段原生 video embedding；child 完成 VLM 细化后恢复 `visual_summary`、`source_meaning`、`asr`、`ocr`、`tags` 文本通道。
+  - `tags` 会包含 child `visual_actions`，供召回阶段识别泼水、开盖、轻拍等硬画面动作。
 
 ### 视频理解
 

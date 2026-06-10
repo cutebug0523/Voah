@@ -12,7 +12,10 @@ export async function runIntakeCommand({ argv }) {
   if (subcommand !== "run") {
     throw new UserError("用法：voah intake run --product <slug> --source-dir <dir> [--limit N] [--label label]");
   }
-  const options = parseArgs(rest, { aliases: { product: "product", limit: "limit", label: "label" } });
+  const options = parseArgs(rest, {
+    aliases: { product: "product", limit: "limit", label: "label" },
+    boolean: ["no-refine-children", "skip-upload", "skip-vectorize"]
+  });
   const workspace = resolveWorkspace(options.workspace);
   const productSlug = requireOption(options, "product");
   const productName = options["product-name"] || options.name || productSlug;
@@ -41,7 +44,13 @@ export async function runIntakeCommand({ argv }) {
       label,
       ...(options["scene-threshold"] ? ["--scene-threshold", String(optionalNumber(options["scene-threshold"], 0))] : []),
       ...(options["candidate-min-duration"] ? ["--candidate-min-duration", String(optionalNumber(options["candidate-min-duration"], 0))] : []),
-      ...(options["min-physical-duration"] ? ["--min-physical-duration", String(optionalNumber(options["min-physical-duration"], 0))] : [])
+      ...(options["min-physical-duration"] ? ["--min-physical-duration", String(optionalNumber(options["min-physical-duration"], 0))] : []),
+      ...(options["no-refine-children"] ? ["--no-refine-children"] : []),
+      ...(options["refine-workers"] ? ["--refine-workers", String(optionalInt(options["refine-workers"], 0))] : []),
+      ...(options["refine-limit"] ? ["--refine-limit", String(optionalInt(options["refine-limit"], 0))] : []),
+      ...(options["refine-timeout-s"] ? ["--refine-timeout-s", String(optionalInt(options["refine-timeout-s"], 0))] : []),
+      ...(options["skip-upload"] ? ["--skip-upload"] : []),
+      ...(options["skip-vectorize"] ? ["--skip-vectorize"] : [])
     ],
     cwd: workspace,
     stage: "intake",
