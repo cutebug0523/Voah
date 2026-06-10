@@ -41,7 +41,33 @@ def speech_units(text: str) -> int:
     return max(1, len(WEIGHT_RE.sub("", text or "")))
 
 
-def split_caption_text(text: str, max_units: int = 18) -> list[str]:
+def visible_units(text: str) -> int:
+    return len(WEIGHT_RE.sub("", text or ""))
+
+
+def split_caption_chunk(chunk: str, max_units: int) -> list[str]:
+    chunk = str(chunk or "").strip()
+    if not chunk:
+        return []
+    if speech_units(chunk) <= max_units:
+        return [chunk]
+
+    output: list[str] = []
+    buffer = ""
+    units = 0
+    for char in chunk:
+        buffer += char
+        units += visible_units(char)
+        if units >= max_units:
+            output.append(buffer.strip())
+            buffer = ""
+            units = 0
+    if buffer.strip():
+        output.append(buffer.strip())
+    return output or [chunk]
+
+
+def split_caption_text(text: str, max_units: int = 14) -> list[str]:
     text = str(text or "").strip()
     if not text:
         return [""]
@@ -71,23 +97,23 @@ def split_caption_text(text: str, max_units: int = 18) -> list[str]:
 
     output: list[str] = []
     for chunk in merged:
-        if speech_units(chunk) <= max_units * 1.35:
+        if speech_units(chunk) <= max_units:
             output.append(chunk)
             continue
         subparts = [item for item in re.split(r"(?<=、)", chunk) if item]
         if len(subparts) <= 1:
-            output.append(chunk)
+            output.extend(split_caption_chunk(chunk, max_units))
         else:
             buffer = ""
             for part in subparts:
                 candidate = buffer + part if buffer else part
                 if buffer and speech_units(candidate) > max_units:
-                    output.append(buffer)
+                    output.extend(split_caption_chunk(buffer, max_units))
                     buffer = part
                 else:
                     buffer = candidate
             if buffer:
-                output.append(buffer)
+                output.extend(split_caption_chunk(buffer, max_units))
     return output or [text]
 
 

@@ -89,12 +89,17 @@ def style_css_for_preset(preset: str) -> str:
         left: 34px;
         right: 34px;
         bottom: 260px;
+        box-sizing: border-box;
+        max-width: 652px;
         font-family: "VoahSongti", serif;
         font-size: 54px;
         line-height: 1.08;
         font-weight: 900;
         text-align: center;
         letter-spacing: 0;
+        white-space: normal;
+        word-break: break-word;
+        overflow-wrap: break-word;
         color: #fffdf4;
         -webkit-text-stroke: 2.2px rgba(16, 16, 16, 0.94);
         text-shadow:
