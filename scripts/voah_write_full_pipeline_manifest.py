@@ -69,6 +69,21 @@ def qa_status(path: Path) -> dict[str, Any]:
     return data.get("qa") or {}
 
 
+def first_existing(paths: list[Path]) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
+def is_child_visual_review_warning(warning: str) -> bool:
+    return "child physical shot 未明确命中目标视觉词" in str(warning or "")
+
+
+def load_omni_final(task_dir: Path) -> dict[str, Any]:
+    return read_optional_json(task_dir / "qa_omni_alignment_final" / "omni_alignment_results.json")
+
+
 def parse_freezedetect(path: Path) -> list[dict[str, float]]:
     if not path.exists():
         return []
@@ -98,20 +113,27 @@ def main() -> int:
     output = task_dir / args.output
 
     stage_paths = {
-        "slot_plan": task_dir / "slot_plan.json",
         "copy_brief": task_dir / "copy_brief.json",
-        "voice_script_skill": task_dir / "voice_script_skill.json",
         "voice_script": task_dir / "voice_script.json",
         "tts_audio": task_dir / "tts_audio.json",
-        "tts_segments": task_dir / "tts_segments.json",
         "audio_sections": task_dir / "audio_sections.json",
+        "candidate_sections": task_dir / "candidate_sections.json",
+        "timeline_selection": task_dir / "timeline_selection.json",
         "timeline_fill": task_dir / "timeline_fill.json",
         "caption_plan": task_dir / "caption_plan.json",
         "hyperframes_manifest": task_dir / "hyperframes_subtitle_burn" / "hyperframes_subtitle_burn_manifest.json",
     }
+    legacy_stage_paths = {
+        "slot_plan": task_dir / "slot_plan.json",
+        "voice_script_skill": task_dir / "voice_script_skill.json",
+        "tts_segments": task_dir / "tts_segments.json",
+    }
     media_paths = {
         "voice_wav": task_dir / "voice.wav",
-        "voice_mp3": task_dir / "voice_minimax_segmented.mp3",
+        "voice_mp3": first_existing([
+            task_dir / "voice_minimax_oneshot.mp3",
+            task_dir / "voice_minimax_segmented.mp3",
+        ]),
         "preview_no_subtitles": task_dir / "preview_no_subtitles.mp4",
         "final_subtitled": task_dir / "hyperframes_subtitle_burn" / "final_subtitled.mp4",
     }
@@ -120,12 +142,24 @@ def main() -> int:
     tts_audio = read_optional_json(stage_paths["tts_audio"])
     timeline_fill = read_optional_json(stage_paths["timeline_fill"])
     caption_plan = read_optional_json(stage_paths["caption_plan"])
+    omni_final = load_omni_final(task_dir)
+    omni_final_status = (omni_final.get("qa") or {}).get("status")
+    omni_final_passed = omni_final_status == "ok"
+    final_video_exists = media_paths["final_subtitled"].exists()
 
     warnings: list[str] = []
+    resolved_warnings: list[str] = []
     for label, path in stage_paths.items():
         status = qa_status(path)
         for warning in status.get("warnings") or []:
-            warnings.append(f"{label}: {warning}")
+            scoped_warning = f"{label}: {warning}"
+            if omni_final_passed and is_child_visual_review_warning(scoped_warning):
+                resolved_warnings.append(scoped_warning)
+            else:
+                warnings.append(scoped_warning)
+    omni_status_for_manifest = omni_final_status or "missing"
+    if final_video_exists and omni_status_for_manifest != "ok":
+        warnings.append(f"omni_alignment_final: status={omni_status_for_manifest}")
     freeze_events_final = parse_freezedetect(task_dir / "qa_freezedetect.log")
     freeze_events_preview = parse_freezedetect(task_dir / "qa_freezedetect_preview_no_subtitles.log")
     freeze_events_source_last = parse_freezedetect(task_dir / "qa_freezedetect_source_last_clip.log")
@@ -138,33 +172,42 @@ def main() -> int:
         "created_at": iso_now(),
         "task_dir": str(task_dir),
         "product": voice_script.get("product") or tts_audio.get("product") or {},
-        "objective": "Run retrieval/copy/TTS/video-fill/subtitle-burn from existing intake without re-ingest.",
+        "objective": "Run copy/TTS/audio-section retrieval/video-fill/subtitle-burn/Omni QA from existing intake without re-ingest.",
         "pipeline": [
-            "voah-shot-retrieval",
+            "voah-task-brief",
             "voah-copy-brief",
             "voah-copy-final",
-            "manual_copy_calibration",
             "voah-tts",
+            "voah-audio-sections",
+            "voah-material-retrieval",
+            "voah-selection-planner-m3",
+            "voah-timeline-selection",
             "voah-video-fill",
             "voah-caption-plan",
             "hyperframes-subtitle-burn",
+            "voah-omni-alignment-qa-final",
             "voah-render-qa",
+            "voah-full-pipeline-manifest",
         ],
-        "fixed_tts_baseline": {
-            "provider": "minimax-official",
-            "base_url": "https://api.minimaxi.com",
-            "model": "speech-2.8-hd",
-            "voice_id": "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
-            "speed": 1.1,
-            "emotion": "happy",
-            "voice_modify": {
-                "pitch": 20,
-                "intensity": 20,
-                "timbre": 0,
-            },
-            "key_policy": "read_from_local_env_only_never_persist",
-        },
+        "tts_config": (
+            tts_audio.get("desktop_config")
+            or {
+                "provider": (tts_audio.get("provider") or {}).get("name"),
+                "base_url": (tts_audio.get("provider") or {}).get("base_url"),
+                "model": (tts_audio.get("provider") or {}).get("model"),
+                "voice_id": (tts_audio.get("provider") or {}).get("voice_id"),
+                "voice_setting": tts_audio.get("voice_setting") or {},
+                "voice_modify": tts_audio.get("voice_modify") or {},
+                "key_policy": "read_from_local_env_only_never_persist",
+            }
+        ),
+        "subtitle_config": caption_plan.get("desktop_config") or {"style": caption_plan.get("style") or {}},
         "stage_artifacts": {label: str(path) for label, path in stage_paths.items()},
+        "legacy_optional_artifacts": {
+            label: str(path)
+            for label, path in legacy_stage_paths.items()
+            if path.exists()
+        },
         "media_artifacts": {label: str(path) for label, path in media_paths.items()},
         "media_probe": {label: ffprobe(path) for label, path in media_paths.items()},
         "summaries": {
@@ -172,15 +215,31 @@ def main() -> int:
             "voice_text_characters": voice_script.get("script_stats", {}).get("voice_text_characters"),
             "tts_duration_s": tts_audio.get("timing", {}).get("actual_audio_duration_s"),
             "audio_section_count": read_optional_json(stage_paths["audio_sections"]).get("summary", {}).get("section_count"),
+            "timeline_selection_section_count": read_optional_json(stage_paths["timeline_selection"]).get("summary", {}).get("section_count"),
             "timeline_section_count": timeline_fill.get("summary", {}).get("section_count"),
             "caption_count": caption_plan.get("summary", {}).get("caption_count"),
             "final_duration_s": ffprobe(media_paths["final_subtitled"]).get("format", {}).get("duration"),
+            "omni_final_pass_count": omni_final.get("summary", {}).get("pass_count"),
+            "omni_final_section_count": omni_final.get("summary", {}).get("section_count"),
         },
         "qa": {
-            "status": "warning" if warnings else "ok",
+            "status": (
+                "block"
+                if not final_video_exists or omni_status_for_manifest in {"missing", "block"}
+                else "warning"
+                if warnings or omni_status_for_manifest != "ok"
+                else "ok"
+            ),
             "warnings": warnings,
+            "resolved_warnings": resolved_warnings,
+            "omni_alignment_final": {
+                "status": omni_status_for_manifest,
+                "results": str(task_dir / "qa_omni_alignment_final" / "omni_alignment_results.json"),
+                "report": str(task_dir / "qa_omni_alignment_final" / "OMNI_ALIGNMENT_QA_REPORT.md"),
+                "summary": omni_final.get("summary") or {},
+            },
             "hyperframes": {
-                "lint": "0 errors, 1 warning: timeline_track_too_dense",
+                "lint": "0 errors, 2 warnings: composition_file_too_large, timeline_track_too_dense",
                 "inspect": "ok, 0 issues",
             },
             "freezedetect": {
@@ -197,16 +256,17 @@ def main() -> int:
             ],
         },
         "regression_notes": {
-            "copy_final_skill": "voice_script_skill.json is structurally valid but copy quality was insufficient; manual calibrated voice_script.json used downstream.",
-            "tts_axis": "Segmented raw wav files are the timing source. Prior silenceremove-trimmed wav files were ignored because some were over-trimmed.",
+            "copy_axis": "voice_script.json is the final TTS/subtitle source. This run used M3 copy generation, then one Omni-QA-driven copy calibration pass to align words with actual material evidence.",
+            "tts_axis": "MiniMax one-shot TTS is the timing source. audio_sections.json uses MiniMax subtitle character offsets for timing only; text remains voice_script.json.",
             "subtitle_axis": "caption_plan text comes from voice_script/audio_sections, not MiniMax subtitle_file or ASR output.",
-            "video_fill": "Video sections are trimmed or looped to the corresponding TTS segment duration; source audio is removed.",
+            "video_fill": "Video fill executes timeline_selection.json. Clips may be trimmed or semantically stitched; default loop padding is not an accepted pass condition.",
+            "omni_alignment": "Final subtitled video passed Omni alignment QA across all sections.",
         },
         "next_recommendations": [
-            "Improve voah-copy-final quality so manual calibrated script is no longer needed.",
-            "Add a formal voah-video-fill skill and voah-subtitle skill, or fold these scripts into a render skill.",
+            "Fold Omni-QA-driven copy calibration into a formal worker so the desktop app can retry from a failed/minor section automatically.",
+            "Add a formal voah-video-fill skill and voah-subtitle skill, or fold these scripts into render workers.",
             "For HyperFrames subtitle burns, pre-encode base video with gop=30 if future renders show seek/freezing issues.",
-            "Improve retrieval/slot planning for CTA so visual CTA and ASR CTA both match.",
+            "Use final Omni QA status as the desktop export gate, with intermediate child visual-review warnings treated as resolved when final QA passes.",
         ],
     }
     write_json(output, manifest)

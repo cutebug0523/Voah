@@ -63,6 +63,10 @@ def run_command(command: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, capture_output=True, text=True)
 
 
+def has_command(command: str) -> bool:
+    return subprocess.run(["/bin/sh", "-lc", f"command -v {command}"], check=False, capture_output=True, text=True).returncode == 0
+
+
 def probe_duration(path: Path) -> float | None:
     if not path.exists():
         return None
@@ -131,6 +135,8 @@ def build_payload(text: str, args: argparse.Namespace) -> dict[str, Any]:
     voice_id = args.voice_id or os.environ.get("VOAH_TTS_VOICE_ID", "")
     model = args.model or os.environ.get("VOAH_TTS_MODEL", "speech-2.8-hd")
     speed = args.speed if args.speed is not None else env_float("VOAH_TTS_SPEED", 1.1)
+    vol = args.vol if args.vol is not None else env_float("VOAH_TTS_VOL", 1)
+    voice_pitch = args.voice_setting_pitch if args.voice_setting_pitch is not None else env_int("VOAH_TTS_VOICE_SETTING_PITCH", 0)
     emotion = args.emotion or os.environ.get("VOAH_TTS_EMOTION", "happy")
     return {
         "model": model,
@@ -141,8 +147,8 @@ def build_payload(text: str, args: argparse.Namespace) -> dict[str, Any]:
         "voice_setting": {
             "voice_id": voice_id,
             "speed": speed,
-            "vol": 1,
-            "pitch": env_int("VOAH_TTS_VOICE_SETTING_PITCH", 0),
+            "vol": vol,
+            "pitch": voice_pitch,
             "emotion": emotion,
         },
         "voice_modify": {
@@ -234,32 +240,82 @@ def extract_audio_value(response: dict[str, Any]) -> str:
     return audio.strip()
 
 
-def save_audio_response(audio_value: str, mp3_path: Path, output_format: str) -> None:
-    if output_format == "url" or audio_value.startswith("http://") or audio_value.startswith("https://"):
+def save_audio_response(audio_value: str, mp3_path: Path, output_format: str, expected_size: int | None = None) -> None:
+    if audio_value.startswith("http://") or audio_value.startswith("https://"):
         last_error: Exception | None = None
+        tmp_path = mp3_path.with_suffix(mp3_path.suffix + ".part")
         for attempt in range(1, 4):
             try:
-                with urllib.request.urlopen(audio_value, timeout=180) as resp, mp3_path.open("wb") as f:
-                    while True:
-                        chunk = resp.read(1024 * 256)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                if mp3_path.exists() and mp3_path.stat().st_size > 0:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                expected_content_length = None
+                if has_command("curl"):
+                    proc = subprocess.run(
+                        [
+                            "curl",
+                            "--location",
+                            "--fail",
+                            "--silent",
+                            "--show-error",
+                            "--retry",
+                            "5",
+                            "--retry-all-errors",
+                            "--connect-timeout",
+                            "30",
+                            "--max-time",
+                            "300",
+                            "--output",
+                            str(tmp_path),
+                            "--write-out",
+                            "%{size_download} %{http_code}",
+                            audio_value,
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if proc.returncode != 0:
+                        raise RuntimeError((proc.stderr or proc.stdout or "curl download failed").strip())
+                    parts = (proc.stdout or "").strip().split()
+                    bytes_written = int(float(parts[0])) if parts else tmp_path.stat().st_size
+                else:
+                    with urllib.request.urlopen(audio_value, timeout=180) as resp, tmp_path.open("wb") as f:
+                        content_length = resp.headers.get("Content-Length")
+                        try:
+                            expected_content_length = int(content_length) if content_length else None
+                        except ValueError:
+                            expected_content_length = None
+                        bytes_written = 0
+                        while True:
+                            chunk = resp.read(1024 * 256)
+                            if not chunk:
+                                break
+                            bytes_written += len(chunk)
+                            f.write(chunk)
+                if tmp_path.exists():
+                    bytes_written = tmp_path.stat().st_size
+                if expected_content_length and bytes_written != expected_content_length:
+                    raise RuntimeError(f"downloaded {bytes_written} bytes, expected Content-Length {expected_content_length}")
+                if expected_size and bytes_written < expected_size:
+                    raise RuntimeError(f"downloaded {bytes_written} bytes, expected audio_size {expected_size}")
+                if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                    tmp_path.replace(mp3_path)
                     return
             except http.client.IncompleteRead as exc:
                 last_error = exc
-                with mp3_path.open("ab") as f:
-                    f.write(bytes(exc.partial or b""))
-                if mp3_path.exists() and mp3_path.stat().st_size > 0:
-                    return
+                if tmp_path.exists():
+                    tmp_path.unlink()
             except Exception as exc:
                 last_error = exc
+                if tmp_path.exists():
+                    tmp_path.unlink()
             if attempt < 3:
                 time.sleep(1.2 * attempt)
         raise RuntimeError(f"failed to download MiniMax audio: {last_error}")
-        return
-    mp3_path.write_bytes(bytes.fromhex(audio_value))
+    audio_bytes = bytes.fromhex(audio_value)
+    if expected_size and len(audio_bytes) < expected_size:
+        raise RuntimeError(f"decoded {len(audio_bytes)} bytes, expected audio_size {expected_size}")
+    mp3_path.write_bytes(audio_bytes)
 
 
 def check_response_ok(response: dict[str, Any]) -> None:
@@ -368,6 +424,31 @@ def collect_subtitle_items(raw: Any, audio_duration_s: float | None) -> list[dic
     return deduped
 
 
+def subtitle_timing_is_usable(subtitle_items: list[dict[str, Any]], audio_duration_s: float) -> tuple[bool, list[str]]:
+    warnings: list[str] = []
+    if not subtitle_items:
+        return False, warnings
+    max_end = max(float(item.get("end_s") or 0) for item in subtitle_items)
+    tolerance = max(1.0, audio_duration_s * 0.08)
+    if abs(max_end - audio_duration_s) > tolerance:
+        warnings.append(
+            f"MiniMax subtitle max end {max_end:.3f}s differs from decoded voice.wav {audio_duration_s:.3f}s; fallback to weighted text timing"
+        )
+        return False, warnings
+    previous_end = -0.001
+    for index, item in enumerate(subtitle_items, start=1):
+        start = float(item.get("start_s") or 0)
+        end = float(item.get("end_s") or 0)
+        if end <= start:
+            warnings.append(f"MiniMax subtitle item {index} has invalid timing {start:.3f}->{end:.3f}")
+            return False, warnings
+        if start < previous_end - 0.02:
+            warnings.append(f"MiniMax subtitle item {index} overlaps previous item {previous_end:.3f}->{start:.3f}")
+            return False, warnings
+        previous_end = end
+    return True, warnings
+
+
 def section_tts_lengths(sections: list[dict[str, Any]]) -> list[int]:
     return [len(str(section.get("tts_text") or section.get("voice_text") or "")) for section in sections]
 
@@ -455,6 +536,11 @@ def align_sections_with_subtitles(
     if not subtitle_items:
         return proportional_section_times(sections, audio_duration_s), "weighted_text_proportion", warnings
 
+    usable_subtitle_timing, subtitle_timing_warnings = subtitle_timing_is_usable(subtitle_items, audio_duration_s)
+    warnings.extend(subtitle_timing_warnings)
+    if not usable_subtitle_timing:
+        return proportional_section_times(sections, audio_duration_s), "weighted_text_proportion_after_unusable_minimax_subtitle", warnings
+
     char_times, char_warnings = align_sections_with_char_offsets(sections, subtitle_items, audio_duration_s)
     warnings.extend(char_warnings)
     if char_times:
@@ -467,35 +553,10 @@ def align_sections_with_subtitles(
             warnings,
         )
 
-    subtitle_units = [speech_units(item.get("text", "")) for item in subtitle_items]
-    total_subtitle_units = max(1, sum(subtitle_units))
-    section_units = [speech_units(section.get("voice_text", "")) for section in sections]
-    total_section_units = max(1, sum(section_units))
-    times: list[tuple[float, float]] = []
-    subtitle_cursor = 0
-    subtitle_cumulative = 0
-    section_cumulative = 0
-
-    for index, units in enumerate(section_units):
-        section_cumulative += units
-        target_subtitle_units = total_subtitle_units * section_cumulative / total_section_units
-        start_index = min(subtitle_cursor, len(subtitle_items) - 1)
-        while subtitle_cursor < len(subtitle_items) - 1 and subtitle_cumulative + subtitle_units[subtitle_cursor] < target_subtitle_units:
-            subtitle_cumulative += subtitle_units[subtitle_cursor]
-            subtitle_cursor += 1
-        end_index = min(subtitle_cursor, len(subtitle_items) - 1)
-        start = float(subtitle_items[start_index]["start_s"])
-        end = float(subtitle_items[end_index]["end_s"])
-        if index == len(section_units) - 1:
-            end = max(end, float(subtitle_items[-1]["end_s"]))
-        times.append((start, max(start + 0.05, end)))
-        subtitle_cursor = min(end_index + 1, len(subtitle_items) - 1)
-        subtitle_cumulative = sum(subtitle_units[:subtitle_cursor])
-
     warnings.append(
-        f"MiniMax subtitle item count {len(subtitle_items)} != script section count {len(sections)}; aligned by cumulative text length"
+        f"MiniMax subtitle item count {len(subtitle_items)} != script section count {len(sections)}; fallback to weighted text timing"
     )
-    return times, "minimax_sentence_subtitle_cumulative_text_alignment", warnings
+    return proportional_section_times(sections, audio_duration_s), "weighted_text_proportion_after_subtitle_count_mismatch", warnings
 
 
 def proportional_section_times(sections: list[dict[str, Any]], audio_duration_s: float) -> list[tuple[float, float]]:
@@ -612,6 +673,8 @@ def main() -> int:
     parser.add_argument("--model", default=None)
     parser.add_argument("--voice-id", default=None)
     parser.add_argument("--speed", type=float, default=None)
+    parser.add_argument("--vol", type=float, default=None)
+    parser.add_argument("--voice-setting-pitch", type=int, default=None)
     parser.add_argument("--emotion", default=None)
     parser.add_argument("--modify-pitch", type=int, default=None)
     parser.add_argument("--modify-intensity", type=int, default=None)
@@ -670,10 +733,11 @@ def main() -> int:
             raise
 
     write_json(task_dir / "minimax_oneshot_response.safe.json", sanitize_response(response))
+    extra_info = response.get("extra_info") or {}
     audio_value = extract_audio_value(response)
     mp3_path = task_dir / "voice_minimax_oneshot.mp3"
     wav_path = task_dir / "voice.wav"
-    save_audio_response(audio_value, mp3_path, args.output_format)
+    save_audio_response(audio_value, mp3_path, args.output_format, extra_info.get("audio_size"))
     convert_to_wav(mp3_path, wav_path)
     duration_s = probe_duration(wav_path)
     if duration_s is None:
@@ -707,7 +771,6 @@ def main() -> int:
         "subtitle_enable": payload.get("subtitle_enable", False),
         "subtitle_type": payload.get("subtitle_type"),
     }
-    extra_info = response.get("extra_info") or {}
     tts_audio = {
         "schema_version": "1.0.0",
         "stage": "voah_tts_oneshot",

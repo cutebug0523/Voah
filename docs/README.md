@@ -1,6 +1,6 @@
 # Voah 文档索引
 
-这个目录只放工程决策、方法论、调研和回归记录。运行产物放 `cache/`，脚本放 `scripts/`，原始素材放 `原片/` 或产品素材目录。
+这个目录只放工程决策、方法论、调研和回归记录。运行产物放 `cache/`，CLI 生产内核放 `cli/`，脚本放 `scripts/`，原始素材放 `原片/` 或产品素材目录。
 
 ## 阅读顺序
 
@@ -10,12 +10,13 @@
 2. `../README.md`
 3. `00-overview/Voah工程总览与管线.md`
 4. `00-overview/Voah系列工程化底座.md`
-5. 当前阶段对应目录下的文档
+5. `00-overview/Voah-CLI化生产内核方案.md`
+6. 当前阶段对应目录下的文档
 
 ## 目录
 
 ```text
-00-overview/              总览、工程底座、桌面应用方向
+00-overview/              总览、工程底座、CLI 生产内核、桌面应用方向
 10-video-intake/          素材入库、视频理解、切分、向量化
 20-copy-and-planning/     文案和素材编排策略
 30-tts/                   TTS、音色、声音克隆、线上 API
@@ -30,6 +31,7 @@
 
 - `00-overview/Voah工程总览与管线.md`
 - `00-overview/Voah系列工程化底座.md`
+- `00-overview/Voah-CLI化生产内核方案.md`
 - `00-overview/Voah桌面应用架构.md`
 - `00-overview/Voah桌面端生产工具MVP-PRD.md`
 - `00-overview/Voah桌面应用模块与产物流转设计.md`
@@ -70,10 +72,11 @@
 
 ## 当前主线
 
-当前主线不是 agent 临场调用 skill，而是把已验证的方法固化成桌面应用里的本地流程：
+当前主线不是 agent 临场调用 skill，而是把已验证的方法固化成 CLI-first 的本地生产内核；桌面端只是操作壳：
 
 ```text
-销售逻辑
+voah CLI
+  -> 销售逻辑
   -> 连续口播
   -> MiniMax 一次性 TTS
   -> audio_sections

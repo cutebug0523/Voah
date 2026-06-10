@@ -2,7 +2,7 @@
 
 Voah 是当前项目里的带货混剪工程管线：素材入库、文案、TTS、素材召回、字幕、渲染和 QA 都按阶段产物承接。
 
-当前方向已经从“靠 agent 调 skill 操作”转向“桌面应用固定流程”。Skills 继续作为方法论和 worker 合同来源，后续员工操作层应是 Electron 桌面应用，而不是让员工理解命令、路径和 skill。
+当前方向已经从“靠 agent 调 skill 操作”转向“CLI-first 生产内核 + 桌面操作壳”。Skills 继续作为方法论和 worker 合同来源，正式生产流程应沉到 `voah` CLI；后续员工操作层可以是 Electron 桌面应用，但不应把复杂编排写进前端。
 
 新 agent、新会话或准备开发桌面版时先读：
 
@@ -10,13 +10,14 @@ Voah 是当前项目里的带货混剪工程管线：素材入库、文案、TTS
 2. `docs/README.md`
 3. `docs/00-overview/Voah工程总览与管线.md`
 4. `docs/00-overview/Voah系列工程化底座.md`
-5. `docs/00-overview/Voah桌面应用架构.md`
-6. `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
-7. `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
-8. `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
-9. `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
-10. `docs/00-overview/Voah批量生产SOP与产能方案.md`
-11. `docs/00-overview/Voah仓库范围与发布约定.md`
+5. `docs/00-overview/Voah-CLI化生产内核方案.md`
+6. `docs/00-overview/Voah批量生产SOP与产能方案.md`
+7. `docs/00-overview/Voah桌面应用架构.md`
+8. `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
+9. `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
+10. `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
+11. `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
+12. `docs/00-overview/Voah仓库范围与发布约定.md`
 
 ## 核心原则
 
@@ -30,6 +31,7 @@ Voah 是当前项目里的带货混剪工程管线：素材入库、文案、TTS
 
 ```text
 docs/                  项目文档，入口见 docs/README.md
+cli/                   Voah CLI-first 生产内核
 scripts/               项目级脚本和本地 worker，入口见 scripts/README.md
 cache/                 本地运行产物，入口见 cache/README.md
 原片/                  原始素材，入口见 原片/README.md
@@ -42,7 +44,8 @@ GPT-SoVITS/            本地 TTS 回退环境，不作为当前主线默认 TTS
 ## 当前主线管线
 
 ```text
-素材入库（常驻）
+voah CLI 生产内核
+  -> 素材入库（常驻）
   -> 任务 brief / 产品全量卖点 / 平台目标
   -> 文案第一步：销售逻辑与脚本意图
   -> 文案第二步：连续口播稿
@@ -69,6 +72,7 @@ GPT-SoVITS/            本地 TTS 回退环境，不作为当前主线默认 TTS
 - `docs/README.md`
 - `docs/00-overview/Voah工程总览与管线.md`
 - `docs/00-overview/Voah系列工程化底座.md`
+- `docs/00-overview/Voah-CLI化生产内核方案.md`
 - `docs/00-overview/Voah桌面应用架构.md`
 - `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
 - `docs/00-overview/Voah桌面应用模块与产物流转设计.md`

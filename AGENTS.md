@@ -29,19 +29,21 @@
 2. `docs/README.md`
 3. `docs/00-overview/Voah工程总览与管线.md`
 4. `docs/00-overview/Voah系列工程化底座.md`
-5. `docs/00-overview/Voah桌面应用架构.md`
-6. `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
-7. `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
-8. `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
-9. `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
-10. `docs/00-overview/Voah批量生产SOP与产能方案.md`
-11. `docs/00-overview/Voah仓库范围与发布约定.md`
-12. 当前要执行阶段对应的 `voah-*` skill 或 worker 文档
+5. `docs/00-overview/Voah-CLI化生产内核方案.md`
+6. `docs/00-overview/Voah批量生产SOP与产能方案.md`
+7. `docs/00-overview/Voah桌面应用架构.md`
+8. `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
+9. `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
+10. `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
+11. `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
+12. `docs/00-overview/Voah仓库范围与发布约定.md`
+13. 当前要执行阶段对应的 `voah-*` skill 或 worker 文档
 
 ## Voah 总管线
 
 ```text
-素材入库（常驻）
+voah CLI 生产内核
+  -> 素材入库（常驻）
   -> 任务 brief / 产品全量卖点 / 平台目标
   -> 文案第一步：销售逻辑与脚本意图
   -> 文案第二步：连续口播稿
@@ -97,7 +99,8 @@ schema_version
 - `voah-shot-retrieval`：默认在 TTS/audio_sections 之后按每段口播语义召回素材；旧的 `slot_plan -> 逐 shot 写稿` 只作为 legacy 回归路径。
 - 素材填充阶段：按每段口播语义和时长选素材，素材宜长不宜短；长素材可裁，短素材优先找同语义/同维度片段拼接，避免只差一点点就循环凑。
 - 字幕阶段：字幕文本必须来自 TTS 实际口播原文断句；不能用摘要版 `subtitle_text` 让声音和字幕各说各的。
-- 后续桌面版不直接调用 skills；skills 作为流程规格、schema 和 QA 约束，桌面版应调固定本地 worker。
+- 后续正式生产逻辑应沉到 `voah` CLI；桌面版不直接调用 skills，也不重新实现复杂编排，只提交参数、调用 CLI、读取 manifest。
+- skills 作为流程规格、schema 和 QA 约束；CLI 调固定本地 worker。
 
 ## 字幕与 TTS 特别注意
 
@@ -151,6 +154,7 @@ cache/voah_tasks/fangshai-qidian/20260605_175355_full_pipeline_regression_v1/
 - `docs/README.md`
 - `docs/00-overview/Voah工程总览与管线.md`
 - `docs/00-overview/Voah系列工程化底座.md`
+- `docs/00-overview/Voah-CLI化生产内核方案.md`
 - `docs/00-overview/Voah桌面应用架构.md`
 - `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
 - `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
