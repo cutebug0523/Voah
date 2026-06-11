@@ -71,6 +71,12 @@ export const useStore = create((set, get) => ({
     return res;
   },
 
+  async acknowledgeTask(task) {
+    const res = await window.voah.acknowledgeTask(task);
+    await get().refresh();
+    return res;
+  },
+
   async pauseBatch(batchDir) {
     const res = await window.voah.pauseBatch(batchDir);
     await get().refresh();

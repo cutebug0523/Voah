@@ -54,3 +54,46 @@ export function summarizeIntakeRuns(runs) {
     skipped: runs.reduce((sum, run) => sum + Number(run.incremental?.skipped_count || 0), 0)
   };
 }
+
+export function dedupeIntakeRuns(runs) {
+  const items = Array.isArray(runs) ? runs : [];
+  const realByJobId = new Map();
+  const realByRunDir = new Map();
+
+  for (const run of items) {
+    if (isIntakeJobRun(run)) continue;
+    const jobId = normalizeToken(run?.job_id);
+    const runDir = normalizeRunDir(run?.run_dir);
+    if (jobId && !realByJobId.has(jobId)) realByJobId.set(jobId, run);
+    if (runDir && !realByRunDir.has(runDir)) realByRunDir.set(runDir, run);
+  }
+
+  const hiddenJobs = new Set();
+  for (const run of items) {
+    if (!isIntakeJobRun(run)) continue;
+    const jobId = normalizeToken(run?.job_id || run?.name);
+    const pointedRunDir = hasRealRunDir(run) ? normalizeRunDir(run?.run_dir) : "";
+    const preferred = (jobId && realByJobId.get(jobId)) || (pointedRunDir && realByRunDir.get(pointedRunDir));
+    if (preferred) hiddenJobs.add(run);
+  }
+
+  return items.filter((run) => !hiddenJobs.has(run));
+}
+
+function isIntakeJobRun(run) {
+  return run?.source === "job" || Boolean(run?.job_dir);
+}
+
+function hasRealRunDir(run) {
+  const runDir = normalizeRunDir(run?.run_dir);
+  const jobDir = normalizeRunDir(run?.job_dir);
+  return Boolean(runDir && (!jobDir || runDir !== jobDir));
+}
+
+function normalizeRunDir(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+function normalizeToken(value) {
+  return String(value || "").trim();
+}

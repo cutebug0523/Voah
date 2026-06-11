@@ -3,6 +3,7 @@ import { useStore } from "../hooks/useStore.js";
 export function TaskCenterDrawer({ open, onClose }) {
   const taskCenter = useStore((s) => s.taskCenter);
   const refresh = useStore((s) => s.refresh);
+  const acknowledgeTask = useStore((s) => s.acknowledgeTask);
   const summary = taskCenter?.summary || {};
   const running = taskCenter?.running || [];
   const needsAttention = taskCenter?.needs_attention || [];
@@ -39,7 +40,7 @@ export function TaskCenterDrawer({ open, onClose }) {
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           <TaskSection title="正在运行" empty="暂无运行任务" items={running} />
-          <TaskSection title="需要处理" empty="暂无待处理任务" items={needsAttention} />
+          <TaskSection title="需要处理" empty="暂无待处理任务" items={needsAttention} onAcknowledge={acknowledgeTask} />
           <TaskSection title="最近完成" empty="暂无成片" items={recentOutputs} compact />
         </div>
       </div>
@@ -56,7 +57,7 @@ function Metric({ value, label, color = "text-ink-900" }) {
   );
 }
 
-function TaskSection({ title, empty, items, compact = false }) {
+function TaskSection({ title, empty, items, compact = false, onAcknowledge = null }) {
   return (
     <section>
       <div className="text-xs font-semibold text-ink-700 mb-2">{title}</div>
@@ -65,7 +66,7 @@ function TaskSection({ title, empty, items, compact = false }) {
       ) : (
         <div className="space-y-2">
           {items.map((item) => (
-            <TaskRow key={item.id} item={item} compact={compact} />
+            <TaskRow key={item.id} item={item} compact={compact} onAcknowledge={onAcknowledge} />
           ))}
         </div>
       )}
@@ -73,9 +74,10 @@ function TaskSection({ title, empty, items, compact = false }) {
   );
 }
 
-function TaskRow({ item, compact }) {
+function TaskRow({ item, compact, onAcknowledge }) {
   const meta = statusMeta(item.status);
   const percent = Number(item.progress?.percent || 0);
+  const canAcknowledge = Boolean(onAcknowledge && ["failed", "stalled"].includes(item.status));
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -101,6 +103,11 @@ function TaskRow({ item, compact }) {
       {item.error && <div className="mt-2 text-[11px] text-err line-clamp-2">{item.error}</div>}
 
       <div className="mt-2 flex justify-end gap-3 text-xs">
+        {canAcknowledge && (
+          <button onClick={() => onAcknowledge(item)} className="text-ink-500 hover:text-ink-800 hover:underline">
+            已读
+          </button>
+        )}
         {item.final_video && (
           <button onClick={() => window.voah?.openFile(item.final_video)} className="text-brand-600 hover:underline">
             播放

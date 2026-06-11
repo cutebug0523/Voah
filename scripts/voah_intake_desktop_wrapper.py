@@ -365,8 +365,12 @@ def scan_incremental_sources(config: dict[str, Any]) -> dict[str, Any]:
     source_records = [fingerprint_video(path) for path in videos]
     skipped: list[dict[str, Any]] = []
     selected: list[dict[str, Any]] = []
+    new: list[dict[str, Any]] = []
     existing_failed: list[dict[str, Any]] = []
-    include_failed = bool(config.get("include_existing_failed"))
+    retry_failed: list[dict[str, Any]] = []
+    deferred_failed: list[dict[str, Any]] = []
+    include_failed_value = config.get("include_existing_failed")
+    include_failed = True if include_failed_value is None else as_bool(include_failed_value)
     force = bool(config.get("force_reindex"))
     by_fp = {
         str(item.get("source_fingerprint") or ""): item
@@ -376,19 +380,36 @@ def scan_incremental_sources(config: dict[str, Any]) -> dict[str, Any]:
     for record in source_records:
         fp = record["source_fingerprint"]
         existing = by_fp.get(fp)
+        existing_status = str(existing.get("status") or "") if existing else ""
         if not force and fp in ready:
             skipped.append({**record, "reason": "already_ready"})
             continue
-        if not force and existing and existing.get("status") == "failed" and not include_failed:
-            existing_failed.append(record)
+        if existing_status == "failed":
+            failed_record = {**record, "reason": "retry_failed"}
+            existing_failed.append(failed_record)
+            if force or include_failed:
+                retry_failed.append(failed_record)
+                selected.append(failed_record)
+            else:
+                deferred_record = {**failed_record, "reason": "existing_failed_deferred"}
+                deferred_failed.append(deferred_record)
             continue
-        selected.append(record)
+        selected_record = {
+            **record,
+            "reason": "new_source" if not existing else f"registry_status_{existing_status or 'unknown'}",
+        }
+        selected.append(selected_record)
+        if not existing:
+            new.append(selected_record)
     return {
         "registry": registry,
         "source_records": source_records,
         "selected": selected,
+        "new": new,
         "skipped": skipped,
         "existing_failed": existing_failed,
+        "retry_failed": retry_failed,
+        "deferred_failed": deferred_failed,
         "force_reindex": force,
         "include_existing_failed": include_failed,
     }
@@ -656,6 +677,14 @@ def resolve_config(args: argparse.Namespace) -> dict[str, Any]:
     if max_videos < 0:
         raise WorkerError("invalid_input", "max_videos must be >= 0")
 
+    include_existing_failed_option = nested_get(job, "options", "include_existing_failed")
+    include_existing_failed_arg = getattr(args, "include_existing_failed", None)
+    include_existing_failed = (
+        as_bool(include_existing_failed_option)
+        if include_existing_failed_option not in (None, "")
+        else (bool(include_existing_failed_arg) if include_existing_failed_arg is not None else True)
+    )
+
     config = {
         "job_input": job,
         "job_id": str(arg_or_job(args, job, "job_id", ("job_id",)) or uuid.uuid4()),
@@ -696,10 +725,7 @@ def resolve_config(args: argparse.Namespace) -> dict[str, Any]:
         "skip_vectorize": bool(args.skip_vectorize) or as_bool(nested_get(job, "options", "skip_vectorize")),
         "mode": str(arg_or_job(args, job, "mode", ("options", "mode")) or "add").strip() or "add",
         "force_reindex": bool(args.force_reindex) or as_bool(nested_get(job, "options", "force_reindex")),
-        "include_existing_failed": (
-            bool(args.include_existing_failed)
-            or as_bool(nested_get(job, "options", "include_existing_failed"))
-        ),
+        "include_existing_failed": include_existing_failed,
     }
     if config["skip_upload"]:
         config["skip_vectorize"] = True
@@ -801,16 +827,7 @@ def write_status(
     now = now_text()
     started_at = previous.get("started_at") or now
     progress_payload = progress_from_log(stdout_path, progress)
-    incremental_counts = {}
-    if incremental:
-        incremental_counts = {
-            "source_count": len(incremental.get("source_records") or []),
-            "new_count": len(incremental.get("selected") or []),
-            "skipped_count": len(incremental.get("skipped") or []),
-            "existing_failed_count": len(incremental.get("existing_failed") or []),
-            "force_reindex": bool(incremental.get("force_reindex")),
-            "include_existing_failed": bool(incremental.get("include_existing_failed")),
-        }
+    incremental_counts = incremental_count_payload(incremental) if incremental else {}
     payload = {
         "schema_version": "voah.desktop_intake_status.v1",
         "job_id": config["job_id"],
@@ -842,6 +859,39 @@ def write_status(
     for path in status_file_paths(config, run_dir):
         write_json(path, payload)
     return payload
+
+
+def incremental_count_payload(incremental: dict[str, Any] | None) -> dict[str, Any]:
+    if not incremental:
+        return {
+            "source_count": 0,
+            "selected_count": 0,
+            "new_count": 0,
+            "skipped_count": 0,
+            "existing_failed_count": 0,
+            "retry_failed_count": 0,
+            "deferred_failed_count": 0,
+            "force_reindex": False,
+            "include_existing_failed": False,
+        }
+    selected = incremental.get("selected") or []
+    new = incremental.get("new")
+    if not isinstance(new, list):
+        new = [
+            item for item in selected
+            if isinstance(item, dict) and item.get("reason") != "retry_failed"
+        ]
+    return {
+        "source_count": len(incremental.get("source_records") or []),
+        "selected_count": len(selected),
+        "new_count": len(new),
+        "skipped_count": len(incremental.get("skipped") or []),
+        "existing_failed_count": len(incremental.get("existing_failed") or []),
+        "retry_failed_count": len(incremental.get("retry_failed") or []),
+        "deferred_failed_count": len(incremental.get("deferred_failed") or []),
+        "force_reindex": bool(incremental.get("force_reindex")),
+        "include_existing_failed": bool(incremental.get("include_existing_failed")),
+    }
 
 
 def mark_manifest_failed(
@@ -1389,18 +1439,19 @@ def build_success_result(
 
 
 def incremental_summary(incremental: dict[str, Any] | None) -> dict[str, Any]:
+    counts = incremental_count_payload(incremental)
     if not incremental:
-        return {
-            "source_count": 0,
-            "new_count": 0,
-            "skipped_count": 0,
-            "existing_failed_count": 0,
-        }
-    return {
-        "source_count": len(incremental.get("source_records") or []),
-        "new_count": len(incremental.get("selected") or []),
-        "skipped_count": len(incremental.get("skipped") or []),
-        "existing_failed_count": len(incremental.get("existing_failed") or []),
+        return counts
+    summary = {
+        **counts,
+        "selected": [
+            {
+                "filename": item.get("filename", ""),
+                "source_fingerprint": item.get("source_fingerprint", ""),
+                "reason": item.get("reason", "new_source"),
+            }
+            for item in (incremental.get("selected") or [])
+        ],
         "skipped": [
             {
                 "filename": item.get("filename", ""),
@@ -1409,7 +1460,26 @@ def incremental_summary(incremental: dict[str, Any] | None) -> dict[str, Any]:
             }
             for item in (incremental.get("skipped") or [])
         ],
+        "retry_failed": [
+            {
+                "filename": item.get("filename", ""),
+                "source_fingerprint": item.get("source_fingerprint", ""),
+                "reason": item.get("reason", "retry_failed"),
+            }
+            for item in (incremental.get("retry_failed") or [])
+        ],
     }
+    deferred_failed = incremental.get("deferred_failed") or []
+    if deferred_failed:
+        summary["deferred_failed"] = [
+            {
+                "filename": item.get("filename", ""),
+                "source_fingerprint": item.get("source_fingerprint", ""),
+                "reason": item.get("reason", "existing_failed_deferred"),
+            }
+            for item in deferred_failed
+        ]
+    return summary
 
 
 def build_skipped_result(
@@ -1656,7 +1726,9 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                         "run_label": config["run_label"],
                         "max_videos": config["max_videos"],
                         "selected_videos": len(selected),
+                        "new_videos": len(incremental.get("new") or []),
                         "skipped_videos": len(incremental.get("skipped") or []),
+                        "retry_failed_videos": len(incremental.get("retry_failed") or []),
                         "scene_threshold": config["scene_threshold"],
                         "candidate_min_duration": config["candidate_min_duration"],
                         "min_physical_duration": config["min_physical_duration"],
@@ -1678,12 +1750,7 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             }
         ]
         run_manifest = load_json(run_dir / "run_manifest.json")
-        run_manifest.setdefault("desktop_wrapper", {})["incremental"] = {
-            "source_count": len(incremental.get("source_records") or []),
-            "new_count": len(incremental.get("selected") or []),
-            "skipped_count": len(incremental.get("skipped") or []),
-            "existing_failed_count": len(incremental.get("existing_failed") or []),
-        }
+        run_manifest.setdefault("desktop_wrapper", {})["incremental"] = incremental_summary(incremental)
         write_json(run_dir / "run_manifest.json", run_manifest)
 
         if not config["skip_upload"]:
@@ -1943,7 +2010,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--run-label", default=None, help="Suffix for the intake run directory.")
     parser.add_argument("--mode", default=None, choices=["add", "run"], help="add skips already-ready source files; run reprocesses all.")
     parser.add_argument("--force-reindex", action="store_true", help="Reprocess all selected source files even if the registry has them.")
-    parser.add_argument("--include-existing-failed", action="store_true", help="Retry files previously marked failed in the material registry.")
+    parser.add_argument(
+        "--include-existing-failed",
+        action="store_true",
+        default=None,
+        help="Retry files previously marked failed in the material registry. This is the default for add mode.",
+    )
     parser.add_argument("--scene-threshold", type=float, default=None)
     parser.add_argument("--candidate-min-duration", type=float, default=None)
     parser.add_argument("--min-physical-duration", type=float, default=None)

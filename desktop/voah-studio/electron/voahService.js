@@ -7,7 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dialog, shell } from "electron";
 import { SecretService } from "../../../cli/src/services/secretService.js";
 import { FALLBACK_TTS_VOICES, FONT_OPTIONS, VOICE_NAME_ZH } from "../src/lib/studioOptions.js";
-import { elapsedSeconds, intakeStatusLabel, normalizeIntakeStatus, summarizeIntakeRuns } from "./intakeStatus.js";
+import { dedupeIntakeRuns, elapsedSeconds, intakeStatusLabel, normalizeIntakeStatus, summarizeIntakeRuns } from "./intakeStatus.js";
+import { isTaskAcknowledged, withTaskAcknowledgement } from "./taskAcknowledgements.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +23,7 @@ const INTAKE_DIR = path.join(WORKSPACE, "cache", "voah_video_intake");
 const STUDIO_DIR = path.join(os.homedir(), ".voah");
 const STUDIO_SETTINGS_PATH = path.join(STUDIO_DIR, "studio_settings.json");
 const STUDIO_REVIEW_PATH = path.join(STUDIO_DIR, "studio_reviews.json");
+const STUDIO_TASK_ACK_PATH = path.join(STUDIO_DIR, "studio_task_acknowledgements.json");
 
 const STAGE_ORDER = ["copy", "tts", "retrieve", "subtitle", "render", "qa"];
 const MODEL_MODULES = [
@@ -37,6 +39,7 @@ const MODEL_MODULES = [
 export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:listProducts", () => listProducts());
   ipcMain.handle("voah:listTaskCenter", () => listTaskCenter());
+  ipcMain.handle("voah:acknowledgeTask", (_e, task) => acknowledgeTask(task));
   ipcMain.handle("voah:inspectProduct", (_e, slug) => inspectProduct(slug));
   ipcMain.handle("voah:createProduct", (_e, params) => createProduct(params));
   ipcMain.handle("voah:saveProductDetail", (_e, params) => saveProductDetail(params));
@@ -245,6 +248,8 @@ async function intakeRunsForSlug(slug) {
     runs.push({
       run_dir: runDir,
       name,
+      source: "run",
+      job_id: statusPayload?.job_id || result?.job_id || manifest?.job_id || "",
       ready,
       system: name.startsWith("_"),
       status,
@@ -260,8 +265,9 @@ async function intakeRunsForSlug(slug) {
       elapsed_s: elapsedSeconds(statusPayload?.started_at || manifest.created_at || "", updatedAt)
     });
   }
-  runs.sort((a, b) => b.name.localeCompare(a.name));
-  return runs;
+  const deduped = dedupeIntakeRuns(runs);
+  deduped.sort((a, b) => String(b.updated_at || b.name).localeCompare(String(a.updated_at || a.name)));
+  return deduped;
 }
 
 async function intakeJobsForSlug(slug, jobsDir) {
@@ -275,9 +281,13 @@ async function intakeJobsForSlug(slug, jobsDir) {
     const runDir = statusPayload?.run_dir || result?.outputs?.run_dir || jobDir;
     const ready = Boolean(result?.outputs?.merged_shot_index || result?.outputs?.shot_index);
     const status = normalizeIntakeStatus({ ready, statusPayload, result, manifest: {} });
+    const jobKey = statusPayload?.job_id || result?.job_id || jobId;
     jobs.push({
       run_dir: runDir || jobDir,
       name: jobId,
+      source: "job",
+      job_id: jobKey,
+      job_dir: jobDir,
       ready: false,
       system: true,
       status,
@@ -645,14 +655,22 @@ async function collectTaskDirs() {
 // ---- 任务中心 ----
 
 async function listTaskCenter() {
-  const [products, batches, outputs] = await Promise.all([listProducts(), listBatches(), listOutputs()]);
+  const [products, batches, outputs, acknowledgements] = await Promise.all([
+    listProducts(),
+    listBatches(),
+    listOutputs(),
+    readJsonSafe(STUDIO_TASK_ACK_PATH)
+  ]);
   const intakeTasks = [];
   for (const product of products) {
     const runs = await intakeRunsForSlug(product.slug);
     for (const run of runs) {
       if (!["running", "stalled", "failed"].includes(run.status)) continue;
+      const ackKey = intakeAckKey(product.slug, run);
       intakeTasks.push({
-        id: `intake:${product.slug}:${run.name}`,
+        id: ackKey,
+        ack_key: ackKey,
+        ack_keys: intakeAckKeys(product.slug, run),
         kind: "intake",
         kind_label: "入库",
         product_slug: product.slug,
@@ -678,8 +696,10 @@ async function listTaskCenter() {
 
   for (const batch of batches) {
     for (const task of batch.tasks || []) {
+      const ackKey = videoTaskAckKey(batch, task);
       const item = {
-        id: `task:${task.task_dir}`,
+        id: ackKey,
+        ack_key: ackKey,
         kind: "video",
         kind_label: "出片",
         product_slug: batch.product_slug,
@@ -702,7 +722,7 @@ async function listTaskCenter() {
     target: 150,
     succeeded: outputs.filter((item) => ["succeeded", "completed"].includes(item.status)).length,
     needs_review: outputs.filter((item) => item.status === "needs_review" || item.qa_status === "manual_review").length,
-    failed: needsAttention.filter((item) => item.status === "failed").length,
+    failed: needsAttention.filter((item) => item.status === "failed" && !isTaskAcknowledged(item, acknowledgements)).length,
     running: running.length,
     total: outputs.length
   };
@@ -711,7 +731,7 @@ async function listTaskCenter() {
     ok: true,
     summary,
     running: sortTasks(running),
-    needs_attention: sortTasks(needsAttention),
+    needs_attention: sortTasks(needsAttention.filter((item) => !isTaskAcknowledged(item, acknowledgements))),
     recent_outputs: outputs.slice(0, 8).map((item) => ({
       id: `output:${item.task_dir}`,
       kind: "output",
@@ -726,6 +746,48 @@ async function listTaskCenter() {
       final_video: item.final_video
     }))
   };
+}
+
+async function acknowledgeTask(task) {
+  const current = await readJsonSafe(STUDIO_TASK_ACK_PATH);
+  const updated = withTaskAcknowledgement(current, task || {});
+  await writeJson(STUDIO_TASK_ACK_PATH, updated);
+  return { ok: true, acknowledged_at: updated.updated_at };
+}
+
+function intakeAckKey(productSlug, run) {
+  const jobId = String(run?.job_id || "").trim();
+  const stamp = taskOccurrenceStamp(run);
+  if (jobId) return `intake:${productSlug}:job:${jobId}:${stamp}`;
+  const runDir = String(run?.run_dir || "").trim();
+  if (runDir) return `intake:${productSlug}:run:${runDir}:${stamp}`;
+  return `intake:${productSlug}:name:${run?.name || ""}:${stamp}`;
+}
+
+function intakeAckKeys(productSlug, run) {
+  const stamp = taskOccurrenceStamp(run);
+  const keys = [intakeAckKey(productSlug, run)];
+  if (run?.job_id) keys.push(`intake:${productSlug}:job:${run.job_id}:${stamp}`);
+  if (run?.run_dir) keys.push(`intake:${productSlug}:run:${run.run_dir}:${stamp}`);
+  if (run?.name) keys.push(`intake:${productSlug}:name:${run.name}:${stamp}`);
+  return [...new Set(keys)];
+}
+
+function videoTaskAckKey(batch, task) {
+  return `task:${task.task_dir}:${taskOccurrenceStamp({
+    status: task.status,
+    updated_at: batch.updated_at || batch.created_at || "",
+    current_stage: task.current_stage,
+    failed_stage: task.failed_stage
+  })}`;
+}
+
+function taskOccurrenceStamp(item) {
+  return [
+    item?.status || "unknown",
+    item?.updated_at || item?.created_at || "",
+    item?.current_stage || item?.failed_stage || ""
+  ].map((part) => String(part || "").replace(/\s+/g, "_")).join(":");
 }
 
 function sortTasks(items) {

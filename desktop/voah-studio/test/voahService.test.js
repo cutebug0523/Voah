@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeIntakeStatus, summarizeIntakeRuns } from "../electron/intakeStatus.js";
+import { dedupeIntakeRuns, normalizeIntakeStatus, summarizeIntakeRuns } from "../electron/intakeStatus.js";
+import { isTaskAcknowledged, withTaskAcknowledgement } from "../electron/taskAcknowledgements.js";
 
 test("intake status prefers explicit failed result over missing shot index", () => {
   const status = normalizeIntakeStatus({
@@ -43,4 +44,51 @@ test("intake summary separates running, failed and ready runs", () => {
     { status: "ready", ready: true, system: true }
   ]);
   assert.deepEqual(summary, { running: 1, failed: 1, ready: 1, skipped: 3 });
+});
+
+test("intake run dedupe hides job status after real run appears", () => {
+  const real = {
+    name: "20260611_studio_intake",
+    source: "run",
+    run_dir: "/tmp/cache/demo/20260611_studio_intake",
+    job_id: "job-1",
+    status: "running"
+  };
+  const job = {
+    name: "job-1",
+    source: "job",
+    job_id: "job-1",
+    job_dir: "/tmp/cache/demo/_jobs/job-1",
+    run_dir: "/tmp/cache/demo/20260611_studio_intake",
+    status: "running"
+  };
+  assert.deepEqual(dedupeIntakeRuns([job, real]), [real]);
+});
+
+test("intake run dedupe keeps job status before real run exists", () => {
+  const job = {
+    name: "job-1",
+    source: "job",
+    job_id: "job-1",
+    job_dir: "/tmp/cache/demo/_jobs/job-1",
+    run_dir: "/tmp/cache/demo/_jobs/job-1",
+    status: "running"
+  };
+  assert.deepEqual(dedupeIntakeRuns([job]), [job]);
+});
+
+test("task acknowledgement matches stable key aliases", () => {
+  const task = {
+    id: "intake:demo:job:job-1:failed:2026-06-11T00:00:00.000Z:failed",
+    ack_key: "intake:demo:job:job-1:failed:2026-06-11T00:00:00.000Z:failed",
+    ack_keys: [
+      "intake:demo:job:job-1:failed:2026-06-11T00:00:00.000Z:failed",
+      "intake:demo:run:/tmp/run:failed:2026-06-11T00:00:00.000Z:failed"
+    ],
+    kind: "intake",
+    status: "failed"
+  };
+  const payload = withTaskAcknowledgement(null, task, "2026-06-11T00:00:00.000Z");
+  assert.equal(isTaskAcknowledged({ ack_key: "intake:demo:run:/tmp/run:failed:2026-06-11T00:00:00.000Z:failed" }, payload), true);
+  assert.equal(isTaskAcknowledged({ ack_key: "intake:demo:run:/tmp/run:failed:2026-06-11T00:05:00.000Z:failed" }, payload), false);
 });

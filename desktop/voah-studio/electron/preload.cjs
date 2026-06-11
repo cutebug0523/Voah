@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("voah", {
   listProducts: () => ipcRenderer.invoke("voah:listProducts"),
   listTaskCenter: () => ipcRenderer.invoke("voah:listTaskCenter"),
+  acknowledgeTask: (task) => ipcRenderer.invoke("voah:acknowledgeTask", task),
   inspectProduct: (slug) => ipcRenderer.invoke("voah:inspectProduct", slug),
   createProduct: (params) => ipcRenderer.invoke("voah:createProduct", params),
   saveProductDetail: (params) => ipcRenderer.invoke("voah:saveProductDetail", params),
