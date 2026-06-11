@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("voah", {
   saveStudioSettings: (params) => ipcRenderer.invoke("voah:saveStudioSettings", params),
   listTtsVoices: () => ipcRenderer.invoke("voah:listTtsVoices"),
   listSubtitleFonts: () => ipcRenderer.invoke("voah:listSubtitleFonts"),
+  installSubtitleFont: (fontId) => ipcRenderer.invoke("voah:installSubtitleFont", fontId),
   createSampleTask: (params) => ipcRenderer.invoke("voah:createSampleTask", params),
   runCopyStage: (taskDir) => ipcRenderer.invoke("voah:runCopyStage", taskDir),
   runTtsStage: (taskDir) => ipcRenderer.invoke("voah:runTtsStage", taskDir),

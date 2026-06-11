@@ -59,6 +59,7 @@ export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:saveStudioSettings", (_e, params) => saveStudioSettings(params));
   ipcMain.handle("voah:listTtsVoices", () => listTtsVoices());
   ipcMain.handle("voah:listSubtitleFonts", () => listSubtitleFonts());
+  ipcMain.handle("voah:installSubtitleFont", (_e, fontId) => installSubtitleFont(fontId));
 
   ipcMain.handle("voah:createSampleTask", (_e, params) => createSampleTask(params));
   ipcMain.handle("voah:runCopyStage", (_e, taskDir) => runCopyStage(taskDir));
@@ -552,7 +553,7 @@ async function listSubtitleFonts() {
   return {
     ok: true,
     fonts: FONT_OPTIONS.map((font) => {
-      const installed_path = font.candidate_paths.find((item) => existsSync(item)) || "";
+      const installed_path = installedFontPath(font);
       return {
         ...font,
         installed: Boolean(installed_path),
@@ -560,6 +561,32 @@ async function listSubtitleFonts() {
       };
     })
   };
+}
+
+async function installSubtitleFont(fontId) {
+  const font = FONT_OPTIONS.find((item) => item.id === fontId);
+  if (!font) return { ok: false, error: "未知字体" };
+  const existing = installedFontPath(font);
+  if (existing) return { ok: true, installed_path: existing, already_installed: true };
+  if (!font.install?.urls?.length) return { ok: false, error: "该字体没有可用安装源" };
+
+  const fontsDir = path.join(os.homedir(), "Library", "Fonts");
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), `voah-font-${font.id}-`));
+  await fs.mkdir(fontsDir, { recursive: true });
+  try {
+    const downloaded = await downloadFirst(font.install.urls, tmpRoot, font.install.type === "zip" ? "font.zip" : font.install.file_name);
+    let source = downloaded;
+    if (font.install.type === "zip") {
+      source = await extractFontFromZip(downloaded, tmpRoot, font.install.archive_match);
+    }
+    const output = path.join(fontsDir, font.install.file_name || path.basename(source));
+    await fs.copyFile(source, output);
+    return { ok: true, installed_path: output };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function getStudioSettings() {
@@ -666,12 +693,16 @@ function ttsPreview({ text, voiceId, speed, emotion, pitch, intensity, timbre })
   if (pitch !== undefined) args.push("--modify-pitch", String(pitch));
   if (intensity !== undefined) args.push("--modify-intensity", String(intensity));
   if (timbre !== undefined) args.push("--modify-timbre", String(timbre));
-  return runVoah(args).then((result) => ({
-    ...result,
-    audio: result.stdout.match(/preview_audio=(.*)/)?.[1]?.trim() || null,
-    audio_url: toFileUrl(result.stdout.match(/preview_audio=(.*)/)?.[1]?.trim()),
-    manifest: result.stdout.match(/manifest=(.*)/)?.[1]?.trim() || null
-  }));
+  return runVoah(args).then(async (result) => {
+    const audio = result.stdout.match(/preview_audio=(.*)/)?.[1]?.trim() || null;
+    const playable = result.ok ? await audioPreviewUrl(audio) : "";
+    return {
+      ...result,
+      audio,
+      audio_url: playable,
+      manifest: result.stdout.match(/manifest=(.*)/)?.[1]?.trim() || null
+    };
+  });
 }
 
 async function saveVoiceScript({ taskDir, voiceScript }) {
@@ -783,6 +814,80 @@ function keyToEnvName(key) {
 function toFileUrl(target) {
   if (!target) return "";
   return pathToFileURL(target).href;
+}
+
+async function audioPreviewUrl(target) {
+  if (!target || !existsSync(target)) return "";
+  const stat = await fs.stat(target).catch(() => null);
+  if (!stat?.size) return "";
+  const ext = path.extname(target).toLowerCase();
+  const mime = ext === ".wav" ? "audio/wav" : "audio/mpeg";
+  const buffer = await fs.readFile(target);
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+function expandHome(target) {
+  const text = String(target || "");
+  if (text === "~") return os.homedir();
+  if (text.startsWith("~/")) return path.join(os.homedir(), text.slice(2));
+  return text;
+}
+
+function installedFontPath(font) {
+  for (const item of font.candidate_paths || []) {
+    const target = expandHome(item);
+    if (target && existsSync(target)) return target;
+  }
+  return "";
+}
+
+async function downloadFirst(urls, dir, fileName) {
+  let lastError = null;
+  for (const url of urls) {
+    const output = path.join(dir, fileName || path.basename(new URL(url).pathname));
+    const result = await runCommand("curl", ["-L", "--fail", "--retry", "2", "--connect-timeout", "20", "--max-time", "240", "-o", output, url]);
+    if (result.ok && existsSync(output)) {
+      const stat = await fs.stat(output).catch(() => null);
+      if (stat?.size) return output;
+    }
+    lastError = result.stderr || result.stdout || `下载失败：${url}`;
+  }
+  throw new Error(lastError || "下载失败");
+}
+
+async function extractFontFromZip(zipPath, dir, matchPattern) {
+  const result = await runCommand("unzip", ["-q", zipPath, "-d", dir]);
+  if (!result.ok) throw new Error(result.stderr || result.stdout || "字体压缩包解压失败");
+  const regex = new RegExp(matchPattern || "\\.(otf|ttf)$", "i");
+  const files = await collectFiles(dir);
+  const found = files.find((file) => regex.test(path.basename(file)) || regex.test(file));
+  if (!found) throw new Error("压缩包里没有找到目标字体文件");
+  return found;
+}
+
+async function collectFiles(root) {
+  const output = [];
+  async function walk(dir) {
+    for (const item of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, item.name);
+      if (item.isDirectory()) await walk(full);
+      else output.push(full);
+    }
+  }
+  await walk(root);
+  return output;
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve) => {
+    const proc = spawn(command, args, { cwd: WORKSPACE });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => (stdout += d.toString()));
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.on("error", (err) => resolve({ ok: false, error: String(err.message || err), stdout, stderr }));
+    proc.on("close", (code) => resolve({ ok: code === 0, code, stdout: stdout.trim(), stderr: stderr.trim() }));
+  });
 }
 
 function voiceLanguage(voiceId) {

@@ -23,9 +23,11 @@ export function SettingsPage() {
   const [voices, setVoices] = useState(FALLBACK_TTS_VOICES);
   const [voiceSource, setVoiceSource] = useState("");
   const [fonts, setFonts] = useState(FONT_OPTIONS);
+  const [fontsReady, setFontsReady] = useState(false);
   const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState("");
+  const [installingFont, setInstallingFont] = useState("");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -39,17 +41,22 @@ export function SettingsPage() {
   useEffect(() => {
     let alive = true;
     async function loadOptions() {
-      const [voiceRes, fontRes] = await Promise.all([
-        window.voah?.listTtsVoices?.(),
-        window.voah?.listSubtitleFonts?.()
-      ]);
+      window.voah?.listSubtitleFonts?.()
+        .then((fontRes) => {
+          if (!alive) return;
+          if (fontRes?.fonts?.length) {
+            setFonts(fontRes.fonts);
+          }
+          setFontsReady(true);
+        })
+        .catch(() => {
+          if (alive) setFontsReady(true);
+        });
+      const voiceRes = await window.voah?.listTtsVoices?.();
       if (!alive) return;
       if (voiceRes?.voices?.length) {
         setVoices(voiceRes.voices);
         setVoiceSource(voiceRes.source === "minimax" ? "MiniMax 官方音色" : "内置音色表");
-      }
-      if (fontRes?.fonts?.length) {
-        setFonts(fontRes.fonts);
       }
     }
     loadOptions();
@@ -62,6 +69,10 @@ export function SettingsPage() {
   const selectedVoice = useMemo(
     () => voices.find((item) => item.voice_id === form?.tts?.voice_id) || voices[0],
     [voices, form?.tts?.voice_id]
+  );
+  const selectedFont = useMemo(
+    () => fonts.find((item) => item.id === form?.subtitle?.font) || fonts.find((item) => item.installed_path === form?.subtitle?.font_source) || fonts[0],
+    [fonts, form?.subtitle?.font, form?.subtitle?.font_source]
   );
   if (!form) return <EmptyHint icon="fa-spinner fa-spin" title="加载中…" />;
 
@@ -101,8 +112,8 @@ export function SettingsPage() {
       timbre: tts.timbre
     });
     setBusy("");
-    setPreview(res?.audio_url || res?.audio || null);
-    setMessage(res?.ok ? "试听已生成" : res?.stderr || res?.error || "试听失败");
+    setPreview(res?.audio_url || null);
+    setMessage(res?.ok && res?.audio_url ? "试听已生成" : res?.stderr || res?.error || "试听失败");
   }
 
   function selectVoice(voiceId) {
@@ -123,6 +134,30 @@ export function SettingsPage() {
         font_source: font.installed_path || ""
       }
     }));
+  }
+
+  async function installFont(fontId) {
+    setInstallingFont(fontId);
+    setMessage("");
+    const res = await window.voah?.installSubtitleFont?.(fontId);
+    const fontRes = await window.voah?.listSubtitleFonts?.();
+    if (fontRes?.fonts?.length) {
+      setFonts(fontRes.fonts);
+      const installed = fontRes.fonts.find((item) => item.id === fontId);
+      if (installed?.installed) {
+        setForm((prev) => ({
+          ...prev,
+          subtitle: {
+            ...(prev.subtitle || {}),
+            font: installed.id,
+            font_label: installed.label,
+            font_source: installed.installed_path || ""
+          }
+        }));
+      }
+    }
+    setInstallingFont("");
+    setMessage(res?.ok ? "字体已安装" : res?.error || "字体安装失败");
   }
 
   return (
@@ -243,32 +278,28 @@ export function SettingsPage() {
                 ))}
               </select>
             </Field>
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-ink-700">字体</div>
-              <div className="grid grid-cols-1 gap-2">
-                {fonts.map((font) => (
+            <Field label="字体">
+              <div className="flex gap-2">
+                <select className="input min-w-0 flex-1" value={selectedFont?.id || ""} onChange={(e) => selectFont(e.target.value)}>
+                  {fonts.map((font) => (
+                    <option key={font.id} value={font.id}>
+                      {font.label}{fontsReady ? font.installed ? " · 可用" : " · 未安装" : " · 检测中"}
+                    </option>
+                  ))}
+                </select>
+                {fontsReady && !selectedFont?.installed && selectedFont?.install && (
                   <button
-                    key={font.id}
-                    onClick={() => selectFont(font.id)}
-                    className={`text-left rounded-lg border p-3 ${
-                      form.subtitle.font === font.id ? "border-brand-500 bg-brand-50" : "border-slate-200 hover:bg-slate-50"
-                    }`}
+                    onClick={() => installFont(selectedFont.id)}
+                    disabled={installingFont === selectedFont.id}
+                    className="shrink-0 px-3 rounded-lg bg-brand-600 hover:bg-brand-700 disabled:bg-ink-300 text-white text-xs font-medium"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-ink-800">{font.label}</span>
-                      <span className={`text-[11px] ${font.installed ? "text-ok" : "text-ink-400"}`}>{font.installed ? "可用" : "未安装"}</span>
-                    </div>
-                    <div className="mt-1 text-[11px] text-ink-500">{font.style}</div>
-                    <div className="mt-2 text-lg leading-none" style={{ fontFamily: font.installed ? `"${font.family}", serif` : "serif" }}>
-                      上脸服帖自然
-                    </div>
+                    <i className={`fa ${installingFont === selectedFont.id ? "fa-spinner fa-spin" : "fa-download"} mr-1`} />
+                    {installingFont === selectedFont.id ? "安装中" : "安装"}
                   </button>
-                ))}
+                )}
               </div>
-              <div className="text-[11px] text-ink-400 leading-5">
-                字体文件不进仓库；已安装字体会随任务传给字幕渲染。License 来源随字体记录保存。
-              </div>
-            </div>
+              <FontPreview font={selectedFont} ready={fontsReady} />
+            </Field>
           </Block>
         </div>
         <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-between">
@@ -364,6 +395,27 @@ function Configured({ ok }) {
     <span className={`text-[11px] px-2 py-0.5 rounded-full border text-center ${ok ? "text-ok bg-ok/5 border-ok/20" : "text-ink-400 bg-slate-50 border-slate-200"}`}>
       {ok ? "已配置" : "未配置"}
     </span>
+  );
+}
+
+function FontPreview({ font, ready }) {
+  if (!font) return null;
+  const status = !ready ? "检测中" : font.installed ? "可用" : "未安装";
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-ink-800 truncate">{font.label}</div>
+          <div className="text-[11px] text-ink-400 truncate">{font.style}</div>
+        </div>
+        <span className={`text-[11px] shrink-0 ${font.installed ? "text-ok" : "text-ink-400"}`}>
+          {status}
+        </span>
+      </div>
+      <div className="mt-2 text-xl leading-7 truncate" style={{ fontFamily: font.installed ? `"${font.family}", serif` : "serif" }}>
+        上脸服帖自然
+      </div>
+    </div>
   );
 }
 
