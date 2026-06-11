@@ -1,168 +1,140 @@
-# Voah 混剪工作台
+<div align="center">
 
-Voah 是当前项目里的带货混剪工程管线：素材入库、文案、TTS、素材召回、字幕、渲染和 QA 都按阶段产物承接。
+<h1>🎬 Voah</h1>
 
-当前方向已经从“靠 agent 调 skill 操作”转向“桌面应用固定流程”。Skills 继续作为方法论和 worker 合同来源，后续员工操作层应是 Electron 桌面应用，而不是让员工理解命令、路径和 skill。
+<b>CLI-first 带货短视频批量生产内核</b><br/>
+<sub>素材入库 · 语义召回 · 文案 · 配音 · 字幕 · 渲染 · QA —— 一条命令，一天 150 条</sub>
 
-新 agent、新会话或准备开发桌面版时先读：
+<br/><br/>
 
-1. `AGENTS.md`
-2. `docs/README.md`
-3. `docs/00-overview/Voah工程总览与管线.md`
-4. `docs/00-overview/Voah系列工程化底座.md`
-5. `docs/00-overview/Voah桌面应用架构.md`
-6. `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
-7. `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
-8. `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
-9. `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
-10. `docs/00-overview/Voah批量生产SOP与产能方案.md`
-11. `docs/00-overview/Voah仓库范围与发布约定.md`
+<a href="./README.md">简体中文</a> ·
+<a href="./README.en.md">English</a> ·
+<a href="./README.ja.md">日本語</a>
 
-## 核心原则
+<br/><br/>
 
-- 始终使用简体中文。
-- 不主动启动或停止服务，除非用户明确要求。
-- 不把聊天上下文当工程状态；关键结果必须落盘。
-- API key 不写进文档或 manifest，只放本地 `.env` 或私有配置。
-- 每一步都要有输入、输出、QA 和下一步消费者。
+![status](https://img.shields.io/badge/status-active-success)
+![cli](https://img.shields.io/badge/CLI-Node.js%20%E2%89%A520-5FA04E?logo=node.js&logoColor=white)
+![worker](https://img.shields.io/badge/worker-Python%203-3776AB?logo=python&logoColor=white)
+![desktop](https://img.shields.io/badge/desktop-Electron%20%2B%20React-47848F?logo=electron&logoColor=white)
+![ai](https://img.shields.io/badge/AI-Omni%20%C2%B7%20Embedding%20%C2%B7%20M3%20%C2%B7%20TTS-FF6F00)
+![license](https://img.shields.io/badge/license-MIT-blue)
 
-## 主要目录
+</div>
 
-```text
-docs/                  项目文档，入口见 docs/README.md
-scripts/               项目级脚本和本地 worker，入口见 scripts/README.md
-cache/                 本地运行产物，入口见 cache/README.md
-原片/                  原始素材，入口见 原片/README.md
-_research/             外部项目调研，入口见 _research/README.md
-ohmycrab/              Crab 自动项目记忆，入口见 ohmycrab/README.md
-口红/、气垫/           历史素材目录，保留原路径
-GPT-SoVITS/            本地 TTS 回退环境，不作为当前主线默认 TTS
+---
+
+## ✨ 这是什么
+
+**Voah** 把带货短视频的整条生产流程，沉淀成一套稳定、可复跑、可观测的 `voah` 命令层。
+
+不是"让 AI 帮你剪一条"，而是**工业化的批量生产内核**：每个素材被结构化入库、向量化、按语义精准召回；每条成片从文案、配音、选片、字幕到渲染、QA 全程落盘、可追溯、可断点重跑。桌面端只是壳——真正的生产能力在 CLI，命令行能跑通的，桌面端、批处理、服务器都能跑。
+
+> 一条文案讲"倒水测试妆面不脱"，Voah 会从你的素材库里精准召回**真正在泼水的那一帧**，而不是一个看起来像的大头。
+
+## 🧠 核心理念
+
+| 原则 | 含义 |
+|---|---|
+| **CLI 是生产真源** | 所有业务逻辑在 `voah` 命令层，不存在第二套生产逻辑 |
+| **产物先于界面** | 每一步落盘，不靠进程内变量或 UI 状态承接 |
+| **可追溯 · 可复跑** | 每个产物记录 inputs/outputs/QA/下一步消费者，支持从任意阶段断点重跑 |
+| **Secret 不进产物** | API key 只从本机私有配置读取，绝不写入 manifest/日志/示例 |
+| **QA Gate 守门** | 时长、碎帧、字幕同源、素材对齐、Omni 对齐全部校验通过才放行 |
+
+## 🏗️ 生产管线
+
+```mermaid
+flowchart LR
+    A[原片素材] --> B[intake 入库]
+    B -->|ffprobe·切点·Omni理解·半开裁切·child细化·向量化| C[(shot_index<br/>语义索引)]
+    C --> D[copy 文案]
+    D --> E[tts 配音]
+    E -->|audio_sections 音频主轴| F[retrieve 召回]
+    F -->|多通道向量+M3精选+硬过滤| G[subtitle 字幕]
+    G --> H[render 渲染]
+    H --> I[qa 对齐校验]
+    I --> J[✅ 成片]
+
+    style C fill:#eef2ff,stroke:#6366f1
+    style J fill:#dcfce7,stroke:#16a34a
 ```
 
-## 当前主线管线
+**关键设计**：TTS 先定真实音频时长与分段，再按音频语义召回素材——时间线贴着配音主轴走，不会被后期配音长度打乱。
 
-```text
-素材入库（常驻）
-  -> 任务 brief / 产品全量卖点 / 平台目标
-  -> 文案第一步：销售逻辑与脚本意图
-  -> 文案第二步：连续口播稿
-  -> MiniMax 一次性 TTS
-  -> audio_sections
-  -> 按口播语义召回/重打点/填充素材
-  -> 字幕用口播原文断句
-  -> HyperFrames 烧字幕
-  -> 渲染 QA
+## 🎯 能力一览
+
+- **🎞️ 素材入库**：ffmpeg 视觉切点 → Omni（Qwen3.5-Omni）story unit 理解 → child 级精细化 → 半开区间裁切（防碎帧）→ 原生视频向量化（Qwen3-VL-Embedding 2560 维）
+- **🔍 语义召回**：多通道向量（视频/画面/语义/ASR/OCR/标签）粗召回 → MiniMax M3 精选 → required_visual 硬过滤 → child 级精准对位
+- **✍️ 文案 + 配音**：MiniMax M3 写稿（字数→时长校准）→ MiniMax TTS（中文读法归一、营销数字处理）
+- **🔥 字幕渲染**：HyperFrames 工程化字幕（动效/高亮）+ ffmpeg PNG 叠加兜底，像素级换行不溢出
+- **🛡️ QA Gate**：时长、碎帧、字幕同源、素材覆盖、Omni 音画对齐全维度校验
+- **📦 批量队列**：并发上限、单条失败不阻塞、断点续跑、合格成片清单导出
+
+## 🚀 快速开始
+
+```bash
+# 1. 环境自检（工具链 + 模型 key）
+node cli/src/bin/voah.js doctor --workspace .
+
+# 2. 素材入库
+voah intake run --product my-product --source-dir ./原片/my-product --limit 3
+
+# 3. 单条成片
+voah task create --product my-product --intake-run <intake_dir> --target-duration 30
+voah task run <task_dir>
+
+# 4. 批量生产
+voah batch run --product my-product --intake-run <intake_dir> --count 20 --concurrency 3
 ```
 
-## 已有 Voah Skills
+桌面端（Electron 工作台，给员工的低心智界面）：
 
-```text
-/Users/noah/.codex/skills/voah-video-intake/SKILL.md
-/Users/noah/.codex/skills/voah-shot-retrieval/SKILL.md
-/Users/noah/.codex/skills/voah-copy-brief/SKILL.md
-/Users/noah/.codex/skills/voah-copy-final/SKILL.md
-/Users/noah/.codex/skills/voah-tts/SKILL.md
+```bash
+cd desktop/voah-studio && ./dev.sh
 ```
 
-## 关键文档
-
-- `docs/README.md`
-- `docs/00-overview/Voah工程总览与管线.md`
-- `docs/00-overview/Voah系列工程化底座.md`
-- `docs/00-overview/Voah桌面应用架构.md`
-- `docs/00-overview/Voah桌面端生产工具MVP-PRD.md`
-- `docs/00-overview/Voah桌面应用模块与产物流转设计.md`
-- `docs/00-overview/Voah桌面应用数据模型与任务状态机.md`
-- `docs/00-overview/Voah桌面应用服务边界与Worker合同.md`
-- `docs/00-overview/Voah批量生产SOP与产能方案.md`
-- `docs/00-overview/Voah仓库范围与发布约定.md`
-- `docs/10-video-intake/Voah单素材分段方法论.md`
-- `docs/20-copy-and-planning/混剪编排策略-文案与素材顺序.md`
-- `docs/30-tts/Voah-TTS线上API接入笔记.md`
-- `docs/40-subtitle-render/Voah字幕样式与烧录记录.md`
-
-## 当前重要结论
-
-- 入库是常驻层，单次任务从任务 brief、产品卖点和销售逻辑开始。
-- `source_meaning` 是素材理解和后续文案对齐的核心资产。
-- 主线不是先选 shot 再逐 shot 写稿；主线是先定全片销售逻辑，写连续口播，再 TTS。
-- TTS 后按口播语义分段生成 `audio_sections.json`，再按每段语义召回/填充素材。
-- 素材宜长不宜短；长素材可剪，短素材优先用同语义/同维度片段拼接，不默认用循环凑够。
-- MiniMax/服务商粗字幕不能作为正式字幕时间源。
-- 字幕文本来自 TTS 实际口播原文断句，字幕时间来自音频主轴或 forced alignment。
-- 字幕样式用 HyperFrames，字体文件建议随工程保存。
-
-## 最近主线回归
-
-2026-06-07 用 `原片/气垫/` 选 6 条素材跑通当前桌面应用对齐后的主线闭环，并通过最终 Omni 成片对齐 QA：
+## 📟 命令总览
 
 ```text
-cache/voah_tasks/huaxizi-qidian/20260607_023341_selected6_full_pipeline_v1/
+voah doctor                          环境自检
+voah config get|set                  本机私有配置（key 不入库）
+voah product create|list|inspect     产品库
+voah intake run                      素材入库 + 结构化 + 向量化
+voah task create|run [--from stage]  单任务全流程 / 断点重跑
+voah copy|tts|retrieve|subtitle|render|qa run   单阶段复跑
+voah tts preview                     配音试听
+voah batch run|pause|resume          批量队列
+voah resource upload|cleanup         临时 OSS 资源层
 ```
 
-先读：
+## 🧩 技术栈
+
+| 层 | 技术 |
+|---|---|
+| CLI 总控 | Node.js（零依赖，≥20） |
+| Worker | Python 3（17 个单阶段 worker） |
+| 桌面端 | Electron + Vite + React 19 + Tailwind + zustand |
+| 视频理解 | Qwen3.5-Omni-Plus |
+| 向量化 / 召回 | Qwen3-VL-Embedding（2560 维原生视频向量） |
+| 文案 / 选片 | MiniMax M3 |
+| 配音 | MiniMax TTS |
+| 字幕渲染 | HyperFrames + ffmpeg |
+
+## 📂 仓库结构
 
 ```text
-full_pipeline_manifest.json
-voice_script.json
-audio_sections.json
-timeline_fill.json
-caption_plan.json
-qa_omni_alignment_final/OMNI_ALIGNMENT_QA_REPORT.md
+cli/        voah CLI（命令骨架 + 核心编排 + 服务层 + schema）
+scripts/    Python worker（入库/文案/TTS/召回/字幕/渲染/QA）
+desktop/    voah-studio 桌面工作台（Electron + React）
+docs/       工程文档、设计方案、方法论
+tests/      测试
 ```
 
-最终成片：
+开发者上手与工程文档见 [`docs/AGENTS-onboarding.md`](./docs/AGENTS-onboarding.md) 与 [`docs/README.md`](./docs/README.md)。
 
-```text
-hyperframes_subtitle_burn/final_subtitled.mp4
-```
+## 📄 License
 
-对应可用入库素材库：
+[MIT](./LICENSE) © cutebug0523
 
-```text
-cache/voah_video_intake/huaxizi-qidian/20260607_013444_selected6_scene_candidates_v1/
-```
-
-2026-06-05 已从已有防晒气垫入库素材跑通过上一轮主线：
-
-```text
-cache/voah_tasks/fangshai-qidian/20260605_202301_mainline_tts_semantic_v1/
-```
-
-关键产物：
-
-```text
-RUN_PROCESS.md
-full_pipeline_manifest.json
-voice.wav
-audio_sections.json
-timeline_fill.json
-caption_plan.json
-preview_no_subtitles.mp4
-hyperframes_subtitle_burn/final_subtitled.mp4
-```
-
-这轮确认的 TTS 基线：
-
-```text
-provider: minimax-official
-model: speech-2.8-hd
-voice_id: moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d
-speed: 1.1
-emotion: happy
-voice_modify: pitch=20, intensity=20, timbre=0
-```
-
-对应可用入库素材库：
-
-```text
-cache/voah_video_intake/fangshai-qidian/20260603_225800_merged5_scene_candidates_v1/
-```
-
-历史 legacy 工具链回归仍保留：
-
-```text
-cache/voah_tasks/fangshai-qidian/20260605_175355_full_pipeline_regression_v1/
-```
-
-它证明 TTS、字幕、HyperFrames、manifest 可跑通，但不是当前主线范式。
+<div align="center"><sub>Built for creators who ship at scale. 🚀</sub></div>
