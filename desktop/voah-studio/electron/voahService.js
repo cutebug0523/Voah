@@ -683,7 +683,9 @@ function runVoah(args, { stdin = null } = {}) {
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, [CLI_ENTRY, ...args], {
       cwd: WORKSPACE,
-      env: { ...process.env }
+      // ELECTRON_RUN_AS_NODE：让 Electron 二进制以纯 Node 模式跑 CLI,
+      // 否则 process.execPath 会再启动一个 Electron app(dock 多图标、点不开)。
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
     });
     let stdout = "";
     let stderr = "";
@@ -702,7 +704,7 @@ function runVoah(args, { stdin = null } = {}) {
 function runVoahDetached(args) {
   const proc = spawn(process.execPath, [CLI_ENTRY, ...args], {
     cwd: WORKSPACE,
-    env: { ...process.env },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
     detached: true,
     stdio: "ignore"
   });
