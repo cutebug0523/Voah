@@ -895,7 +895,9 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
     created_at: new Date().toISOString(),
     product: {
       slug: manifest.product_slug,
-      name: manifest.product_name || manifest.product_slug
+      name: validProductName(manifest.product_name, manifest.product_slug) || validProductName(productLibrary.name, manifest.product_slug),
+      brand: String(productLibrary.brand || "").trim(),
+      generic_name: genericProductName(manifest.product_slug)
     },
     task: {
       id: manifest.task_id,
@@ -926,7 +928,8 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
     constraints: [
       "不写医疗或绝对化功效",
       "不把原素材 ASR/OCR 逐字搬运成文案",
-      "字幕文本来自最终口播原文，不使用 MiniMax 字幕文本或 ASR 改写"
+      "字幕文本来自最终口播原文，不使用 MiniMax 字幕文本或 ASR 改写",
+      "产品 slug 只是内部文件标识，不能当品牌名或产品名写入口播；品牌和产品名为空时只能用泛称"
     ],
     outputs: {
       task_brief: path.join(taskDir, "task_brief.json"),
@@ -965,4 +968,19 @@ async function readProductContext(workspace, slug) {
 
 function linesFromItems(items) {
   return (items || []).map((item) => item.text || item.claim || item.name || item.term || item).filter(Boolean).join("\n");
+}
+
+function validProductName(name, slug) {
+  const value = String(name || "").trim();
+  if (!value) return "";
+  if (slug && value === slug) return "";
+  if (/^[a-z0-9][a-z0-9_-]{2,}$/i.test(value)) return "";
+  return value;
+}
+
+function genericProductName(slug) {
+  const value = String(slug || "");
+  if (/qidian|cushion/i.test(value)) return "这盒气垫";
+  if (/kouhong|lip/i.test(value)) return "这支口红";
+  return "这款产品";
 }

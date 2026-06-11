@@ -6,6 +6,7 @@ import path from "node:path";
 import { dedupeIntakeRuns, normalizeIntakeStatus, summarizeIntakeRuns } from "../electron/intakeStatus.js";
 import { isTaskAcknowledged, withTaskAcknowledgement } from "../electron/taskAcknowledgements.js";
 import { listTaskRuns } from "../electron/taskRuns.js";
+import { normalizeClaimsForSave, providerRowsFromModules } from "../electron/voahService.js";
 
 test("intake status prefers explicit failed result over missing shot index", () => {
   const status = normalizeIntakeStatus({
@@ -146,4 +147,32 @@ test("studio task runs summarize failed run history without scanning temporary o
   assert.equal(runs[0].failed_stage, "render");
   assert.equal(runs[0].can_continue, true);
   assert.match(runs[0].error_summary, /moov atom/);
+});
+
+test("studio groups model keys by provider", () => {
+  const providers = providerRowsFromModules(
+    [
+      { providerId: "dashscope", providerName: "通义千问", configKey: "dashscope.api_key", envKey: "DASHSCOPE_API_KEY" },
+      { providerId: "dashscope", providerName: "通义千问", configKey: "dashscope.api_key", envKey: "DASHSCOPE_API_KEY" },
+      { providerId: "minimax", providerName: "MiniMax", configKey: "minimax.api_key", envKey: "MINIMAX_API_KEY" },
+      { providerId: "deepseek", providerName: "DeepSeek", configKey: "deepseek.api_key", envKey: "DEEPSEEK_API_KEY" },
+      { providerId: "vectorengine", providerName: "VectorEngine", configKey: "vectorengine.api_key", envKey: "VECTORENGINE_API_KEY" }
+    ],
+    { "deepseek.api_key": true }
+  );
+
+  assert.deepEqual(providers.map((item) => item.id), ["dashscope", "minimax", "deepseek"]);
+  assert.equal(providers.find((item) => item.id === "deepseek").configured, true);
+});
+
+test("studio preserves core and support claim tiers when saving", () => {
+  const claims = normalizeClaimsForSave([
+    { text: "防晒底妆二合一", tier: "core", rank: 1 },
+    { text: "轻薄服帖", tier: "support", rank: 2 }
+  ]);
+
+  assert.deepEqual(claims, [
+    { text: "防晒底妆二合一", tier: "core", rank: 1 },
+    { text: "轻薄服帖", tier: "support", rank: 2 }
+  ]);
 });

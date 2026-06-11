@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Voah copy_brief.json and voice_script.json with MiniMax M3."""
+"""Generate Voah copy_brief.json and voice_script.json with the configured text LLM."""
 
 from __future__ import annotations
 
@@ -114,13 +114,36 @@ def extract_json_object(text: str) -> dict[str, Any]:
     raise ValueError("LLM response is not a JSON object")
 
 
-def call_minimax_m3(prompt_payload: dict[str, Any], timeout_s: int) -> tuple[dict[str, Any], dict[str, Any]]:
-    api_key = os.environ.get("MINIMAX_API_KEY", "").strip()
+def call_copy_llm(prompt_payload: dict[str, Any], timeout_s: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    provider = (os.environ.get("VOAH_COPY_LLM_PROVIDER") or "deepseek").strip().lower()
+    if provider in {"deepseek", "deepseek-official"}:
+        return call_openai_compatible_llm(
+            prompt_payload,
+            timeout_s,
+            provider="deepseek",
+            api_key_env="DEEPSEEK_API_KEY",
+            default_base_url="https://api.deepseek.com",
+            default_endpoint="/chat/completions",
+            default_model="deepseek-v4-pro",
+        )
+    return call_minimax_m3(prompt_payload, timeout_s)
+
+
+def call_openai_compatible_llm(
+    prompt_payload: dict[str, Any],
+    timeout_s: int,
+    provider: str,
+    api_key_env: str,
+    default_base_url: str,
+    default_endpoint: str,
+    default_model: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    api_key = os.environ.get(api_key_env, "").strip()
     if not api_key:
-        raise RuntimeError("MINIMAX_API_KEY not configured")
-    base_url = os.environ.get("MINIMAX_LLM_BASE_URL") or os.environ.get("VOAH_TEXT_LLM_BASE_URL") or "https://api.minimaxi.com/v1"
-    endpoint = os.environ.get("VOAH_COPY_LLM_ENDPOINT") or "/text/chatcompletion_v2"
-    model = os.environ.get("VOAH_COPY_LLM_MODEL") or "MiniMax-M3"
+        raise RuntimeError(f"{api_key_env} not configured")
+    base_url = os.environ.get("VOAH_TEXT_LLM_BASE_URL") or default_base_url
+    endpoint = os.environ.get("VOAH_COPY_LLM_ENDPOINT") or default_endpoint
+    model = os.environ.get("VOAH_COPY_LLM_MODEL") or default_model
     url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
     messages = [
         {
@@ -137,9 +160,28 @@ def call_minimax_m3(prompt_payload: dict[str, Any], timeout_s: int) -> tuple[dic
         "messages": messages,
         "temperature": float(os.environ.get("VOAH_COPY_LLM_TEMPERATURE") or 0.45),
         "max_tokens": int(os.environ.get("VOAH_COPY_LLM_MAX_TOKENS") or 3600),
-        "thinking": {"type": "disabled"},
         "stream": False,
     }
+    raw = post_json_with_bearer(url, api_key, payload, timeout_s, f"{provider} copy LLM")
+    choices = raw.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"{provider} response has no choices")
+    message = choices[0].get("message") or {}
+    content = message.get("content") or choices[0].get("text") or raw.get("reply") or ""
+    plan = extract_json_object(content)
+    safe_response = {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "endpoint": endpoint,
+        "usage": raw.get("usage") or {},
+        "finish_reason": choices[0].get("finish_reason"),
+        "content_preview": content[:1200],
+    }
+    return plan, safe_response
+
+
+def post_json_with_bearer(url: str, api_key: str, payload: dict[str, Any], timeout_s: int, label: str) -> dict[str, Any]:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as header_file:
         header_file.write(f'header = "Authorization: Bearer {api_key}"\n')
         header_file.write('header = "Content-Type: application/json"\n')
@@ -170,10 +212,42 @@ def call_minimax_m3(prompt_payload: dict[str, Any], timeout_s: int) -> tuple[dic
             pass
     if proc.returncode != 0:
         stderr = proc.stderr.decode("utf-8", errors="ignore")
-        raise RuntimeError(f"MiniMax M3 curl request failed: {stderr[:800]}")
+        raise RuntimeError(f"{label} curl request failed: {stderr[:800]}")
     raw = json.loads(proc.stdout.decode("utf-8", errors="ignore"))
     if raw.get("base_resp", {}).get("status_code") not in (None, 0):
-        raise RuntimeError(f"MiniMax M3 failed: {raw.get('base_resp')}")
+        raise RuntimeError(f"{label} failed: {raw.get('base_resp')}")
+    if raw.get("error"):
+        raise RuntimeError(f"{label} failed: {raw.get('error')}")
+    return raw
+
+
+def call_minimax_m3(prompt_payload: dict[str, Any], timeout_s: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    api_key = os.environ.get("MINIMAX_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("MINIMAX_API_KEY not configured")
+    base_url = os.environ.get("MINIMAX_LLM_BASE_URL") or os.environ.get("VOAH_TEXT_LLM_BASE_URL") or "https://api.minimaxi.com/v1"
+    endpoint = os.environ.get("VOAH_COPY_LLM_ENDPOINT") or "/text/chatcompletion_v2"
+    model = os.environ.get("VOAH_COPY_LLM_MODEL") or "MiniMax-M3"
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 Voah 的带货短视频文案 planner。你先定全片销售逻辑，再写连续口播。"
+                "口播必须自然、顺滑、能直接 TTS；不要绑定具体素材 shot；输出严格 JSON。"
+            ),
+        },
+        {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
+    ]
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": float(os.environ.get("VOAH_COPY_LLM_TEMPERATURE") or 0.45),
+        "max_tokens": int(os.environ.get("VOAH_COPY_LLM_MAX_TOKENS") or 3600),
+        "thinking": {"type": "disabled"},
+        "stream": False,
+    }
+    raw = post_json_with_bearer(url, api_key, payload, timeout_s, "MiniMax M3")
     choices = raw.get("choices") or []
     if not choices:
         raise RuntimeError("MiniMax M3 response has no choices")
@@ -639,7 +713,7 @@ def build_revision_prompt(
 ) -> dict[str, Any]:
     return {
         "task": "重写压缩 Voah 美妆带货混剪口播，修正文案长度和断句问题。",
-        "product": task_brief.get("product") or {},
+        "product": safe_product_for_prompt(task_brief),
         "target_platform": task_brief.get("task", {}).get("target_platform") or "douyin",
         "target_duration_s": target_duration_s,
         "target_voice_characters": {
@@ -658,6 +732,7 @@ def build_revision_prompt(
         "original_plan": raw_plan,
         "hard_rules": [
             "保留原销售逻辑：痛点 -> 产品/妆效 -> 稳定性证明 -> 便携/礼盒 -> 活动 CTA。",
+            "product_claims 中 tier=core 的核心卖点必须作为主线重点表达；tier=support 只能点缀，不要平均用力。",
             "必须重新写 script_sections[].voice_text，不要简单截断原文。",
             f"full_voice_text 必须落在 {min_voice_chars}-{max_voice_chars} 字之间。",
             "每一句都必须是完整自然中文，不允许出现“整。”“补。”“很。”这类残句。",
@@ -665,6 +740,7 @@ def build_revision_prompt(
             "cta 段只写礼盒装、活动价、多款外壳/陈列、自用送人和下单，25-38 字。",
             "重写时必须贴合 material_capabilities；required_visual 不要写素材库没有的硬画面词。",
             "不要虚构具体价格、库存数字或赠品细节。",
+            *product_naming_rules(task_brief),
             "required_meaning/required_visual 要和新的 voice_text 一致，供后续素材召回使用。",
             "输出严格 JSON，不要 Markdown。",
         ],
@@ -701,7 +777,7 @@ def build_prompt(
     min_voice_chars, max_voice_chars = target_voice_char_range(target_duration_s)
     return {
         "task": "为 Voah 美妆带货混剪生成 copy_brief 和 voice_script。",
-        "product": task_brief.get("product") or {},
+        "product": safe_product_for_prompt(task_brief),
         "target_platform": task_brief.get("task", {}).get("target_platform") or "douyin",
         "target_duration_s": target_duration_s,
         "target_voice_characters": {
@@ -718,6 +794,7 @@ def build_prompt(
         "constraints": task_brief.get("constraints") or [],
         "hard_rules": [
             "先定全片销售逻辑，再写连续口播。",
+            "product_claims 中 tier=core 的核心卖点必须作为主线重点表达；tier=support 只能点缀，不要平均用力。",
             "产品卖点、活动优惠、CTA 和禁忌以 product_claims、product_campaigns、copy_parameters 为准；素材 ASR 只作为画面能力参考，不要另写一套冲突卖点或活动。",
             "文案不绑定具体 shot，不要写“画面里/这里看到”这类依赖镜头的表达。",
             "每个 section 必须给 required_meaning 和 required_visual，供 TTS 后按语义召回素材。",
@@ -738,6 +815,7 @@ def build_prompt(
             "如果 product_campaigns 或 copy_parameters.offer 为空，CTA 只能写通用下单引导，不要虚构具体活动。",
             "字幕文本真源是 full_voice_text，不要另写摘要字幕。",
             "不要虚构价格、库存、赠品必然有，不写医疗或绝对化功效。",
+            *product_naming_rules(task_brief),
             "总口播长度尽量贴近目标时长；本项目当前女声 speed=1.1，中文口播按每秒 5.8-6.2 字估算。",
             f"script_sections[].voice_text 拼接后的总字数必须控制在 {min_voice_chars}-{max_voice_chars} 字之间，宁可少一点也不要超长。",
             "如果目标 45 秒，full_voice_text 控制在 230-270 字附近，避免 TTS 后短到 30 多秒或长到 55 秒。",
@@ -767,8 +845,53 @@ def build_prompt(
     }
 
 
+def safe_product_for_prompt(task_brief: dict[str, Any]) -> dict[str, Any]:
+    product = dict(task_brief.get("product") or {})
+    slug = str(product.get("slug") or "").strip()
+    name = str(product.get("name") or "").strip()
+    brand = str(product.get("brand") or "").strip()
+    if is_invalid_product_name(name, slug):
+        name = ""
+    output = {"slug": slug, "name": name, "brand": brand}
+    if not name and not brand:
+        output["generic_name"] = generic_product_name(slug)
+    return output
+
+
+def product_naming_rules(task_brief: dict[str, Any]) -> list[str]:
+    product = safe_product_for_prompt(task_brief)
+    rules = [
+        "产品 slug 只是内部文件标识，绝不能当品牌名或产品名写入口播。",
+        "品牌字段有明确值时才允许提品牌；品牌为空时不要提任何品牌名。",
+    ]
+    if not product.get("name") and not product.get("brand"):
+        generic = product.get("generic_name") or "这款产品"
+        rules.append(f"当前没有有效品牌/产品名，口播只能使用“{generic}”“这款产品”等泛称，禁止脑补 Voah 或 slug 音译。")
+    return rules
+
+
+def generic_product_name(slug: str) -> str:
+    text = str(slug or "")
+    if "qidian" in text or "cushion" in text:
+        return "这盒气垫"
+    if "kouhong" in text or "lip" in text:
+        return "这支口红"
+    return "这款产品"
+
+
+def is_invalid_product_name(name: str, slug: str) -> bool:
+    value = str(name or "").strip()
+    if not value:
+        return True
+    if slug and value == slug:
+        return True
+    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,}", value, flags=re.I):
+        return True
+    return False
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate Voah copy_brief.json and voice_script.json with MiniMax M3.")
+    parser = argparse.ArgumentParser(description="Generate Voah copy_brief.json and voice_script.json with the configured text LLM.")
     parser.add_argument("--task-brief", required=True)
     parser.add_argument("--task-dir", default=None)
     parser.add_argument("--target-duration-s", type=float, default=45)
@@ -791,7 +914,7 @@ def main() -> int:
     material_capabilities = compact_material_capabilities(shot_index_path)
 
     prompt = build_prompt(task_brief, material_capabilities, args.target_duration_s, args.variant)
-    raw_plan, safe_response = call_minimax_m3(prompt, args.timeout_s)
+    raw_plan, safe_response = call_copy_llm(prompt, args.timeout_s)
     sections = normalize_sections(raw_plan.get("script_sections") or [])
     min_voice_chars, max_voice_chars = target_voice_char_range(args.target_duration_s)
     revision_responses: list[dict[str, Any]] = []
@@ -813,7 +936,7 @@ def main() -> int:
             max_voice_chars,
             reason,
         )
-        revised_plan, revised_safe_response = call_minimax_m3(revision_prompt, args.timeout_s)
+        revised_plan, revised_safe_response = call_copy_llm(revision_prompt, args.timeout_s)
         revised_sections = normalize_sections(revised_plan.get("script_sections") or [])
         revised_full_text = "".join(section["voice_text"] for section in revised_sections)
         revision_responses.append({**revised_safe_response, "revision_reason": reason})

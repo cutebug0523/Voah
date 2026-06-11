@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("voah", {
   inspectProduct: (slug) => ipcRenderer.invoke("voah:inspectProduct", slug),
   createProduct: (params) => ipcRenderer.invoke("voah:createProduct", params),
   saveProductDetail: (params) => ipcRenderer.invoke("voah:saveProductDetail", params),
+  refineProductContext: (params) => ipcRenderer.invoke("voah:refineProductContext", params),
   listIntakeRuns: (slug) => ipcRenderer.invoke("voah:listIntakeRuns", slug),
   startIntake: (params) => ipcRenderer.invoke("voah:startIntake", params),
   chooseDirectory: () => ipcRenderer.invoke("voah:chooseDirectory"),

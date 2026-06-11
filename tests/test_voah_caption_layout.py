@@ -57,6 +57,9 @@ class CaptionLayoutTest(unittest.TestCase):
             self.assertIn(char, joined)
         self.assertEqual(joined, "这块气垫真的适合早八通勤会卡粉吗？不会！《日常底妆》很稳——放心拍")
 
+    def test_caption_text_removes_enumeration_comma(self):
+        self.assertEqual(caption_plan.sanitize_caption_text("又怕底妆一上脸就卡住、"), "又怕底妆一上脸就卡住")
+
     def test_issue_59_caption_plan_keeps_known_risky_lines_under_12_units(self):
         risky_lines = [
             "尤其是早八通勤或者临时补妆，",
@@ -69,6 +72,20 @@ class CaptionLayoutTest(unittest.TestCase):
                 chunks = caption_plan.split_caption_text(text)
                 self.assertTrue(all(caption_plan.display_units(chunk) <= 12 for chunk in chunks))
                 self.assertEqual("".join(chunks), caption_plan.sanitize_caption_text(text))
+
+    def test_caption_hard_wrap_does_not_split_known_terms(self):
+        cases = [
+            ("根本不想一层一层往脸上叠粉底", "叠", "粉底"),
+            ("尤其是早八通勤或者临时补妆", "补", "妆"),
+        ]
+
+        for text, left, right in cases:
+            with self.subTest(text=text):
+                chunks = caption_plan.split_caption_chunk(text, 12)
+                self.assertTrue(all(caption_plan.display_units(chunk) <= 12 for chunk in chunks))
+                self.assertEqual("".join(chunks), text)
+                for a, b in zip(chunks, chunks[1:]):
+                    self.assertFalse(a.endswith(left) and b.startswith(right))
 
     def test_songti_caption_css_contains_overflow_guards(self):
         css = hyperframes.style_css_for_preset(
@@ -98,6 +115,21 @@ class CaptionLayoutTest(unittest.TestCase):
                 self.assertGreaterEqual(len(lines), 2)
                 self.assertEqual("".join(lines), text)
                 self.assertTrue(all(overlay.line_width_px(line, font) <= max_width for line in lines))
+
+    def test_overlay_wrap_does_not_split_known_terms(self):
+        font = overlay.load_font("/System/Library/Fonts/Supplemental/Songti.ttc", 54)
+        max_width = overlay.caption_text_max_width(720, "songti_white_gold_lower")
+        cases = [
+            ("根本不想一层一层往脸上叠粉底", "叠", "粉底"),
+            ("尤其是早八通勤或者临时补妆", "补", "妆"),
+        ]
+
+        for text, left, right in cases:
+            with self.subTest(text=text):
+                lines = overlay.wrap_caption(text, font, max_width).splitlines()
+                self.assertEqual("".join(lines), text)
+                for a, b in zip(lines, lines[1:]):
+                    self.assertFalse(a.endswith(left) and b.startswith(right))
 
     def test_overlay_line_start_punctuation_matches_clean_caption_policy(self):
         self.assertFalse(overlay.is_line_start_punctuation("，"))

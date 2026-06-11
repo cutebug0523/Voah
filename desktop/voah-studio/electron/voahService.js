@@ -4,14 +4,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dialog, shell } from "electron";
+import electron from "electron";
 import { SecretService } from "../../../cli/src/services/secretService.js";
+import { MODEL_MODULES } from "../../../cli/src/services/modelModules.js";
 import { FALLBACK_TTS_VOICES, FONT_OPTIONS, VOICE_NAME_ZH } from "../src/lib/studioOptions.js";
 import { dedupeIntakeRuns, elapsedSeconds, intakeStatusLabel, normalizeIntakeStatus, summarizeIntakeRuns } from "./intakeStatus.js";
 import { isTaskAcknowledged, withTaskAcknowledgement } from "./taskAcknowledgements.js";
 import { failedStageFromRun, listTaskRuns } from "./taskRuns.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const { dialog, shell } = electron;
 
 // 仓库根：voah-studio 在 desktop/voah-studio，根目录上溯两层。
 // 生产环境可由 VOAH_WORKSPACE 覆盖。
@@ -28,16 +30,6 @@ const STUDIO_REVIEW_PATH = path.join(STUDIO_DIR, "studio_reviews.json");
 const STUDIO_TASK_ACK_PATH = path.join(STUDIO_DIR, "studio_task_acknowledgements.json");
 
 const STAGE_ORDER = ["copy", "tts", "retrieve", "subtitle", "render", "qa"];
-const MODEL_MODULES = [
-  { id: "material_understanding", module: "素材理解", model: "qwen3.5-omni-plus", config_key: "dashscope.api_key" },
-  { id: "material_vectorization", module: "素材向量化", model: "qwen3-vl-embedding", config_key: "dashscope.api_key" },
-  { id: "material_retrieval", module: "素材召回", model: "qwen3-vl-embedding", config_key: "dashscope.api_key" },
-  { id: "copy_generation", module: "文案生成", model: "MiniMax-M3", config_key: "minimax.api_key" },
-  { id: "selection_planner", module: "选片计划", model: "MiniMax-M3", config_key: "minimax.api_key" },
-  { id: "tts_primary", module: "TTS", model: "speech-2.8-hd", config_key: "minimax.api_key" },
-  { id: "tts_fallback", module: "TTS备用", model: "speech-2.8-hd", config_key: "vectorengine.api_key" }
-];
-
 export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:listProducts", () => listProducts());
   ipcMain.handle("voah:listTaskCenter", () => listTaskCenter());
@@ -46,6 +38,7 @@ export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:inspectProduct", (_e, slug) => inspectProduct(slug));
   ipcMain.handle("voah:createProduct", (_e, params) => createProduct(params));
   ipcMain.handle("voah:saveProductDetail", (_e, params) => saveProductDetail(params));
+  ipcMain.handle("voah:refineProductContext", (_e, params) => refineProductContext(params));
   ipcMain.handle("voah:listIntakeRuns", (_e, slug) => listIntakeRuns(slug));
   ipcMain.handle("voah:startIntake", (_e, params) => startIntake(params));
   ipcMain.handle("voah:chooseDirectory", () => chooseDirectory());
@@ -172,20 +165,20 @@ async function saveProductDetail({ slug, product, claims, campaigns, blockedTerm
   await writeJson(path.join(productDir, "product.json"), {
     schema_version: "voah.product.v1",
     slug,
-    name: product?.name || slug,
+    name: product?.name || "",
     brand: product?.brand || "",
     cta: product?.cta || "",
     created_at: product?.created_at || new Date().toISOString(),
     updated_at: new Date().toISOString()
   });
   await writeJson(path.join(productDir, "claims.json"), {
-    schema_version: "voah.product_claims.v1",
-    claims: normalizeTextList(claims).map((text) => ({ text })),
+    schema_version: "voah.product_claims.v2",
+    claims: normalizeClaimsForSave(claims),
     updated_at: new Date().toISOString()
   });
   await writeJson(path.join(productDir, "campaigns.json"), {
-    schema_version: "voah.product_campaigns.v1",
-    campaigns: normalizeTextList(campaigns).map((text) => ({ text })),
+    schema_version: "voah.product_campaigns.v2",
+    campaigns: normalizeTextList(campaigns).map((text, index) => ({ text, rank: index + 1 })),
     updated_at: new Date().toISOString()
   });
   await writeJson(path.join(productDir, "blocked_terms.json"), {
@@ -194,6 +187,27 @@ async function saveProductDetail({ slug, product, claims, campaigns, blockedTerm
     updated_at: new Date().toISOString()
   });
   return { ok: true };
+}
+
+async function refineProductContext({ slug, runDir }) {
+  if (!slug) return { ok: false, error: "缺少产品 slug" };
+  const productDir = path.join(PRODUCTS_DIR, slug);
+  const product = await readJsonSafe(path.join(productDir, "product.json")) || {};
+  const intakeRuns = await intakeRunsForSlug(slug);
+  const selectedRunDir = runDir || intakeRuns.find((run) => run.name === "_merged" && run.ready)?.run_dir || intakeRuns.find((run) => run.ready)?.run_dir || "";
+  if (!selectedRunDir) return { ok: false, error: "没有可提炼的入库记录" };
+  return runVoah([
+    "product",
+    "refine",
+    "--workspace",
+    WORKSPACE,
+    "--product",
+    slug,
+    "--run-dir",
+    selectedRunDir,
+    ...(product.name ? ["--product-name", product.name] : []),
+    ...(product.brand ? ["--brand", product.brand] : [])
+  ]);
 }
 
 async function listIntakeRuns(slug) {
@@ -948,9 +962,15 @@ async function getConfig() {
   return {
     ok: result.ok,
     configured,
-    modules: MODEL_MODULES.map((item) => ({
-      ...item,
-      configured: Boolean(secretStatus[item.config_key] || secretStatus[item.id])
+    providers: configured.providers || providerRowsFromModules(MODEL_MODULES, secretStatus),
+    modules: configured.modules || MODEL_MODULES.map((item) => ({
+      id: item.id,
+      module: item.module,
+      model: item.model,
+      provider_id: item.providerId,
+      provider_name: item.providerName,
+      config_key: item.configKey,
+      configured: Boolean(secretStatus[item.configKey] || secretStatus[item.id])
     })),
     stderr: result.stderr
   };
@@ -1232,6 +1252,44 @@ function normalizeTextList(value) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+export function normalizeClaimsForSave(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item, index) => ({
+        text: String(item?.text || item?.claim || item?.name || item?.term || item || "").trim(),
+        tier: item?.tier === "core" ? "core" : "support",
+        rank: Number(item?.rank || index + 1)
+      }))
+      .filter((item) => item.text);
+  }
+  const lines = String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.map((line, index) => {
+    const core = line.startsWith("核心：") || line.startsWith("[核心]") || index < 2;
+    return {
+      text: line.replace(/^核心[:：]\s*/, "").replace(/^\[核心\]\s*/, ""),
+      tier: core ? "core" : "support",
+      rank: index + 1
+    };
+  });
+}
+
+export function providerRowsFromModules(modules, secretStatus) {
+  const byProvider = new Map();
+  for (const item of modules || []) {
+    if (!item.providerId || item.providerId === "vectorengine") continue;
+    if (!byProvider.has(item.providerId)) {
+      byProvider.set(item.providerId, {
+        id: item.providerId,
+        name: item.providerName,
+        config_key: item.configKey,
+        env_key: item.envKey,
+        configured: Boolean(secretStatus[item.configKey] || secretStatus[item.envKey])
+      });
+    }
+  }
+  return [...byProvider.values()];
 }
 
 // ---- shell ----

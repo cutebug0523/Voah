@@ -13,6 +13,25 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+CAPTION_NO_SPLIT_TERMS = (
+    "防晒气垫",
+    "一层一层",
+    "叠粉底",
+    "赶时间",
+    "临时补妆",
+    "补妆",
+    "粉底",
+    "底妆",
+    "防晒",
+    "气垫",
+    "粉扑",
+    "上脸",
+    "卡粉",
+    "服帖",
+    "通勤",
+    "早八",
+)
+
 
 def iso_now() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -113,6 +132,13 @@ def wrap_caption(text: str, font: ImageFont.ImageFont, max_width_px: int) -> str
         for char in raw_line:
             candidate = buffer + char
             if buffer and line_width_px(candidate, font) > max_width_px:
+                protected = protected_split_candidate(buffer, char)
+                if protected:
+                    left, right = protected
+                    if left:
+                        lines.append(left.strip())
+                    buffer = right
+                    continue
                 if is_line_start_punctuation(char) and len(buffer) > 1:
                     lines.append(buffer[:-1].strip())
                     buffer = buffer[-1] + char
@@ -124,6 +150,30 @@ def wrap_caption(text: str, font: ImageFont.ImageFont, max_width_px: int) -> str
         if buffer.strip():
             lines.append(buffer.strip())
     return "\n".join(line for line in lines if line) or value
+
+
+def protected_split_candidate(buffer: str, char: str) -> tuple[str, str] | None:
+    candidate = buffer + char
+    for term in CAPTION_NO_SPLIT_TERMS:
+        if not term:
+            continue
+        suffix_len = protected_suffix_len(candidate, term)
+        if suffix_len <= 1:
+            continue
+        prefix_len = len(candidate) - suffix_len
+        if prefix_len <= 0 or prefix_len >= len(candidate):
+            continue
+        return candidate[:prefix_len], candidate[prefix_len:]
+    return None
+
+
+def protected_suffix_len(candidate: str, term: str) -> int:
+    if candidate.endswith(term):
+        return len(term)
+    for length in range(len(term) - 1, 1, -1):
+        if candidate.endswith(term[:length]):
+            return length
+    return 0
 
 
 def render_caption_png(caption: dict[str, Any], plan: dict[str, Any], output: Path) -> None:

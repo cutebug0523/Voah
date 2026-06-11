@@ -81,9 +81,11 @@ export function ProductsPage() {
 
 function ProductDetail({ product, onStartIntake }) {
   const refresh = useStore((s) => s.refresh);
+  const refineProductContext = useStore((s) => s.refineProductContext);
   const [detail, setDetail] = useState(null);
   const [edit, setEdit] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [refining, setRefining] = useState(false);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -114,13 +116,24 @@ function ProductDetail({ product, onStartIntake }) {
     const res = await window.voah.saveProductDetail({
       slug: product.slug,
       product: { name: edit.name, brand: edit.brand, cta: edit.cta },
-      claims: edit.claims,
+      claims: claimsForSave(edit),
       campaigns: edit.campaigns,
       blockedTerms: edit.blockedTerms
     });
     setSaving(false);
     setMessage(res?.ok ? "已保存" : res?.error || "保存失败");
     await refresh();
+    const next = await window.voah.inspectProduct(product.slug);
+    setDetail(next);
+    setEdit(toEditState(next, product));
+  }
+
+  async function refine() {
+    setRefining(true);
+    setMessage("");
+    const res = await refineProductContext({ slug: product.slug });
+    setRefining(false);
+    setMessage(res?.ok ? "已提炼" : res?.stderr || res?.error || "提炼失败");
     const next = await window.voah.inspectProduct(product.slug);
     setDetail(next);
     setEdit(toEditState(next, product));
@@ -134,6 +147,13 @@ function ProductDetail({ product, onStartIntake }) {
           <div className="text-xs text-ink-400 mt-0.5 truncate">{product.brand || product.slug}</div>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={refine}
+            disabled={refining || !detail?.intake_runs?.some((run) => run.ready)}
+            className="px-3 py-2 rounded-lg border border-slate-200 text-ink-700 hover:bg-slate-50 disabled:opacity-50 font-medium"
+          >
+            {refining ? "提炼中…" : "重新提炼"}
+          </button>
           <button
             onClick={save}
             disabled={!edit || saving}
@@ -164,12 +184,15 @@ function ProductDetail({ product, onStartIntake }) {
           </Field>
           {message && <div className="text-xs text-ink-500">{message}</div>}
         </div>
-        <EditableBlock
-          title="卖点 TOP"
-          value={edit?.claims || linesFromItems(claims)}
-          onChange={(value) => setEdit((v) => ({ ...v, claims: value }))}
-          empty="一行一个卖点"
-        />
+        <div className="rounded-xl border border-slate-200 p-3 space-y-3">
+          <div className="text-xs font-medium text-ink-700">卖点 TOP</div>
+          <Field label="核心卖点">
+            <textarea className="input h-20 resize-none text-xs leading-5" value={edit?.coreClaims || ""} onChange={(e) => setEdit((v) => ({ ...v, coreClaims: e.target.value }))} />
+          </Field>
+          <Field label="辅助卖点">
+            <textarea className="input h-20 resize-none text-xs leading-5" value={edit?.supportClaims || ""} onChange={(e) => setEdit((v) => ({ ...v, supportClaims: e.target.value }))} />
+          </Field>
+        </div>
         <EditableBlock
           title="活动优惠"
           value={edit?.campaigns || linesFromItems(campaigns)}
@@ -219,11 +242,14 @@ function EditableBlock({ title, value, onChange, empty }) {
 }
 
 function toEditState(detail, product) {
+  const claims = detail?.claims?.claims || [];
   return {
     name: detail?.product?.name || product?.name || "",
     brand: detail?.product?.brand || product?.brand || "",
     cta: detail?.product?.cta || "",
-    claims: linesFromItems(detail?.claims?.claims || []),
+    claims: linesFromItems(claims),
+    coreClaims: linesFromItems(claims.filter((item, index) => item.tier === "core" || (!item.tier && index < 2))),
+    supportClaims: linesFromItems(claims.filter((item, index) => item.tier === "support" || (!item.tier && index >= 2))),
     campaigns: linesFromItems(detail?.campaigns?.campaigns || []),
     blockedTerms: linesFromItems(detail?.blocked_terms?.terms || [])
   };
@@ -231,6 +257,17 @@ function toEditState(detail, product) {
 
 function linesFromItems(items) {
   return (items || []).map((item) => item.text || item.claim || item.name || item.term || item).filter(Boolean).join("\n");
+}
+
+function claimsForSave(edit) {
+  const output = [];
+  for (const [tier, text] of [["core", edit?.coreClaims], ["support", edit?.supportClaims]]) {
+    for (const line of String(text || "").split(/\r?\n/)) {
+      const value = line.trim();
+      if (value) output.push({ text: value, tier, rank: output.length + 1 });
+    }
+  }
+  return output;
 }
 
 function runStatusText(run) {

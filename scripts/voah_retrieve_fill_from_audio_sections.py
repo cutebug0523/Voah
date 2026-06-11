@@ -1257,6 +1257,94 @@ def child_duration(child: dict[str, Any]) -> float:
         return 0.0
 
 
+def child_action_terms(section: dict[str, Any]) -> list[str]:
+    value = " ".join(
+        str(section.get(field) or "")
+        for field in ("required_visual", "required_meaning", "voice_text", "intention_copy")
+    )
+    terms: list[str] = []
+    if str(section.get("role") or "") == "proof" or any(term in value for term in PROOF_TEST_TERMS):
+        for term in PROOF_VISUAL_ACTION_TERMS:
+            if term in value and term not in terms:
+                terms.append(term)
+        for keyword in section.get("keywords") or []:
+            text = str(keyword or "").strip()
+            if any(term in text for term in PROOF_VISUAL_ACTION_TERMS) and text not in terms:
+                terms.append(text)
+    return terms
+
+
+def child_action_position_ratio(child: dict[str, Any], section: dict[str, Any]) -> float | None:
+    terms = child_action_terms(section)
+    if not terms:
+        return None
+    for key in ("action_time_ranges", "key_moments", "visual_moments"):
+        ratio = action_ratio_from_moments(child.get(key), terms)
+        if ratio is not None:
+            return ratio
+    actions = [str(item or "") for item in child.get("visual_actions") or []]
+    if actions:
+        for index, action in enumerate(actions):
+            if any(term in action for term in terms):
+                return (index + 0.5) / max(1, len(actions))
+    text = " ".join(
+        str(item or "")
+        for item in (
+            child.get("visual_summary"),
+            child.get("source_meaning"),
+            child.get("source_asr"),
+        )
+    )
+    positions = term_positions_in_text(text, terms)
+    if positions:
+        return min(positions.values())
+    return None
+
+
+def action_ratio_from_moments(moments: Any, terms: list[str]) -> float | None:
+    if not isinstance(moments, list):
+        return None
+    for item in moments:
+        if not isinstance(item, dict):
+            continue
+        text = " ".join(str(item.get(key) or "") for key in ("label", "text", "action", "description", "summary"))
+        if not any(term in text for term in terms):
+            continue
+        for key in ("start_ratio", "ratio", "position_ratio"):
+            try:
+                value = float(item.get(key))
+                if 0 <= value <= 1:
+                    return value
+            except (TypeError, ValueError):
+                pass
+        for key in ("start_s", "time_s", "start_time_s"):
+            try:
+                duration = float(item.get("duration_s") or item.get("source_duration_s") or 0)
+                value = float(item.get(key))
+                if duration > 0:
+                    return max(0.0, min(1.0, value / duration))
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def child_internal_start_offset(child: dict[str, Any], section: dict[str, Any], planned_duration: float) -> tuple[float, str, str]:
+    duration = child_duration(child)
+    planned = max(0.0, min(float(planned_duration or 0), duration))
+    max_offset = max(0.0, duration - planned)
+    if max_offset <= 0.45 or not child_action_terms(section):
+        return 0.0, "child_start", ""
+    ratio = child_action_position_ratio(child, section)
+    if ratio is not None:
+        target = duration * ratio - planned * 0.28
+        offset = max(0.0, min(max_offset, target))
+        return round(offset, 3), "child_action_anchor", f"按 child 内部动作位置 {ratio:.2f} 裁切，保证关键动作进入画面"
+    if str(section.get("role") or "") == "proof":
+        offset = max_offset * 0.65
+        return round(offset, 3), "proof_child_late_bias", "proof 强动作未给精确时间，默认取 child 中后段以覆盖测试动作"
+    return 0.0, "child_start", ""
+
+
 def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, Any]) -> tuple[list[tuple[float, int, dict[str, Any], list[str]]], dict[str, float], list[str]]:
     children = [
         child
@@ -1388,6 +1476,8 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
         target_terms
         and (not hits or inherited_only_hits or not child_text_is_verified(best_child) or hard_visual_fallback)
     )
+    planned_for_offset = min(source_duration, float(section.get("audio_duration_s") or source_duration or 0))
+    internal_offset, offset_strategy, offset_reason = child_internal_start_offset(best_child, section, planned_for_offset)
     return {
         "mode": "child_physical_shot",
         "child_physical_shot_id": best_child.get("shot_id") or "",
@@ -1410,8 +1500,11 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
         ),
         "source_clip_path": source_path,
         "source_duration_s": source_duration,
-        "source_start_offset_s": 0.0,
-        "source_end_offset_s": source_duration,
+        "source_start_offset_s": internal_offset,
+        "source_end_offset_s": min(source_duration, internal_offset + planned_for_offset),
+        "child_internal_start_offset_s": internal_offset,
+        "source_offset_strategy": offset_strategy,
+        "source_offset_reason": offset_reason,
         "visual_summary": best_child.get("visual_summary") or candidate.get("visual_summary"),
         "source_meaning": best_child.get("source_meaning") or candidate.get("source_meaning"),
         "hard_subtitle_risk": best_child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
@@ -1508,7 +1601,9 @@ def clip_segment_from_parent_story_unit(
     planned_duration: float,
 ) -> dict[str, Any]:
     source_duration = candidate_duration(candidate)
-    source_start_offset = min(parent_start_offset_from_child(candidate, intra), max(0.0, source_duration))
+    base_offset = parent_start_offset_from_child(candidate, intra)
+    internal_offset = float(intra.get("child_internal_start_offset_s") or 0.0)
+    source_start_offset = min(base_offset + internal_offset, max(0.0, source_duration))
     available_duration = max(0.0, source_duration - source_start_offset)
     planned = min(max(0.0, planned_duration), available_duration) if available_duration > 0 else 0.0
     target_terms = hard_visual_terms(section)
@@ -1527,6 +1622,8 @@ def clip_segment_from_parent_story_unit(
     )
     if intra.get("reason"):
         selection_reasons.append(str(intra.get("reason")))
+    if intra.get("source_offset_reason"):
+        selection_reasons.append(str(intra.get("source_offset_reason")))
     selection_risks = list(candidate.get("fill_risks", []))
     if requires_review:
         if hard_visual_fallback:
@@ -1549,6 +1646,9 @@ def clip_segment_from_parent_story_unit(
         "source_duration_s": round(source_duration, 3),
         "source_start_offset_s": round(source_start_offset, 3),
         "source_end_offset_s": round(source_start_offset + planned, 3),
+        "child_internal_start_offset_s": round(internal_offset, 3),
+        "source_offset_strategy": intra.get("source_offset_strategy") or "child_start",
+        "source_offset_reason": intra.get("source_offset_reason") or "",
         "planned_duration_s": round(planned, 3),
         "allow_loop": False,
         "loop_policy": "disabled_by_default",
@@ -1595,6 +1695,8 @@ def select_child_metadata_from_child(
     requires_review = bool(
         target_terms and (not hits or inherited_only_hits or not child_text_is_verified(child) or hard_visual_fallback)
     )
+    planned_for_offset = min(duration, float(section.get("audio_duration_s") or duration or 0))
+    internal_offset, offset_strategy, offset_reason = child_internal_start_offset(child, section, planned_for_offset)
     return {
         "mode": "child_physical_shot",
         "child_physical_shot_id": child.get("shot_id") or "",
@@ -1614,8 +1716,11 @@ def select_child_metadata_from_child(
         ),
         "source_clip_path": child.get("trimmed_clip_path") or child.get("source_clip_path") or "",
         "source_duration_s": duration,
-        "source_start_offset_s": 0.0,
-        "source_end_offset_s": duration,
+        "source_start_offset_s": internal_offset,
+        "source_end_offset_s": min(duration, internal_offset + planned_for_offset),
+        "child_internal_start_offset_s": internal_offset,
+        "source_offset_strategy": offset_strategy,
+        "source_offset_reason": offset_reason,
         "visual_summary": child.get("visual_summary") or candidate.get("visual_summary"),
         "source_meaning": child.get("source_meaning") or candidate.get("source_meaning"),
         "hard_subtitle_risk": child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
@@ -1626,12 +1731,15 @@ def select_child_metadata_from_child(
 
 def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], planned_duration: float) -> dict[str, Any]:
     source_duration = float(intra.get("source_duration_s") or candidate_duration(candidate))
-    planned = min(max(0.0, planned_duration), source_duration) if source_duration > 0 else max(0.0, planned_duration)
-    source_start_offset = float(intra.get("source_start_offset_s") or 0.0)
+    source_start_offset = max(0.0, min(float(intra.get("source_start_offset_s") or 0.0), max(0.0, source_duration)))
+    available_duration = max(0.0, source_duration - source_start_offset)
+    planned = min(max(0.0, planned_duration), available_duration) if source_duration > 0 else max(0.0, planned_duration)
     source_end_offset = source_start_offset + planned
     selection_reasons = list(candidate.get("fill_reasons", []))
     if intra.get("reason"):
         selection_reasons.append(str(intra.get("reason")))
+    if intra.get("source_offset_reason"):
+        selection_reasons.append(str(intra.get("source_offset_reason")))
     selection_risks = list(candidate.get("fill_risks", []))
     if intra.get("requires_review"):
         if intra.get("parent_context_hits") and not intra.get("semantic_hits"):
@@ -1654,6 +1762,9 @@ def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], pl
         "source_duration_s": round(source_duration, 3),
         "source_start_offset_s": round(source_start_offset, 3),
         "source_end_offset_s": round(source_end_offset, 3),
+        "child_internal_start_offset_s": round(float(intra.get("child_internal_start_offset_s") or source_start_offset), 3),
+        "source_offset_strategy": intra.get("source_offset_strategy") or "child_start",
+        "source_offset_reason": intra.get("source_offset_reason") or "",
         "planned_duration_s": round(planned, 3),
         "allow_loop": False,
         "loop_policy": "disabled_by_default",

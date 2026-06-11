@@ -224,6 +224,53 @@ test("config get never prints stored secret values", async () => {
   assert.match(getResult.stdout, /"dashscope.api_key": true/);
 });
 
+test("config get groups visible model keys by provider", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-config-provider-test-"));
+  const configDir = await mkdtemp(path.join(os.tmpdir(), "voah-cli-config-provider-home-"));
+  const env = { ...process.env, VOAH_CONFIG_DIR: configDir };
+  const setResult = await run(["config", "set", "deepseek.api_key", "sk-test-deepseek-1234567890", "--workspace", workspace], { env });
+  assert.equal(setResult.code, 0, setResult.stderr);
+  const getResult = await run(["config", "get", "--workspace", workspace], { env });
+  assert.equal(getResult.code, 0, getResult.stderr);
+  assert.doesNotMatch(getResult.stdout, /sk-test-deepseek/);
+  const payload = JSON.parse(getResult.stdout);
+  assert.deepEqual(payload.providers.map((item) => item.id), ["dashscope", "minimax", "deepseek"]);
+  assert.equal(payload.providers.find((item) => item.id === "deepseek").configured, true);
+  assert.equal(payload.modules.find((item) => item.id === "copy_generation").provider_id, "deepseek");
+  assert.equal(payload.modules.find((item) => item.id === "copy_generation").model, "deepseek-v4-pro");
+});
+
+test("task create does not feed slug as product name when product name is blank", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-product-name-test-"));
+  const intakeRun = path.join(workspace, "cache", "voah_video_intake", "fangshai-qidian", "run");
+  const productDir = path.join(workspace, "data", "products", "fangshai-qidian");
+  await mkdir(intakeRun, { recursive: true });
+  await mkdir(productDir, { recursive: true });
+  await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
+  await writeFile(path.join(productDir, "product.json"), JSON.stringify({ slug: "fangshai-qidian", name: "", brand: "" }));
+  await writeFile(path.join(productDir, "claims.json"), JSON.stringify({ claims: [{ text: "防晒底妆二合一", tier: "core", rank: 1 }] }));
+  await writeFile(path.join(productDir, "campaigns.json"), JSON.stringify({ campaigns: [] }));
+  await writeFile(path.join(productDir, "blocked_terms.json"), JSON.stringify({ terms: [] }));
+  const result = await run([
+    "task",
+    "create",
+    "--workspace",
+    workspace,
+    "--product",
+    "fangshai-qidian",
+    "--intake-run",
+    intakeRun
+  ]);
+  assert.equal(result.code, 0, result.stderr);
+  const taskDir = result.stdout.match(/task_dir=(.*)/)?.[1].trim();
+  const brief = JSON.parse(await readFile(path.join(taskDir, "task_brief.json"), "utf8"));
+  assert.equal(brief.product.slug, "fangshai-qidian");
+  assert.equal(brief.product.name, "");
+  assert.equal(brief.product.brand, "");
+  assert.equal(brief.product.generic_name, "这盒气垫");
+  assert.match(brief.constraints.join("\n"), /slug/);
+});
+
 test("resource upload failure records redacted manifest and public output", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-resource-upload-test-"));
   const runDir = path.join(workspace, "cache", "task");

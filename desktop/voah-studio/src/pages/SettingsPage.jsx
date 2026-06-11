@@ -66,6 +66,7 @@ export function SettingsPage() {
   }, [fonts]);
 
   const modules = config?.modules || [];
+  const providers = config?.providers || providersFromModules(modules);
   const selectedVoice = useMemo(
     () => voices.find((item) => item.voice_id === form?.tts?.voice_id) || voices[0],
     [voices, form?.tts?.voice_id]
@@ -97,7 +98,7 @@ export function SettingsPage() {
     setMessage("");
     const res = await setConfig(keyModal.config_key, keyValue);
     setBusy("");
-    setMessage(res?.ok ? `${keyModal.module} 已配置` : res?.stderr || res?.error || "配置失败");
+    setMessage(res?.ok ? `${keyModal.name || keyModal.module} 已配置` : res?.stderr || res?.error || "配置失败");
     if (res?.ok) {
       setKeyModal(null);
       setKeyValue("");
@@ -172,10 +173,10 @@ export function SettingsPage() {
           <div className="font-semibold">模型密钥</div>
         </div>
         <div className="divide-y divide-slate-50">
-          {modules.map((item) => (
+          {providers.map((item) => (
             <div key={item.id} className="px-4 py-3 grid grid-cols-[150px_1fr_86px_72px] gap-3 items-center">
-              <div className="font-medium text-ink-800">{item.module}</div>
-              <div className="text-xs text-ink-500 truncate">{item.model}</div>
+              <div className="font-medium text-ink-800">{item.name}</div>
+              <div className="text-xs text-ink-500 truncate">{providerModels(item, modules)}</div>
               <Configured ok={item.configured} />
               <button
                 onClick={() => {
@@ -423,8 +424,8 @@ function KeyModal({ module, value, busy, onChange, onClose, onSave }) {
       <div className="fixed left-1/2 top-1/2 z-50 w-[420px] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-white border border-slate-200 shadow-2xl">
         <div className="h-14 px-4 flex items-center justify-between border-b border-slate-100">
           <div>
-            <div className="font-semibold">{module.module}</div>
-            <div className="text-[11px] text-ink-400">{module.model}</div>
+            <div className="font-semibold">{module.name || module.module}</div>
+            <div className="text-[11px] text-ink-400">{module.model || module.env_key || ""}</div>
           </div>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
             <i className="fa fa-times" />
@@ -509,4 +510,24 @@ function groupVoices(voices) {
     groups.get(label).push(voice);
   }
   return [...groups.entries()].map(([label, items]) => ({ label, items }));
+}
+
+function providersFromModules(modules) {
+  const byId = new Map();
+  for (const item of modules || []) {
+    if (!item.provider_id || item.provider_id === "vectorengine") continue;
+    if (!byId.has(item.provider_id)) {
+      byId.set(item.provider_id, {
+        id: item.provider_id,
+        name: item.provider_name,
+        config_key: item.config_key,
+        configured: item.configured
+      });
+    }
+  }
+  return [...byId.values()];
+}
+
+function providerModels(provider, modules) {
+  return [...new Set((modules || []).filter((item) => item.provider_id === provider.id).map((item) => item.model).filter(Boolean))].join(" / ");
 }

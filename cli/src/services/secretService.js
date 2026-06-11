@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { MODEL_MODULES, envKeysForModuleIds, runtimeEnvForModuleIds } from "./modelModules.js";
+import { MODEL_MODULES, envKeysForModuleIds, runtimeEnvForModuleIds, visibleModelProviders } from "./modelModules.js";
 
 const CONFIG_DIR = process.env.VOAH_CONFIG_DIR || path.join(os.homedir(), ".voah");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
@@ -10,6 +10,7 @@ const SECRETS_PATH = path.join(CONFIG_DIR, "secrets.env");
 const SECRET_KEYS = {
   "minimax.api_key": "MINIMAX_API_KEY",
   "dashscope.api_key": "DASHSCOPE_API_KEY",
+  "deepseek.api_key": "DEEPSEEK_API_KEY",
   "vectorengine.api_key": "VECTORENGINE_API_KEY"
 };
 
@@ -93,7 +94,24 @@ export class SecretService {
       settings: {
         "tts.provider": config["tts.provider"] || "minimax-official"
       },
-      secrets: Object.fromEntries(Object.entries(SECRET_KEYS).map(([key, envKey]) => [key, Boolean(secrets[envKey])]))
+      secrets: Object.fromEntries(Object.entries(SECRET_KEYS).map(([key, envKey]) => [key, Boolean(secrets[envKey])])),
+      providers: visibleModelProviders().map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        config_key: provider.configKey,
+        env_key: provider.envKey,
+        configured: Boolean(secrets[provider.envKey])
+      })),
+      modules: MODEL_MODULES.map((item) => ({
+        id: item.id,
+        module: item.module,
+        model: item.model,
+        provider_id: item.providerId,
+        provider_name: item.providerName,
+        env_key: item.envKey,
+        config_key: item.configKey,
+        configured: Boolean(secrets[item.envKey])
+      }))
     };
   }
 

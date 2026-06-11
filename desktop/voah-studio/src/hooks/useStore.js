@@ -62,6 +62,12 @@ export const useStore = create((set, get) => ({
     return res;
   },
 
+  async refineProductContext(params) {
+    const res = await window.voah.refineProductContext(params);
+    await get().refresh();
+    return res;
+  },
+
   async createBatch(params) {
     const res = await window.voah.createBatch(params);
     await get().refresh();

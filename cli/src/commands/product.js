@@ -4,6 +4,8 @@ import { parseArgs, requireOption } from "../core/args.js";
 import { UserError } from "../core/errors.js";
 import { readJson, writeJson } from "../core/json.js";
 import { ensureDir, resolvePath, resolveWorkspace, slugify } from "../core/paths.js";
+import { SecretService } from "../services/secretService.js";
+import { WorkerRunner } from "../services/workerRunner.js";
 
 export async function runProductCommand({ argv }) {
   const [subcommand, ...rest] = argv;
@@ -11,7 +13,7 @@ export async function runProductCommand({ argv }) {
   const workspace = resolveWorkspace(options.workspace);
   if (subcommand === "create") {
     const slug = requireOption(options, "slug");
-    const name = options.name || slug;
+    const name = options.name || "";
     const productDir = productPath(workspace, slug);
     await ensureDir(productDir);
     const payload = {
@@ -54,9 +56,44 @@ export async function runProductCommand({ argv }) {
     console.log(JSON.stringify(payload, null, 2));
     return;
   }
-  throw new UserError("用法：voah product create|list|inspect");
+  if (subcommand === "refine") {
+    await refineProductContext(workspace, options);
+    return;
+  }
+  throw new UserError("用法：voah product create|list|inspect|refine");
 }
 
 function productPath(workspace, slug) {
   return resolvePath(path.join("data", "products", slug), workspace);
+}
+
+async function refineProductContext(workspace, options) {
+  const slug = requireOption(options, "product");
+  const runDir = resolvePath(requireOption(options, "run-dir"), workspace);
+  const productDir = productPath(workspace, slugify(slug));
+  await ensureDir(productDir);
+  const product = existsSync(path.join(productDir, "product.json")) ? await readJson(path.join(productDir, "product.json")) : {};
+  const runner = new WorkerRunner({ workspace, secretService: new SecretService() });
+  const result = await runner.run({
+    command: "python3",
+    args: [
+      path.join(workspace, "scripts", "voah_refine_product_context.py"),
+      "--run-dir",
+      runDir,
+      "--product-dir",
+      productDir,
+      "--product-slug",
+      slug,
+      "--product-name",
+      options["product-name"] || options.name || product.name || "",
+      "--brand",
+      options.brand || product.brand || "",
+      ...(options["no-fallback"] ? ["--no-allow-fallback"] : []),
+    ],
+    cwd: workspace,
+    stage: "product_context_refinement",
+    moduleIds: ["product_context_refinement"],
+    timeoutMs: 240000
+  });
+  console.log(result.stdout.trim());
 }

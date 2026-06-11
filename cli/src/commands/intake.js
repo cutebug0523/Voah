@@ -74,8 +74,42 @@ export async function runIntakeCommand({ argv }) {
       purpose: "embedding",
       consumers: ["qwen3-vl-embedding"]
     });
+    await refineProductContextAfterIntake({ workspace, productSlug, productName, runDir });
   }
   console.log(result.stdout.trim());
+}
+
+async function refineProductContextAfterIntake({ workspace, productSlug, productName, runDir }) {
+  const productDir = path.join(workspace, "data", "products", productSlug);
+  const runner = new WorkerRunner({ workspace, secretService: new SecretService() });
+  try {
+    await runner.run({
+      command: "python3",
+      args: [
+        path.join(workspace, "scripts", "voah_refine_product_context.py"),
+        "--run-dir",
+        runDir,
+        "--product-dir",
+        productDir,
+        "--product-slug",
+        productSlug,
+        "--product-name",
+        productName,
+      ],
+      cwd: workspace,
+      stage: "product_context_refinement",
+      moduleIds: ["product_context_refinement"],
+      timeoutMs: 240000
+    });
+  } catch (error) {
+    const statusPath = path.join(runDir, "product_context_refinement_status.json");
+    await writeJson(statusPath, {
+      schema_version: "voah.product_context_refinement_status.v1",
+      status: "failed",
+      updated_at: new Date().toISOString(),
+      error: String(error?.message || error).slice(0, 1200)
+    });
+  }
 }
 
 async function mergeIntake(argv) {

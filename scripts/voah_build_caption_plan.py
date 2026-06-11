@@ -35,10 +35,28 @@ def as_abs(path: str | Path, base: Path | None = None) -> Path:
 
 
 SEMANTIC_BREAK_RE = re.compile(r"([。！？!?；;，,、：:])")
-REMOVE_CAPTION_PUNCT_RE = re.compile(r"[，。,\.]")
+REMOVE_CAPTION_PUNCT_RE = re.compile(r"[，。,\.、､]")
 WEIGHT_RE = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’（）()\[\]【】《》<>+\-_/]+")
 PUNCTUATION_RE = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’（）()\[\]【】《》<>+\-_/]")
 LINE_START_PUNCTUATION_RE = re.compile(r"[！？、!?；;：:\"'“”‘’）)\]】》]")
+CAPTION_NO_SPLIT_TERMS = (
+    "防晒气垫",
+    "一层一层",
+    "叠粉底",
+    "赶时间",
+    "临时补妆",
+    "补妆",
+    "粉底",
+    "底妆",
+    "防晒",
+    "气垫",
+    "粉扑",
+    "上脸",
+    "卡粉",
+    "服帖",
+    "通勤",
+    "早八",
+)
 
 
 def speech_units(text: str) -> int:
@@ -85,6 +103,13 @@ def split_caption_chunk(chunk: str, max_units: int) -> list[str]:
     for char in chunk:
         candidate = buffer + char
         if buffer and display_units(candidate) > max_units:
+            protected = protected_split_candidate(buffer, char)
+            if protected:
+                left, right = protected
+                if left:
+                    output.append(left.strip())
+                buffer = right
+                continue
             if is_line_start_punctuation(char) and len(buffer) > 1:
                 output.append(buffer[:-1].strip())
                 buffer = buffer[-1] + char
@@ -96,6 +121,30 @@ def split_caption_chunk(chunk: str, max_units: int) -> list[str]:
     if buffer.strip():
         output.append(buffer.strip())
     return output or [chunk]
+
+
+def protected_split_candidate(buffer: str, char: str) -> tuple[str, str] | None:
+    candidate = buffer + char
+    for term in CAPTION_NO_SPLIT_TERMS:
+        if not term:
+            continue
+        suffix_len = protected_suffix_len(candidate, term)
+        if suffix_len <= 1:
+            continue
+        prefix_len = len(candidate) - suffix_len
+        if prefix_len <= 0 or prefix_len >= len(candidate):
+            continue
+        return candidate[:prefix_len], candidate[prefix_len:]
+    return None
+
+
+def protected_suffix_len(candidate: str, term: str) -> int:
+    if candidate.endswith(term):
+        return len(term)
+    for length in range(len(term) - 1, 1, -1):
+        if candidate.endswith(term[:length]):
+            return length
+    return 0
 
 
 def split_caption_text(text: str, max_units: int = 12) -> list[str]:
@@ -289,8 +338,8 @@ def main() -> int:
             "preset": args.preset,
             "split_punctuation": args.split_punctuation,
             "punctuation_policy": {
-                "remove": ["，", "。", ",", "."],
-                "preserve": ["？", "?", "《", "》", "“", "”", "\"", "！", "!", "——", "、", "；", ";", "：", ":"],
+                "remove": ["，", "。", ",", ".", "、", "､"],
+                "preserve": ["？", "?", "《", "》", "“", "”", "\"", "！", "!", "——", "；", ";", "：", ":"],
                 "line_break_policy": "semantic breaks use original punctuation before removing comma/full-stop",
             },
             "style_source": str(as_abs(args.style_source)),

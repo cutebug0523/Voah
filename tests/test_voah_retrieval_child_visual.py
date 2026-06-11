@@ -145,6 +145,46 @@ class ChildVisualSelectionTest(unittest.TestCase):
         self.assertEqual(segments[0]["source_end_offset_s"], 3.6)
         self.assertFalse(segments[0]["allow_loop"])
 
+    def test_long_child_offsets_to_internal_late_proof_action(self):
+        section = {
+            **proof_section(),
+            "audio_duration_s": 2.0,
+            "voice_text": "做个倒水测试，水流过后妆面服帖。",
+            "required_visual": "倒水测试",
+            "keywords": ["倒水测试", "水流"],
+        }
+        candidate = parent_candidate(
+            [
+                child(
+                    "p00",
+                    0.0,
+                    4.5,
+                    [],
+                    "先涂抹脸颊，再展示妆面，最后拿粉色杯子向脸上倒水并轻拍确认",
+                ),
+            ]
+        )
+
+        selected = voah.select_child_physical_shot(candidate, section)
+        self.assertEqual(selected["child_physical_shot_id"], "p00")
+        self.assertGreater(selected["child_internal_start_offset_s"], 1.0)
+        segment = voah.clip_segment_from_parent_story_unit(candidate, section, selected, 2.0)
+        self.assertGreater(segment["source_start_offset_s"], 1.0)
+        self.assertEqual(segment["source_offset_strategy"], "child_action_anchor")
+
+    def test_short_child_keeps_start_offset_for_proof_action(self):
+        section = proof_section()
+        candidate = parent_candidate(
+            [
+                child("p00", 0.0, 1.8, ["泼水测试"], "一开始就泼水测试"),
+            ]
+        )
+
+        selected = voah.select_child_physical_shot(candidate, section)
+
+        self.assertEqual(selected["source_start_offset_s"], 0.0)
+        self.assertEqual(selected["source_offset_strategy"], "child_start")
+
 
 if __name__ == "__main__":
     unittest.main()
