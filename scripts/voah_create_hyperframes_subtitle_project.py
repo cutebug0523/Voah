@@ -50,9 +50,76 @@ def caption_class_for_preset(preset: str) -> str:
     return "songti-caption"
 
 
-def style_css_for_preset(preset: str) -> str:
+def embedded_font_name(font_source: Path) -> str:
+    return f"VoahFont{font_source.suffix.lower().replace('.', '').upper()}"
+
+
+def should_embed_font(font_source: Path, max_mb: float = 8.0) -> bool:
+    if not font_source.exists() or not font_source.is_file():
+        return False
+    if font_source.suffix.lower() not in {".ttf", ".otf", ".woff", ".woff2"}:
+        return False
+    return font_source.stat().st_size <= max_mb * 1024 * 1024
+
+
+def font_face_css(font_source: Path, project_dir: Path) -> tuple[str, str, dict[str, Any]]:
+    fallback_stack = '"Songti SC", "Songti TC", STSong, "Noto Serif CJK SC", serif'
+    if not should_embed_font(font_source):
+        reason = "missing"
+        size_mb = 0.0
+        if font_source.exists() and font_source.is_file():
+            size_mb = round(font_source.stat().st_size / 1024 / 1024, 3)
+            reason = "unsupported_or_too_large"
+        family = "VoahSystemSongti"
+        local_candidates = ["Songti SC", "Songti TC", "STSong", "Noto Serif CJK SC"]
+        local_sources = ", ".join(f'local("{candidate}")' for candidate in local_candidates)
+        return (
+            f'''      @font-face {{
+        font-family: "{family}";
+        src: {local_sources};
+      }}
+''',
+            f'"{family}", serif',
+            {
+                "font_family": family,
+                "font_stack": f'"{family}", serif',
+                "font_source": str(font_source) if str(font_source) else "",
+                "font_policy": "system_local_font_face_no_copy",
+                "embedded": False,
+                "font_size_mb": size_mb,
+                "local_font_candidates": local_candidates,
+                "reason": reason,
+            },
+        )
+
+    fonts_dir = project_dir / "fonts"
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    target = fonts_dir / font_source.name
+    shutil.copyfile(font_source, target)
+    family = embedded_font_name(font_source)
+    rel_target = rel(target, project_dir)
+    return (
+        f'''      @font-face {{
+        font-family: "{family}";
+        src: url("./{rel_target}");
+      }}
+''',
+        f'"{family}", {fallback_stack}',
+        {
+            "font_family": family,
+            "font_stack": f'"{family}", {fallback_stack}',
+            "font_source": str(font_source),
+            "font_policy": "embed_small_web_font",
+            "embedded": True,
+            "embedded_font": str(target),
+            "font_size_mb": round(font_source.stat().st_size / 1024 / 1024, 3),
+        },
+    )
+
+
+def style_css_for_preset(preset: str, font_stack: str) -> str:
     if preset == "live_bar_lower":
-        return """
+        css = """
       .live-bar-caption {
         position: absolute;
         left: 46px;
@@ -64,7 +131,7 @@ def style_css_for_preset(preset: str) -> str:
         justify-content: center;
         padding: 18px 30px 20px;
         border-radius: 8px;
-        font-family: "VoahSongti", serif;
+        font-family: __VOAH_CAPTION_FONT_STACK__;
         font-size: 44px;
         line-height: 1.12;
         font-weight: 900;
@@ -83,7 +150,8 @@ def style_css_for_preset(preset: str) -> str:
         color: #f6cf82;
       }
 """
-    return """
+        return css.replace("__VOAH_CAPTION_FONT_STACK__", font_stack)
+    css = """
       .songti-caption {
         position: absolute;
         left: 34px;
@@ -91,7 +159,7 @@ def style_css_for_preset(preset: str) -> str:
         bottom: 260px;
         box-sizing: border-box;
         max-width: 652px;
-        font-family: "VoahSongti", serif;
+        font-family: __VOAH_CAPTION_FONT_STACK__;
         font-size: 54px;
         line-height: 1.08;
         font-weight: 900;
@@ -112,6 +180,7 @@ def style_css_for_preset(preset: str) -> str:
         color: #f4d19b;
       }
 """
+    return css.replace("__VOAH_CAPTION_FONT_STACK__", font_stack)
 
 
 def caption_html(caption: dict[str, Any], preset: str) -> str:
@@ -136,13 +205,13 @@ def caption_html(caption: dict[str, Any], preset: str) -> str:
       </div>'''
 
 
-def build_index_html(project_dir: Path, base_video: Path, voice_audio: Path, plan: dict[str, Any]) -> str:
+def build_index_html(project_dir: Path, base_video: Path, voice_audio: Path, plan: dict[str, Any], font_css: str, font_stack: str) -> str:
     duration = float(plan.get("summary", {}).get("total_duration_s") or 0)
     width = int(plan.get("canvas", {}).get("width") or 720)
     height = int(plan.get("canvas", {}).get("height") or 1280)
     preset = str(plan.get("style", {}).get("preset") or "songti_white_gold_lower")
     captions = "\n".join(caption_html(caption, preset) for caption in plan.get("captions") or [])
-    preset_css = style_css_for_preset(preset)
+    preset_css = style_css_for_preset(preset, font_stack)
     return f'''<!doctype html>
 <html>
   <head>
@@ -150,11 +219,7 @@ def build_index_html(project_dir: Path, base_video: Path, voice_audio: Path, pla
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Voah Subtitle Burn</title>
     <style>
-      @font-face {{
-        font-family: "VoahSongti";
-        src: url("./fonts/Songti.ttc");
-      }}
-
+{font_css}
       html,
       body {{
         margin: 0;
@@ -289,23 +354,18 @@ def main() -> int:
     voice_wav_source = as_abs(args.voice_wav)
     project_dir = as_abs(args.project_dir)
     media_dir = project_dir / "media"
-    fonts_dir = project_dir / "fonts"
     project_dir.mkdir(parents=True, exist_ok=True)
     media_dir.mkdir(parents=True, exist_ok=True)
-    fonts_dir.mkdir(parents=True, exist_ok=True)
 
     plan = load_json(caption_plan)
     preset = str(plan.get("style", {}).get("preset") or "songti_white_gold_lower")
     font_source = as_abs(plan.get("style", {}).get("font_source") or "")
-    if not font_source.exists():
-        raise FileNotFoundError(f"font not found: {font_source}")
+    font_css, font_stack, font_policy = font_face_css(font_source, project_dir)
 
     base_video = media_dir / "base_video.mp4"
     voice_audio = media_dir / "voice.wav"
     shutil.copy2(base_video_source, base_video)
     shutil.copy2(voice_wav_source, voice_audio)
-    # System fonts can carry macOS file flags that are not writable in cache dirs.
-    shutil.copyfile(font_source, fonts_dir / "Songti.ttc")
 
     preset_label = "直播间口播条，下方安全区" if preset == "live_bar_lower" else "宋体白金描边，下方安全区"
     design = f"""# Voah Subtitle Burn
@@ -322,7 +382,7 @@ def main() -> int:
 
 ## Typography
 
-- Font: bundled `fonts/Songti.ttc` as `VoahSongti`.
+- Font: `{font_policy.get("font_family")}` via `{font_policy.get("font_policy")}`.
 - Preset: `{preset}`.
 - Lower-safe-area captions, no negative letter spacing.
 
@@ -333,7 +393,7 @@ def main() -> int:
 - Do not hand-write highlight spans; use keyword matching.
 """
     write_text(project_dir / "DESIGN.md", design)
-    write_text(project_dir / "index.html", build_index_html(project_dir, base_video, voice_audio, plan))
+    write_text(project_dir / "index.html", build_index_html(project_dir, base_video, voice_audio, plan, font_css, font_stack))
 
     manifest = {
         "schema_version": "1.0.0",
@@ -351,7 +411,10 @@ def main() -> int:
             "next_artifact": str(project_dir / "final_subtitled.mp4"),
         },
         "policy": plan.get("policy") or {},
-        "style": plan.get("style") or {},
+        "style": {
+            **(plan.get("style") or {}),
+            **font_policy,
+        },
         "qa": {
             "status": "ok",
             "warnings": [],

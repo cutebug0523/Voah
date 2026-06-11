@@ -295,8 +295,8 @@ def main() -> int:
             },
             "style_source": str(as_abs(args.style_source)),
             "font_source": str(as_abs(args.font_source)),
-            "font_family": "VoahSongti",
-            "font_policy": "copy_font_into_hyperframes_project",
+            "font_family": "system_songti_or_embedded_small_web_font",
+            "font_policy": "hyperframes_project_generator_decides_embedding",
         },
         "canvas": {
             "width": 720,

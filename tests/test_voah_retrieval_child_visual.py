@@ -122,6 +122,29 @@ class ChildVisualSelectionTest(unittest.TestCase):
         segment = voah.clip_segment_from_parent_story_unit(candidate, section, selected, 1.5)
         self.assertTrue(segment["requires_visual_review"])
 
+    def test_parent_story_unit_clip_starts_from_first_matching_child_for_long_fill(self):
+        section = proof_section()
+        candidate = parent_candidate(
+            [
+                child("p00", 0.0, 1.2, ["补妆"], "人物用粉扑补妆"),
+                child("p01", 1.2, 2.5, ["泼水测试"], "镜头切到脸部和测试区域，开始泼水"),
+                child("p02", 2.5, 4.2, ["泼水测试", "纸巾按压"], "继续展示遇水后的妆面状态"),
+                child("p03", 4.2, 6.0, ["口播看镜头"], "人物看向镜头讲解"),
+            ]
+        )
+
+        selected = voah.select_child_physical_shot(candidate, section)
+        self.assertEqual(selected["child_physical_shot_id"], "p01")
+
+        segments = voah.candidate_clip_segments(candidate, section, 2.4)
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["intra_clip_selection_mode"], "story_unit_parent_continuous")
+        self.assertEqual(segments[0]["child_physical_shot_id"], "p01")
+        self.assertEqual(segments[0]["source_start_offset_s"], 1.2)
+        self.assertEqual(segments[0]["source_end_offset_s"], 3.6)
+        self.assertFalse(segments[0]["allow_loop"])
+
 
 if __name__ == "__main__":
     unittest.main()

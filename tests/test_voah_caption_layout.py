@@ -71,12 +71,17 @@ class CaptionLayoutTest(unittest.TestCase):
                 self.assertEqual("".join(chunks), caption_plan.sanitize_caption_text(text))
 
     def test_songti_caption_css_contains_overflow_guards(self):
-        css = hyperframes.style_css_for_preset("songti_white_gold_lower")
+        css = hyperframes.style_css_for_preset(
+            "songti_white_gold_lower",
+            '"VoahSystemSongti", serif',
+        )
 
         self.assertIn("max-width: 652px;", css)
         self.assertIn("word-break: break-word;", css)
         self.assertIn("overflow-wrap: break-word;", css)
         self.assertIn("white-space: normal;", css)
+        self.assertIn('font-family: "VoahSystemSongti", serif;', css)
+        self.assertNotIn("var(--voah-caption-font)", css)
 
     def test_overlay_fallback_wraps_by_rendered_pixel_width(self):
         font = overlay.load_font("/System/Library/Fonts/Supplemental/Songti.ttc", 54)

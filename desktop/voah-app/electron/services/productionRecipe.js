@@ -8,6 +8,15 @@ import {
   mergeVoahSettings,
   RECIPE_STAGES
 } from "../../src/lib/mvpContracts.js";
+import {
+  DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS,
+  collectHyperframesDiagnostics,
+  hyperframesBaseRenderArgs,
+  hyperframesRenderEnv,
+  renderAttemptFailure,
+  resolveHyperframesCommand,
+  withHyperframesArgs
+} from "../../../../cli/src/services/hyperframesService.js";
 
 const PIPELINE_VERSION = "voah-desktop-real-recipe.v1";
 
@@ -115,12 +124,8 @@ function getIntakeRunDir(workspaceRoot, product) {
   return path.join(workspaceRoot, "cache", "voah_video_intake", product.slug, product.latest_intake_run);
 }
 
-function hyperframesCommandArgs(args) {
-  const localBin = path.join(process.cwd(), "node_modules", ".bin", "hyperframes");
-  if (existsSync(localBin)) {
-    return { command: localBin, args };
-  }
-  return { command: "npx", args: ["hyperframes", ...args] };
+function hyperframesCommandArgs(workspaceRoot, args, cwd) {
+  return withHyperframesArgs(resolveHyperframesCommand(workspaceRoot, { cwd }), args);
 }
 
 function productMeta(product) {
@@ -1065,13 +1070,13 @@ export class ProductionRecipe {
     await this.runCommand({
       task,
       jobId,
-      ...hyperframesCommandArgs(["lint", "."]),
+      ...hyperframesCommandArgs(this.storeService.workspaceRoot, ["lint", "."], projectDir),
       cwd: projectDir
     });
     await this.runCommand({
       task,
       jobId,
-      ...hyperframesCommandArgs(["inspect", ".", "--samples", "12", "--json"]),
+      ...hyperframesCommandArgs(this.storeService.workspaceRoot, ["inspect", ".", "--samples", "12", "--json"], projectDir),
       cwd: projectDir,
       env: hyperframesTimeoutEnv
     });
@@ -1128,71 +1133,62 @@ export class ProductionRecipe {
 
   async renderHyperframesWithRetry({ task, jobId, projectDir }) {
     const output = path.join(projectDir, "final_subtitled.mp4");
-    const timeoutMs = Math.max(60000, Math.round(safeNumber(process.env.VOAH_HYPERFRAMES_RENDER_TIMEOUT_MS, 90000)));
-    const baseArgs = [
-      "render",
-      ".",
-      "--output",
-      output,
-      "--quality",
-      "standard",
-      "--fps",
-      "30",
-      "--workers",
-      "1",
-      "--no-browser-gpu",
-      "--browser-timeout",
-      "180",
-      "--protocol-timeout",
-      "300000",
-      "--player-ready-timeout",
-      "120000",
-      "--no-low-memory-mode"
-    ];
-    const env = {
-      PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS: "300000",
-      PRODUCER_PLAYER_READY_TIMEOUT_MS: "120000",
-      PRODUCER_PAGE_NAVIGATION_TIMEOUT_MS: "180000",
-      PRODUCER_LOW_MEMORY_MODE: "false"
-    };
+    const timeoutMs = Math.max(60000, Math.round(safeNumber(process.env.VOAH_HYPERFRAMES_RENDER_TIMEOUT_MS, DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS)));
+    const hyperframes = resolveHyperframesCommand(this.storeService.workspaceRoot, { cwd: projectDir });
+    const diagnostics = await collectHyperframesDiagnostics(this.storeService.workspaceRoot, hyperframes, { cwd: projectDir });
+    const baseArgs = hyperframesBaseRenderArgs({ output, quality: "standard", fps: 30 });
+    const attempts = [];
+    const startedAt = Date.now();
+    const env = hyperframesRenderEnv();
     try {
-      await this.runCommand({
+      const result = await this.runCommand({
         task,
         jobId,
-        ...hyperframesCommandArgs(baseArgs),
+        ...hyperframesCommandArgs(this.storeService.workspaceRoot, [...baseArgs, "--no-low-memory-mode"], projectDir),
         cwd: projectDir,
         env,
         timeoutMs
       });
+      attempts.push({ mode: "normal", status: "succeeded", elapsed_ms: result.elapsedMs ?? null });
       return {
         renderer: "hyperframes",
         fallback_used: false,
-        output
+        output,
+        elapsed_ms: Date.now() - startedAt,
+        render_timeout_ms: timeoutMs,
+        low_memory_mode: false,
+        attempts,
+        hyperframes: diagnostics
       };
     } catch (error) {
+      attempts.push(renderAttemptFailure("normal", error));
       await writeFile(
         path.join(task.task_dir, "logs", `${jobId}.log`),
         `\n--- render retry ---\n${error.message}\n`,
         { flag: "a" }
       );
       try {
-        await this.runCommand({
+        const result = await this.runCommand({
           task,
           jobId,
-          ...hyperframesCommandArgs(baseArgs.filter((item) => item !== "--no-low-memory-mode").concat("--low-memory-mode")),
+          ...hyperframesCommandArgs(this.storeService.workspaceRoot, [...baseArgs, "--low-memory-mode"], projectDir),
           cwd: projectDir,
-          env: {
-            ...env,
-            PRODUCER_LOW_MEMORY_MODE: "true"
-          },
+          env: hyperframesRenderEnv({ lowMemoryMode: true }),
           timeoutMs
         });
+        attempts.push({ mode: "low-memory", status: "succeeded", elapsed_ms: result.elapsedMs ?? null });
         return {
-          renderer: "hyperframes-low-memory",
+          renderer: "hyperframes",
           fallback_used: false,
-          output
+          output,
+          elapsed_ms: Date.now() - startedAt,
+          render_timeout_ms: timeoutMs,
+          low_memory_mode: true,
+          attempts,
+          hyperframes: diagnostics
         };
       } catch (retryError) {
+        attempts.push(renderAttemptFailure("low-memory", retryError));
         await writeFile(
           path.join(task.task_dir, "logs", `${jobId}.log`),
           `\n--- overlay fallback ---\n${retryError.message}\n`,
@@ -1209,7 +1205,12 @@ export class ProductionRecipe {
           renderer: "ffmpeg-png-overlay",
           fallback_used: true,
           fallback_reason: retryError.message || error.message || "hyperframes render failed",
-          output
+          output,
+          elapsed_ms: Date.now() - startedAt,
+          render_timeout_ms: timeoutMs,
+          low_memory_mode: false,
+          attempts,
+          hyperframes: diagnostics
         };
       }
     }
@@ -1574,6 +1575,7 @@ export class ProductionRecipe {
     const started = `$ ${command} ${args.join(" ")}\n\n`;
     await writeFile(logPath, started, { flag: "a" });
     return new Promise((resolve, reject) => {
+      const startedAt = Date.now();
       let timedOut = false;
       let timeout = null;
       let forceKillTimeout = null;
@@ -1626,13 +1628,17 @@ export class ProductionRecipe {
           .join("\n");
         await writeFile(logPath, output, { flag: "a" });
         if (code === 0 && !timedOut) {
-          resolve({ stdout, stderr });
+          resolve({ stdout, stderr, code, timedOut: false, elapsedMs: Date.now() - startedAt });
         } else if (timedOut) {
           const tail = (stderr || stdout || "").split("\n").slice(-16).join("\n").trim();
-          reject(new Error(`${command} 超时 ${Math.round(timeoutMs / 1000)}s${tail ? `：${tail}` : ""}`));
+          const error = new Error(`${command} 超时 ${Math.round(timeoutMs / 1000)}s${tail ? `：${tail}` : ""}`);
+          error.result = { code: 124, signal: "SIGTERM", timedOut: true, timeoutMs, elapsedMs: Date.now() - startedAt, stdout, stderr };
+          reject(error);
         } else {
           const tail = (stderr || stdout || "").split("\n").slice(-16).join("\n").trim();
-          reject(new Error(`${command} 退出码 ${code}${tail ? `：${tail}` : ""}`));
+          const error = new Error(`${command} 退出码 ${code}${tail ? `：${tail}` : ""}`);
+          error.result = { code, signal: null, timedOut: false, timeoutMs: 0, elapsedMs: Date.now() - startedAt, stdout, stderr };
+          reject(error);
         }
       });
     });

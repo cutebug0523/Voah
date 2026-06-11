@@ -10,6 +10,15 @@ import { compactId } from "./paths.js";
 import { SecretService } from "../services/secretService.js";
 import { WorkerRunner } from "../services/workerRunner.js";
 import { ResourceService } from "../services/resourceService.js";
+import {
+  DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS,
+  collectHyperframesDiagnostics,
+  hyperframesBaseRenderArgs,
+  hyperframesRenderEnv,
+  renderAttemptFailure,
+  resolveHyperframesCommand,
+  withHyperframesArgs
+} from "../services/hyperframesService.js";
 
 const DEFAULT_VOICE_ID = "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d";
 
@@ -20,7 +29,7 @@ const STAGE_TIMEOUTS_MS = {
   tts: 600000,
   retrieve: 300000,
   subtitle: 180000,
-  render: 90000,
+  render: DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS,
   qa: 600000
 };
 
@@ -268,24 +277,18 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
   requireFile(path.join(projectDir, "index.html"), "hyperframes_subtitle_burn/index.html");
   const runner = createRunner(workspace);
   await reencodeHyperframesBaseVideo({ runner, taskDir, projectDir });
-  const hyperframes = hyperframesCommand(workspace);
-  const renderEnv = {
-    PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS: "300000",
-    PRODUCER_PLAYER_READY_TIMEOUT_MS: "120000",
-    PRODUCER_PAGE_NAVIGATION_TIMEOUT_MS: "180000",
-    PRODUCER_LOW_MEMORY_MODE: "false"
-  };
+  const hyperframes = resolveHyperframesCommand(workspace, { cwd: projectDir });
+  const diagnostics = await collectHyperframesDiagnostics(workspace, hyperframes, { cwd: projectDir });
+  const renderEnv = hyperframesRenderEnv();
   await runner.run({
-    ...hyperframes,
-    args: [...hyperframes.args, "lint", "."],
+    ...withHyperframesArgs(hyperframes, ["lint", "."]),
     cwd: projectDir,
     taskDir,
     stage: "render",
     timeoutMs: stageTimeout("render", options)
   });
   await runner.run({
-    ...hyperframes,
-    args: [...hyperframes.args, "inspect", ".", "--samples", "12", "--json"],
+    ...withHyperframesArgs(hyperframes, ["inspect", ".", "--samples", "12", "--json"]),
     cwd: projectDir,
     taskDir,
     stage: "render",
@@ -295,51 +298,36 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
   });
   let fallbackUsed = false;
   let fallbackReason = "";
-  const baseRenderArgs = [
-    ...hyperframes.args,
-    "render",
-    ".",
-    "--output",
-    finalVideo,
-    "--quality",
-    "standard",
-    "--fps",
-    "30",
-    "--workers",
-    "1",
-    "--no-browser-gpu",
-    "--browser-timeout",
-    "180",
-    "--protocol-timeout",
-    "300000",
-    "--player-ready-timeout",
-    "120000"
-  ];
+  let lowMemoryMode = false;
+  const renderAttempts = [];
+  const renderStartedAt = Date.now();
+  const renderTimeoutMs = optionalInt(options["render-timeout-ms"], stageTimeout("render", options) || DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS);
+  const baseRenderArgs = hyperframesBaseRenderArgs({ output: finalVideo, quality: "standard", fps: 30 });
   try {
-    await runner.run({
-      ...hyperframes,
-      args: [...baseRenderArgs, "--no-low-memory-mode"],
+    const result = await runner.run({
+      ...withHyperframesArgs(hyperframes, [...baseRenderArgs, "--no-low-memory-mode"]),
       cwd: projectDir,
       taskDir,
       stage: "render",
       env: renderEnv,
-      timeoutMs: optionalInt(options["render-timeout-ms"], 90000)
+      timeoutMs: renderTimeoutMs
     });
+    renderAttempts.push({ mode: "normal", status: "succeeded", elapsed_ms: result.elapsedMs ?? null });
   } catch (error) {
+    renderAttempts.push(renderAttemptFailure("normal", error));
     try {
-      await runner.run({
-        ...hyperframes,
-        args: [...baseRenderArgs, "--low-memory-mode"],
+      const result = await runner.run({
+        ...withHyperframesArgs(hyperframes, [...baseRenderArgs, "--low-memory-mode"]),
         cwd: projectDir,
         taskDir,
         stage: "render",
-        env: {
-          ...renderEnv,
-          PRODUCER_LOW_MEMORY_MODE: "true"
-        },
-        timeoutMs: optionalInt(options["render-timeout-ms"], 90000)
+        env: hyperframesRenderEnv({ lowMemoryMode: true }),
+        timeoutMs: renderTimeoutMs
       });
+      lowMemoryMode = true;
+      renderAttempts.push({ mode: "low-memory", status: "succeeded", elapsed_ms: result.elapsedMs ?? null });
     } catch (retryError) {
+      renderAttempts.push(renderAttemptFailure("low-memory", retryError));
       fallbackUsed = true;
       fallbackReason = retryError.message || error.message || String(retryError);
       await burnOverlayFallback({ runner, workspace, taskDir, projectDir, finalVideo, reason: fallbackReason });
@@ -351,7 +339,12 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
     renderer: fallbackUsed ? "ffmpeg-png-overlay" : "hyperframes",
     fallback_used: fallbackUsed,
     fallback_reason: fallbackReason,
-    output: finalVideo
+    output: finalVideo,
+    elapsed_ms: Date.now() - renderStartedAt,
+    render_timeout_ms: renderTimeoutMs,
+    low_memory_mode: lowMemoryMode,
+    attempts: renderAttempts,
+    hyperframes: diagnostics
   };
   payload.outputs ||= {};
   payload.outputs.final_subtitled = finalVideo;
@@ -644,14 +637,6 @@ async function burnOverlayFallback({ runner, workspace, taskDir, projectDir, fin
     taskDir,
     stage: "render"
   });
-}
-
-function hyperframesCommand(workspace) {
-  const local = path.join(workspace, "desktop", "voah-app", "node_modules", ".bin", "hyperframes");
-  if (existsSync(local)) {
-    return { command: local, args: [] };
-  }
-  return { command: "npx", args: ["--yes", "hyperframes"] };
 }
 
 function createRunner(workspace) {

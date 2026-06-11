@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveHyperframesCommand, withHyperframesArgs } from "./hyperframesService.js";
 
 export async function commandVersion(command, args = ["--version"]) {
   return new Promise((resolve) => {
@@ -30,25 +30,24 @@ export async function commandVersion(command, args = ["--version"]) {
 }
 
 export async function toolStatus(workspace) {
-  const localHyperframes = path.join(workspace, "desktop", "voah-app", "node_modules", ".bin", "hyperframes");
-  const hyperframesCommand = existsSync(localHyperframes) ? localHyperframes : "npx";
-  const hyperframesArgs = existsSync(localHyperframes) ? ["--version"] : ["--yes", "hyperframes", "--version"];
+  const hyperframes = resolveHyperframesCommand(workspace);
+  const hyperframesVersion = withHyperframesArgs(hyperframes, ["--version"]);
   const dashscopeCommand = resolveDashscopeCommand();
   const checks = await Promise.all([
     commandVersion("ffmpeg", ["-version"]),
     commandVersion("ffprobe", ["-version"]),
     commandVersion("python3", ["--version"]),
     commandVersion("node", ["--version"]),
-    commandVersion(hyperframesCommand, hyperframesArgs),
+    commandVersion(hyperframesVersion.command, hyperframesVersion.args),
     commandVersion(dashscopeCommand, ["--help"])
   ]);
   return checks.map((item) => ({
     ...item,
     required:
       ["ffmpeg", "ffprobe", "python3", "node"].includes(item.command) ||
-      item.command === hyperframesCommand ||
+      item.command === hyperframesVersion.command ||
       item.command === dashscopeCommand,
-    tool: item.command === hyperframesCommand ? "hyperframes" : item.command === dashscopeCommand ? "dashscope" : item.command
+    tool: item.command === hyperframesVersion.command ? "hyperframes" : item.command === dashscopeCommand ? "dashscope" : item.command
   }));
 }
 

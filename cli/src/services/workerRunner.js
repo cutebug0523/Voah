@@ -69,7 +69,8 @@ export class WorkerRunner {
       });
     }
     if (result.code !== 0 && !allowFailure) {
-      const error = new Error(`${command} ${args.join(" ")} failed with code ${result.code}: ${summarizeError(result.stderr || result.stdout)}`);
+      const timeoutNote = result.timedOut ? ` timed out after ${result.timeoutMs}ms` : "";
+      const error = new Error(`${command} ${args.join(" ")} failed with code ${result.code}${timeoutNote}: ${summarizeError(result.stderr || result.stdout)}`);
       error.result = result;
       throw error;
     }
@@ -90,6 +91,7 @@ async function safeStageAttempt(taskDir, stage) {
 function spawnCapture(command, args, { cwd, env, timeoutMs, logger }) {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const startedAt = Date.now();
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -115,6 +117,9 @@ function spawnCapture(command, args, { cwd, env, timeoutMs, logger }) {
       resolve({
         code: timedOut ? 124 : code,
         signal,
+        timedOut,
+        timeoutMs: timedOut ? timeoutMs : 0,
+        elapsedMs: Date.now() - startedAt,
         stdout: redactText(stdout),
         stderr: redactText(stderr)
       });
