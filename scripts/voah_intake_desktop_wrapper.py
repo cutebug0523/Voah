@@ -917,6 +917,77 @@ def mark_manifest_failed(
     write_json(manifest_path, manifest)
 
 
+def sanitize_error_text(value: Any, max_len: int = 900) -> str:
+    text = str(value or "")
+    text = re.sub(r"sk-[A-Za-z0-9_-]{12,}", "sk-***", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
+
+
+def summarize_upload_json_event(text: str) -> str:
+    for raw_line in reversed(text.splitlines()):
+        line = raw_line.strip()
+        if not line.startswith("{") or "dashscope_oss_upload" not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event") != "dashscope_oss_upload" or event.get("status") != "error":
+            continue
+        stage = str(event.get("stage") or "upload")
+        err_type = str(event.get("error_type") or "").strip()
+        err = sanitize_error_text(event.get("error") or event.get("detail") or "")
+        parts = [f"stage={stage}"]
+        if err_type:
+            parts.append(err_type)
+        if err:
+            parts.append(err)
+        return "OSS 上传失败：" + " ".join(parts)
+    return ""
+
+
+def summarize_worker_failure(
+    stdout_path: Path | None,
+    stderr_path: Path | None,
+    cmd: list[str],
+    returncode: int,
+) -> str:
+    stdout_tail = read_tail_if_exists(stdout_path, 12000)
+    stderr_tail = read_tail_if_exists(stderr_path, 12000)
+    text = "\n".join([stdout_tail, stderr_tail])
+
+    upload_event = summarize_upload_json_event(text)
+    if upload_event:
+        return upload_event
+
+    patterns = [
+        ("dashscope_oss_upload_failed", "OSS 上传失败"),
+        ("could not extract oss:// URL", "OSS 地址解析失败"),
+        ("could not extract oss://", "OSS 地址解析失败"),
+        ("oss POST failed", "OSS POST 失败"),
+        ("getPolicy failed", "OSS 上传凭证失败"),
+        ("CLI upload timeout", "DashScope CLI 上传超时"),
+        ("CLI upload failed", "DashScope CLI 上传失败"),
+        ("ReadTimeout", "OSS 上传超时"),
+        ("ConnectTimeout", "OSS 连接超时"),
+        ("RemoteDisconnected", "OSS 连接被远端断开"),
+    ]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for needle, label in patterns:
+        for line in reversed(lines):
+            if needle in line:
+                return f"{label}：{sanitize_error_text(line)}"
+
+    tail_lines = lines[-3:]
+    if tail_lines:
+        return (
+            f"command failed with exit code {returncode}: {' '.join(cmd[:3])}; "
+            f"log_tail={sanitize_error_text(' | '.join(tail_lines))}"
+        )
+    return f"command failed with exit code {returncode}: {' '.join(cmd[:3])}"
+
+
 def run_command(
     cmd: list[str],
     stdout_path: Path,
@@ -950,7 +1021,9 @@ def run_command(
     if proc.returncode != 0:
         raise WorkerError(
             "worker_exit_nonzero",
-            f"command failed with exit code {proc.returncode}: {' '.join(cmd[:3])}",
+            summarize_worker_failure(stdout_path, stderr_path, cmd, proc.returncode),
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
         )
 
 

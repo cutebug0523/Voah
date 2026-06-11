@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -16,6 +17,12 @@ from typing import Any
 
 
 DASHSCOPE_CLI = os.path.expanduser("~/Library/Python/3.9/bin/dashscope")
+DEFAULT_INTAKE_SCRIPTS_DIR = Path(
+    os.environ.get(
+        "VOAH_VIDEO_INTAKE_SCRIPTS_DIR",
+        "/Users/noah/.codex/skills/voah-video-intake/scripts",
+    )
+)
 UPLOAD_MODEL = "qwen3-vl-embedding"
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".avi", ".webm")
 
@@ -108,6 +115,18 @@ def valid_oss_url(value: str) -> bool:
     return isinstance(value, str) and value.startswith("oss://") and "\n" not in value and "\r" not in value
 
 
+def load_skill_upload_helper():
+    helper_path = DEFAULT_INTAKE_SCRIPTS_DIR / "trim_and_upload.py"
+    if not helper_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("voah_skill_trim_and_upload", helper_path)
+    if not spec or not spec.loader:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, "upload_to_dashscope_oss", None)
+
+
 def probe_clip(path: Path) -> dict[str, Any]:
     proc = subprocess.run(
         [
@@ -147,13 +166,26 @@ def probe_clip(path: Path) -> dict[str, Any]:
 
 
 def upload_clip(path: Path, timeout_s: int, max_attempts: int) -> str:
+    helper = load_skill_upload_helper()
+    if helper:
+        return helper(
+            str(path),
+            model=UPLOAD_MODEL,
+            label=f"retry:{path.stem}",
+            attempts=max_attempts,
+            certificate_timeout_s=min(timeout_s, 20),
+            post_timeout_s=min(timeout_s, 45),
+            cli_timeout_s=min(timeout_s, 60),
+            cli_attempts=1,
+        )
+
     last_error = ""
     for attempt in range(1, max_attempts + 1):
         proc = subprocess.run(
             [DASHSCOPE_CLI, "oss", "upload", "-f", str(path), "-m", UPLOAD_MODEL],
             capture_output=True,
             text=True,
-            timeout=timeout_s,
+            timeout=min(timeout_s, 60),
             env={**os.environ},
         )
         if proc.returncode == 0:

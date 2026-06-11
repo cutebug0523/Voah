@@ -369,6 +369,66 @@ class DesktopIntakeWrapperStateTest(unittest.TestCase):
         config = wrapper.resolve_config(args)
         self.assertTrue(config["include_existing_failed"])
 
+    def test_summarize_worker_failure_surfaces_structured_oss_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stdout_path = root / "stdout.log"
+            stderr_path = root / "stderr.log"
+            stdout_path.write_text(
+                "\n".join(
+                    [
+                        "[1/1] upload proxy for Omni demo.mp4",
+                        json.dumps(
+                            {
+                                "event": "dashscope_oss_upload",
+                                "stage": "oss_post",
+                                "status": "error",
+                                "error_type": "ReadTimeout",
+                                "error": "HTTPSConnectionPool(host='dashscope-file-mgr.oss-cn-beijing.aliyuncs.com')",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            stderr_path.write_text("Traceback omitted", encoding="utf-8")
+
+            summary = wrapper.summarize_worker_failure(
+                stdout_path,
+                stderr_path,
+                ["python3", "voah_run_intake_compat.py", "--skill-runner"],
+                1,
+            )
+
+            self.assertIn("OSS 上传失败", summary)
+            self.assertIn("stage=oss_post", summary)
+            self.assertIn("ReadTimeout", summary)
+
+    def test_summarize_worker_failure_surfaces_legacy_oss_parse_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stdout_path = root / "stdout.log"
+            stderr_path = root / "stderr.log"
+            stdout_path.write_text(
+                "source upload retry 1/4 after error: could not extract oss:// URL from source upload output\n",
+                encoding="utf-8",
+            )
+            stderr_path.write_text(
+                "RuntimeError: could not extract oss:// URL from source upload output\n",
+                encoding="utf-8",
+            )
+
+            summary = wrapper.summarize_worker_failure(
+                stdout_path,
+                stderr_path,
+                ["python3", "voah_run_intake_compat.py", "--skill-runner"],
+                1,
+            )
+
+            self.assertIn("OSS 地址解析失败", summary)
+            self.assertIn("could not extract oss:// URL", summary)
+
 
 if __name__ == "__main__":
     unittest.main()
