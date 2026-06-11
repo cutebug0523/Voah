@@ -18,6 +18,15 @@ function run(args, options = {}) {
   });
 }
 
+function runWithInput(args, input, options = {}) {
+  return new Promise((resolve) => {
+    const child = execFile("node", [CLI, ...args], options, (error, stdout, stderr) => {
+      resolve({ error, stdout, stderr, code: error?.code || 0 });
+    });
+    child.stdin.end(input);
+  });
+}
+
 test("voah help prints stable commands", async () => {
   const result = await run(["--help"]);
   assert.equal(result.code, 0);
@@ -222,6 +231,20 @@ test("config get never prints stored secret values", async () => {
   assert.equal(getResult.code, 0, getResult.stderr);
   assert.doesNotMatch(getResult.stdout, /sk-test-secret/);
   assert.match(getResult.stdout, /"dashscope.api_key": true/);
+});
+
+test("config set accepts secret value from stdin", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-config-stdin-test-"));
+  const configDir = await mkdtemp(path.join(os.tmpdir(), "voah-cli-config-stdin-home-"));
+  const env = { ...process.env, VOAH_CONFIG_DIR: configDir };
+  const setResult = await runWithInput(["config", "set", "deepseek.api_key", "--workspace", workspace], "sk-test-stdin-deepseek-1234567890\n", { env });
+  assert.equal(setResult.code, 0, setResult.stderr);
+  assert.match(setResult.stdout, /deepseek\.api_key=configured/);
+  const getResult = await run(["config", "get", "--workspace", workspace], { env });
+  assert.equal(getResult.code, 0, getResult.stderr);
+  assert.doesNotMatch(getResult.stdout, /sk-test-stdin/);
+  const payload = JSON.parse(getResult.stdout);
+  assert.equal(payload.secrets["deepseek.api_key"], true);
 });
 
 test("config get groups visible model keys by provider", async () => {

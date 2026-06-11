@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { parseArgs } from "../core/args.js";
 import { UserError } from "../core/errors.js";
 import { SecretService } from "../services/secretService.js";
@@ -32,5 +31,10 @@ async function readStdinIfAvailable() {
   if (process.stdin.isTTY) {
     return "";
   }
-  return readFile(0, "utf8");
+  process.stdin.setEncoding("utf8");
+  let value = "";
+  for await (const chunk of process.stdin) {
+    value += chunk;
+  }
+  return value;
 }
