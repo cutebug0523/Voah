@@ -191,7 +191,7 @@ function ProductDetail({ product, onStartIntake }) {
                 <div key={run.run_dir} className="px-3 py-2 flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-xs font-medium truncate">{run.name}</div>
-                    <div className="text-[11px] text-ink-400">{run.shot_count != null ? `${run.shot_count} shots` : "处理中"}</div>
+                    <div className="text-[11px] text-ink-400">{run.shot_count != null ? `${run.shot_count} 段` : "处理中"}</div>
                   </div>
                   <button onClick={() => window.voah?.reveal(run.run_dir)} className="text-xs text-brand-600 hover:underline">
                     目录
@@ -263,7 +263,7 @@ function ProductDrawer({ open, onClose }) {
       >
         <DrawerHead title="新建产品" onClose={onClose} />
         <div className="flex-1 p-5 space-y-4">
-          <Field label="Slug">
+          <Field label="产品编号">
             <input value={slug} onChange={(e) => setSlug(e.target.value)} className="input" placeholder="huaxizi-qidian" />
           </Field>
           <Field label="产品名">
@@ -340,7 +340,7 @@ function IntakeDrawer({ product, open, onClose }) {
           </Field>
           {result && (
             <div className={`text-xs rounded-lg p-3 border ${result.ok ? "text-run bg-run/5 border-run/20" : "text-err bg-err/5 border-err/20"}`}>
-              {result.ok ? "入库任务已启动，完成状态以 shot_index.json 为准。" : result.stderr || result.error || "启动失败"}
+              {result.ok ? "入库任务已启动" : result.stderr || result.error || "启动失败"}
             </div>
           )}
         </div>

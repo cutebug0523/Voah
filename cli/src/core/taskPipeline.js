@@ -733,8 +733,11 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
   const intakeRun = resolveIntakeRun(workspace, manifest);
   const shotIndex = path.join(intakeRun, "shot_index.json");
   requireFile(shotIndex, "shot_index.json");
-  const productClaims = await readProductClaims(workspace, manifest.product_slug);
+  const productContext = await readProductContext(workspace, manifest.product_slug);
   const targetDuration = manifest.target_duration_s || Number(brief.target_duration_s) || 45;
+  const productLibrary = productContext.product_library || {};
+  const campaignText = linesFromItems(productContext.campaigns || []);
+  const blockedText = linesFromItems(productContext.blocked_terms || []);
   const payload = {
     schema_version: "1.0.0",
     stage: "voah_task_brief",
@@ -758,13 +761,15 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
       shot_index: shotIndex,
       user_brief: brief
     },
-    product_claims: productClaims.claims || [],
-    product_library: productClaims.product_library || {},
+    product_claims: productContext.claims || [],
+    product_campaigns: productContext.campaigns || [],
+    product_blocked_terms: productContext.blocked_terms || [],
+    product_library: productLibrary,
     copy_parameters: {
       main_claim: brief.main_claim || "",
-      offer: brief.offer || "",
-      forbidden_terms: brief.forbidden || "",
-      cta_policy: brief.cta_policy || "",
+      offer: brief.offer || campaignText,
+      forbidden_terms: brief.forbidden || blockedText,
+      cta_policy: brief.cta_policy || productLibrary.cta || "",
       style: brief.style || "",
       audience: brief.audience || ""
     },
@@ -794,12 +799,20 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
   return payload;
 }
 
-async function readProductClaims(workspace, slug) {
+async function readProductContext(workspace, slug) {
   const productDir = path.join(workspace, "data", "products", slug);
   const product = existsSync(path.join(productDir, "product.json")) ? await readJson(path.join(productDir, "product.json")) : {};
   const claimsPayload = existsSync(path.join(productDir, "claims.json")) ? await readJson(path.join(productDir, "claims.json")) : {};
+  const campaignsPayload = existsSync(path.join(productDir, "campaigns.json")) ? await readJson(path.join(productDir, "campaigns.json")) : {};
+  const blockedTermsPayload = existsSync(path.join(productDir, "blocked_terms.json")) ? await readJson(path.join(productDir, "blocked_terms.json")) : {};
   return {
     claims: claimsPayload.claims || [],
+    campaigns: campaignsPayload.campaigns || [],
+    blocked_terms: blockedTermsPayload.terms || [],
     product_library: product
   };
+}
+
+function linesFromItems(items) {
+  return (items || []).map((item) => item.text || item.claim || item.name || item.term || item).filter(Boolean).join("\n");
 }

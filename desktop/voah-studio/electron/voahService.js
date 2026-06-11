@@ -124,14 +124,20 @@ async function listProducts() {
 async function inspectProduct(slug) {
   if (!slug) return { ok: false, error: "缺少产品 slug" };
   const productDir = path.join(PRODUCTS_DIR, slug);
+  const intake_runs = await intakeRunsForSlug(slug);
+  const inferred = await inferProductContext(intake_runs.find((run) => run.ready)?.run_dir);
+  const product = await readJsonSafe(path.join(productDir, "product.json"));
+  const claims = await readJsonSafe(path.join(productDir, "claims.json"));
+  const campaigns = await readJsonSafe(path.join(productDir, "campaigns.json"));
+  const blockedTerms = await readJsonSafe(path.join(productDir, "blocked_terms.json"));
   return {
     ok: true,
     product_dir: productDir,
-    product: await readJsonSafe(path.join(productDir, "product.json")),
-    claims: await readJsonSafe(path.join(productDir, "claims.json")),
-    campaigns: await readJsonSafe(path.join(productDir, "campaigns.json")),
-    blocked_terms: await readJsonSafe(path.join(productDir, "blocked_terms.json")),
-    intake_runs: await intakeRunsForSlug(slug)
+    product,
+    claims: textPayloadWithInitial(claims, inferred.claims, "voah.product_claims.v1", "claims"),
+    campaigns: textPayloadWithInitial(campaigns, inferred.campaigns, "voah.product_campaigns.v1", "campaigns"),
+    blocked_terms: textPayloadWithInitial(blockedTerms, [], "voah.blocked_terms.v1", "terms"),
+    intake_runs
   };
 }
 
@@ -145,6 +151,7 @@ async function createProduct({ slug, name, brand }) {
 async function saveProductDetail({ slug, product, claims, campaigns, blockedTerms }) {
   if (!slug) return { ok: false, error: "缺少产品 slug" };
   const productDir = path.join(PRODUCTS_DIR, slug);
+  await fs.mkdir(productDir, { recursive: true });
   await writeJson(path.join(productDir, "product.json"), {
     schema_version: "voah.product.v1",
     slug,
@@ -156,15 +163,18 @@ async function saveProductDetail({ slug, product, claims, campaigns, blockedTerm
   });
   await writeJson(path.join(productDir, "claims.json"), {
     schema_version: "voah.product_claims.v1",
-    claims: normalizeTextList(claims).map((text) => ({ text }))
+    claims: normalizeTextList(claims).map((text) => ({ text })),
+    updated_at: new Date().toISOString()
   });
   await writeJson(path.join(productDir, "campaigns.json"), {
     schema_version: "voah.product_campaigns.v1",
-    campaigns: normalizeTextList(campaigns).map((text) => ({ text }))
+    campaigns: normalizeTextList(campaigns).map((text) => ({ text })),
+    updated_at: new Date().toISOString()
   });
   await writeJson(path.join(productDir, "blocked_terms.json"), {
     schema_version: "voah.blocked_terms.v1",
-    terms: normalizeTextList(blockedTerms).map((text) => ({ text }))
+    terms: normalizeTextList(blockedTerms).map((text) => ({ text })),
+    updated_at: new Date().toISOString()
   });
   return { ok: true };
 }
@@ -226,6 +236,94 @@ async function intakeRunsForSlug(slug) {
   }
   runs.sort((a, b) => b.name.localeCompare(a.name));
   return runs;
+}
+
+async function inferProductContext(runDir) {
+  if (!runDir) return { claims: [], campaigns: [] };
+  const payloads = await Promise.all(
+    ["segments.json", "assets.json", "shots.json", "shot_index.json"].map((name) => readJsonSafe(path.join(runDir, name)))
+  );
+  const claims = [];
+  const campaigns = [];
+  for (const payload of payloads) {
+    for (const item of flattenRecords(payload)) {
+      collectTextValues(item?.selling_points, claims);
+      collectTextValues(item?.full_video_summary?.selling_points, claims);
+      collectTextValues(item?.omni_summary?.selling_points, claims);
+      collectCampaignCandidates(item, campaigns);
+    }
+  }
+  return {
+    claims: uniqueText(claims).slice(0, 12),
+    campaigns: uniqueText(campaigns).slice(0, 8)
+  };
+}
+
+function flattenRecords(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  for (const key of ["records", "segments", "shots", "assets"]) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  return [payload];
+}
+
+function collectTextValues(value, output) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectTextValues(item, output);
+    return;
+  }
+  if (value && typeof value === "object") {
+    collectTextValues(value.text || value.claim || value.name || value.term || value.title, output);
+    return;
+  }
+  const text = String(value || "").trim();
+  if (text) output.push(text);
+}
+
+function collectCampaignCandidates(item, output) {
+  const fields = [
+    item?.source_asr,
+    item?.source_meaning,
+    item?.visual_summary,
+    item?.full_video_summary?.source_asr,
+    item?.full_video_summary?.source_meaning,
+    item?.omni_summary?.source_asr,
+    item?.omni_summary?.source_meaning
+  ];
+  for (const field of fields) {
+    const text = String(field || "");
+    if (!text) continue;
+    for (const sentence of text.split(/[。！？!?；;\n]/)) {
+      const line = sentence.trim();
+      if (/(直播间|活动|下单|拍下|到手|赠|礼盒|套装|优惠|福利|券|价格|自用送人)/.test(line)) {
+        output.push(line);
+      }
+    }
+  }
+}
+
+function uniqueText(items) {
+  const seen = new Set();
+  const output = [];
+  for (const item of items) {
+    const text = String(item || "").replace(/\s+/g, " ").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    output.push(text);
+  }
+  return output;
+}
+
+function textPayloadWithInitial(payload, initial, schemaVersion, key) {
+  if (payload) return payload;
+  const existing = Array.isArray(payload?.[key]) ? payload[key] : [];
+  if (existing.length) return payload;
+  return {
+    ...(payload || {}),
+    schema_version: payload?.schema_version || schemaVersion,
+    [key]: uniqueText(initial).map((text) => ({ text }))
+  };
 }
 
 // ---- 批次与任务 ----
@@ -685,12 +783,16 @@ function runTtsStage(taskDir) {
   return runVoah(["tts", "run", "--workspace", WORKSPACE, taskDir]);
 }
 
-function ttsPreview({ text, voiceId, speed, emotion, pitch, intensity, timbre }) {
+function ttsPreview({ text, provider, model, voiceId, speed, vol, voiceSettingPitch, modifyPitch, emotion, intensity, timbre }) {
   const args = ["tts", "preview", "--workspace", WORKSPACE, "--text", text || ""];
+  if (provider) args.push("--provider", provider);
+  if (model) args.push("--model", model);
   if (voiceId) args.push("--voice-id", voiceId);
   if (speed) args.push("--speed", String(speed));
+  if (vol) args.push("--vol", String(vol));
+  if (voiceSettingPitch !== undefined) args.push("--pitch", String(voiceSettingPitch));
   if (emotion) args.push("--emotion", emotion);
-  if (pitch !== undefined) args.push("--modify-pitch", String(pitch));
+  if (modifyPitch !== undefined) args.push("--modify-pitch", String(modifyPitch));
   if (intensity !== undefined) args.push("--modify-intensity", String(intensity));
   if (timbre !== undefined) args.push("--modify-timbre", String(timbre));
   return runVoah(args).then(async (result) => {

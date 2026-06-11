@@ -141,7 +141,7 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
 
           <details className="border-t border-slate-100 pt-3">
             <summary className="text-xs text-ink-500 cursor-pointer hover:text-ink-700">
-              高级（并发 / 平台 / 文案 / 音色…）
+              更多设置
             </summary>
             <div className="mt-3 space-y-3">
               <Field label="并发">
@@ -154,7 +154,6 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
                   className="w-20 px-3 py-2 rounded-lg border border-slate-200 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none"
                 />
               </Field>
-              <p className="text-xs text-ink-400">平台 / 文案 / 音色等默认走产品库与全局设置，后续在设置页调整。</p>
             </div>
           </details>
 

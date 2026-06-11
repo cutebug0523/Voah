@@ -5,7 +5,6 @@ import {
   DEFAULT_PREVIEW_TEXT,
   FALLBACK_TTS_VOICES,
   FONT_OPTIONS,
-  MINIMAX_DOCS,
   SUBTITLE_PRESETS,
   TTS_EMOTIONS,
   TTS_RANGES
@@ -21,7 +20,6 @@ export function SettingsPage() {
   const [keyModal, setKeyModal] = useState(null);
   const [keyValue, setKeyValue] = useState("");
   const [voices, setVoices] = useState(FALLBACK_TTS_VOICES);
-  const [voiceSource, setVoiceSource] = useState("");
   const [fonts, setFonts] = useState(FONT_OPTIONS);
   const [fontsReady, setFontsReady] = useState(false);
   const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
@@ -56,7 +54,6 @@ export function SettingsPage() {
       if (!alive) return;
       if (voiceRes?.voices?.length) {
         setVoices(voiceRes.voices);
-        setVoiceSource(voiceRes.source === "minimax" ? "MiniMax 官方音色" : "内置音色表");
       }
     }
     loadOptions();
@@ -104,10 +101,14 @@ export function SettingsPage() {
     const tts = normalizeSettings(form).tts;
     const res = await window.voah?.ttsPreview?.({
       text: previewText,
+      provider: tts.provider,
+      model: tts.model,
       voiceId: tts.voice_id,
       speed: tts.speed,
+      vol: tts.vol,
+      voiceSettingPitch: tts.pitch,
       emotion: tts.emotion,
-      pitch: tts.modify_pitch,
+      modifyPitch: tts.modify_pitch,
       intensity: tts.intensity,
       timbre: tts.timbre
     });
@@ -165,7 +166,6 @@ export function SettingsPage() {
       <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
           <div className="font-semibold">模型密钥</div>
-          <div className="text-[11px] text-ink-400">本机保存，只显示状态</div>
         </div>
         <div className="divide-y divide-slate-50">
           {modules.map((item) => (
@@ -190,7 +190,6 @@ export function SettingsPage() {
       <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
           <div className="font-semibold">生产默认参数</div>
-          <div className="text-[11px] text-ink-400">{voiceSource || "音色加载中"}</div>
         </div>
         <div className="p-4 grid grid-cols-[1fr_1.25fr_1fr] gap-4 items-start">
           <Block title="文案">
@@ -224,7 +223,6 @@ export function SettingsPage() {
                   </optgroup>
                 ))}
               </select>
-              <div className="mt-1 text-[11px] text-ink-400 truncate">{selectedVoice?.description || selectedVoice?.voice_id}</div>
             </Field>
 
             <div className="grid grid-cols-2 gap-3">
@@ -311,15 +309,6 @@ export function SettingsPage() {
           >
             {busy === "settings" ? "保存中…" : "保存默认参数"}
           </button>
-        </div>
-      </section>
-
-      <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-100 font-semibold">来源记录</div>
-        <div className="p-4 grid grid-cols-3 gap-3 text-xs text-ink-500">
-          <SourceLink label="MiniMax TTS 参数" url={MINIMAX_DOCS.t2a} />
-          <SourceLink label="MiniMax 音色接口" url={MINIMAX_DOCS.getVoice} />
-          <SourceLink label="系统音色表" url={MINIMAX_DOCS.systemVoiceList} />
         </div>
       </section>
 
@@ -437,7 +426,6 @@ function KeyModal({ module, value, busy, onChange, onClose, onSave }) {
           <Field label="密钥">
             <input className="input" type="password" autoFocus value={value} onChange={(e) => onChange(e.target.value)} />
           </Field>
-          <div className="text-[11px] text-ink-400">保存后只显示已配置，不回显明文。</div>
         </div>
         <div className="px-4 py-3 border-t border-slate-100 flex justify-end gap-2">
           <button onClick={onClose} className="px-3 py-2 rounded-lg border border-slate-200 text-ink-700 hover:bg-slate-50">
@@ -453,14 +441,6 @@ function KeyModal({ module, value, busy, onChange, onClose, onSave }) {
         </div>
       </div>
     </>
-  );
-}
-
-function SourceLink({ label, url }) {
-  return (
-    <a className="rounded-lg border border-slate-200 px-3 py-2 hover:bg-slate-50 truncate" href={url} target="_blank" rel="noreferrer">
-      {label}
-    </a>
   );
 }
 

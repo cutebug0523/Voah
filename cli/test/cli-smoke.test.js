@@ -27,8 +27,14 @@ test("voah help prints stable commands", async () => {
 test("task create writes task_manifest and task_brief without running models", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-test-"));
   const intakeRun = path.join(workspace, "cache", "voah_video_intake", "demo", "run");
+  const productDir = path.join(workspace, "data", "products", "demo");
   await mkdir(intakeRun, { recursive: true });
+  await mkdir(productDir, { recursive: true });
   await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
+  await writeFile(path.join(productDir, "product.json"), JSON.stringify({ name: "Demo", cta: "点击下单" }));
+  await writeFile(path.join(productDir, "claims.json"), JSON.stringify({ claims: [{ text: "服帖自然" }] }));
+  await writeFile(path.join(productDir, "campaigns.json"), JSON.stringify({ campaigns: [{ text: "直播间限时福利" }] }));
+  await writeFile(path.join(productDir, "blocked_terms.json"), JSON.stringify({ terms: [{ text: "最强" }] }));
   const result = await run([
     "task",
     "create",
@@ -80,6 +86,13 @@ test("task create writes task_manifest and task_brief without running models", a
   assert.equal(manifest.tts.voice_modify.timbre, -3);
   assert.equal(manifest.subtitle.preset, "live_bar_lower");
   assert.equal(manifest.subtitle.font_source, "/tmp/VoahFont.ttf");
+  const brief = JSON.parse(await readFile(path.join(taskDir, "task_brief.json"), "utf8"));
+  assert.deepEqual(brief.product_claims, [{ text: "服帖自然" }]);
+  assert.deepEqual(brief.product_campaigns, [{ text: "直播间限时福利" }]);
+  assert.deepEqual(brief.product_blocked_terms, [{ text: "最强" }]);
+  assert.equal(brief.copy_parameters.offer, "直播间限时福利");
+  assert.equal(brief.copy_parameters.forbidden_terms, "最强");
+  assert.equal(brief.copy_parameters.cta_policy, "点击下单");
 });
 
 test("batch run --create-only writes batch and task manifests", async () => {
@@ -341,6 +354,59 @@ test("tts preview dry-run writes manifest without secrets", async () => {
   assert.match(result.stdout, /dry_run=true/);
   const manifestText = await readFile(path.join(outputRoot, "run001", "manifest.json"), "utf8");
   assert.doesNotMatch(manifestText, /sk-[A-Za-z0-9_-]{12,}/);
+});
+
+test("tts preview dry-run passes studio voice parameters into payload", async () => {
+  const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const outputRoot = await mkdtemp(path.join(os.tmpdir(), "voah-cli-tts-preview-params-"));
+  const result = await run([
+    "tts",
+    "preview",
+    "--workspace",
+    repoRoot,
+    "--text",
+    "今天给大家测试一下气垫",
+    "--dry-run",
+    "--timestamp",
+    "run002",
+    "--output-root",
+    outputRoot,
+    "--provider",
+    "minimax-official",
+    "--model",
+    "speech-2.8-hd",
+    "--voice-id",
+    "voice-demo",
+    "--speed",
+    "1.15",
+    "--vol",
+    "1.2",
+    "--pitch",
+    "2",
+    "--emotion",
+    "happy",
+    "--modify-pitch",
+    "20",
+    "--modify-intensity",
+    "21",
+    "--modify-timbre",
+    "0"
+  ]);
+  assert.equal(result.code, 0, result.stderr);
+  const payload = JSON.parse(await readFile(path.join(outputRoot, "run002", "minimax_payload.safe.json"), "utf8"));
+  assert.equal(payload.model, "speech-2.8-hd");
+  assert.deepEqual(payload.voice_setting, {
+    voice_id: "voice-demo",
+    speed: 1.15,
+    vol: 1.2,
+    pitch: 2,
+    emotion: "happy"
+  });
+  assert.deepEqual(payload.voice_modify, {
+    pitch: 20,
+    intensity: 21,
+    timbre: 0
+  });
 });
 
 test("tts preview requires text input", async () => {

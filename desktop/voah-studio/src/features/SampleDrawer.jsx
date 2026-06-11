@@ -81,10 +81,14 @@ export function SampleDrawer({ taskDir, onClose }) {
     setPreview(null);
     const res = await window.voah.ttsPreview({
       text: sections[0] || text || "这个妆效真的很适合日常出门。",
+      provider: settings.provider,
+      model: settings.model,
       voiceId: settings.voice_id,
       speed: settings.speed,
+      vol: settings.vol,
+      voiceSettingPitch: settings.pitch,
       emotion: settings.emotion,
-      pitch: settings.modify_pitch ?? settings.pitch,
+      modifyPitch: settings.modify_pitch,
       intensity: settings.intensity,
       timbre: settings.timbre
     });
