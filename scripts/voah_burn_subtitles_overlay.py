@@ -117,6 +117,28 @@ def caption_text_max_width(canvas_width: int, preset: str) -> int:
     return max(1, canvas_width - 2 * 34)
 
 
+# 字幕样式预设：描边宽度/字色/描边色。PIL 的 stroke_width 是外扩描边(画在字形外侧,
+# 不吃中文笔画),等同 HyperFrames 的 paint-order:stroke fill。
+# 旧 songti_white_gold 用 4px 偏粗,在 54px 中文上发糊;白金改为厚而清晰的 3px,
+# 另提供一档细描边 songti_thin_outline(2px,清爽)。
+def caption_style_for_preset(preset: str) -> dict[str, Any]:
+    if preset == "live_bar_lower":
+        return {"font_size": 43, "stroke": 3, "fill": (255, 253, 244, 255), "stroke_fill": (16, 16, 16, 245), "bottom": 246}
+    if preset == "songti_thin_outline_lower":
+        return {"font_size": 54, "stroke": 2, "fill": (255, 255, 255, 255), "stroke_fill": (12, 12, 12, 235), "bottom": 260}
+    # songti_white_gold_lower(默认,白金厚描边)
+    return {"font_size": 54, "stroke": 3, "fill": (255, 253, 244, 255), "stroke_fill": (18, 18, 18, 250), "bottom": 260}
+
+
+def scaled_caption_style(preset: str, canvas_width: int) -> dict[str, Any]:
+    scale = max(0.1, float(canvas_width or 720) / 720.0)
+    style = dict(caption_style_for_preset(preset))
+    for key in ("font_size", "stroke", "bottom"):
+        style[key] = max(1, int(round(float(style[key]) * scale)))
+    style["scale"] = scale
+    return style
+
+
 def is_line_start_punctuation(char: str) -> bool:
     return char in "！？、!?；;：:\"'”’）)]】》"
 
@@ -182,40 +204,41 @@ def render_caption_png(caption: dict[str, Any], plan: dict[str, Any], output: Pa
     height = int(canvas.get("height") or 1280)
     style = plan.get("style") or {}
     preset = str(style.get("preset") or "songti_white_gold_lower")
-    font_size = 43 if preset == "live_bar_lower" else 54
+    sp = scaled_caption_style(preset, width)
+    font_size = sp["font_size"]
     font = load_font(str(style.get("font_source") or ""), font_size)
     max_text_width = caption_text_max_width(width, preset)
     text = wrap_caption(str(caption.get("text") or ""), font, max_text_width)
 
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    stroke = 4 if preset != "live_bar_lower" else 3
+    stroke = sp["stroke"]
     text_w, text_h = text_size(draw, text, font, stroke_width=stroke)
     x = max(24, int((width - text_w) / 2))
-    bottom = 246 if preset == "live_bar_lower" else 260
+    bottom = sp["bottom"]
     y = max(24, height - bottom - text_h)
 
     if preset == "live_bar_lower":
-        pad_x = 30
-        pad_y = 18
+        pad_x = int(round(30 * sp["scale"]))
+        pad_y = int(round(18 * sp["scale"]))
         rect = [
             max(24, x - pad_x),
             max(24, y - pad_y),
             min(width - 24, x + text_w + pad_x),
             min(height - 24, y + text_h + pad_y),
         ]
-        draw.rounded_rectangle(rect, radius=8, fill=(18, 22, 20, 210), outline=(244, 209, 155, 200), width=2)
+        draw.rounded_rectangle(rect, radius=max(1, int(round(8 * sp["scale"]))), fill=(18, 22, 20, 210), outline=(244, 209, 155, 200), width=max(1, int(round(2 * sp["scale"]))))
 
     draw.multiline_text(
         (x, y),
         text,
         font=font,
-        fill=(255, 253, 244, 255),
+        fill=sp["fill"],
         anchor=None,
         spacing=4,
         align="center",
         stroke_width=stroke,
-        stroke_fill=(16, 16, 16, 245),
+        stroke_fill=sp["stroke_fill"],
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     image.save(output)

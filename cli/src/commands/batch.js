@@ -4,7 +4,7 @@ import path from "node:path";
 import { parseArgs, requireOption, optionalInt, optionalNumber } from "../core/args.js";
 import { UserError } from "../core/errors.js";
 import { readJson, writeJson } from "../core/json.js";
-import { createTaskManifest, writeTaskManifest } from "../core/manifest.js";
+import { canvasFromOptions, createTaskManifest, writeTaskManifest } from "../core/manifest.js";
 import { compactDateTime, compactId, ensureDir, resolvePath, resolveWorkspace, slugify } from "../core/paths.js";
 import { runPipeline, writeTaskBrief } from "../core/taskPipeline.js";
 
@@ -34,6 +34,7 @@ export async function runBatchCommand({ argv }) {
   const count = Math.max(1, optionalInt(options.count, 1));
   const concurrency = Math.max(1, optionalInt(options.concurrency, 2));
   const targetDurationS = optionalNumber(options["target-duration"] ?? options["target-duration-s"], 45);
+  const canvas = canvasFromOptions(options);
   const batchSlug = `${compactDateTime()}_${slugify(options.label || `${targetDurationS}秒批量${count}条`)}`;
   const batchDir = resolvePath(options["batch-dir"] || path.join("cache", "voah_batches", productSlug, batchSlug), workspace);
   await ensureDir(path.join(batchDir, "logs"));
@@ -50,7 +51,8 @@ export async function runBatchCommand({ argv }) {
       intakeRun,
       taskDir,
       targetDurationS,
-      label: taskLabel
+      label: taskLabel,
+      canvas
     });
     manifest.batch = {
       batch_dir: batchDir,
@@ -105,6 +107,8 @@ export async function runBatchCommand({ argv }) {
     status: options["create-only"] ? "queued" : "running",
     count,
     concurrency,
+    resolution: canvas.preset,
+    canvas,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     tasks
@@ -201,6 +205,10 @@ async function resumeBatch(argv) {
   const manifest = await readJson(manifestPath);
   const tasks = (manifest.tasks || []).map((task) => ({ ...task }));
   const concurrency = Math.max(1, optionalInt(options.concurrency ?? manifest.concurrency, 2));
+  options.resolution ??= manifest.resolution || manifest.canvas?.preset;
+  options.width ??= manifest.canvas?.width;
+  options.height ??= manifest.canvas?.height;
+  options.fps ??= manifest.canvas?.fps;
   const runnable = tasks.filter((task) => isRunnableOnResume(task));
   const running = tasks.filter((task) => task.status === "running");
   for (const task of runnable) {

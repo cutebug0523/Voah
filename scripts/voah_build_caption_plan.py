@@ -34,6 +34,14 @@ def as_abs(path: str | Path, base: Path | None = None) -> Path:
     return value.resolve()
 
 
+def resolution_preset(width: int, height: int) -> str:
+    if width == 1080 and height == 1920:
+        return "1080p"
+    if width == 720 and height == 1280:
+        return "720p"
+    return "custom"
+
+
 SEMANTIC_BREAK_RE = re.compile(r"([。！？!?；;，,、：:])")
 REMOVE_CAPTION_PUNCT_RE = re.compile(r"[，。,\.、､]")
 WEIGHT_RE = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’（）()\[\]【】《》<>+\-_/]+")
@@ -264,6 +272,9 @@ def main() -> int:
     parser.add_argument("--task-dir", default=None)
     parser.add_argument("--output", default="caption_plan.json")
     parser.add_argument("--preset", default="songti_white_gold_lower")
+    parser.add_argument("--width", type=int, default=720)
+    parser.add_argument("--height", type=int, default=1280)
+    parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--split-punctuation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--style-source", default="/Users/noah/混剪/cache/voah_tasks/fangshai-qidian/20260605_164301_minimax_voice_audio_master_v1/hyperframes_style_preview/subtitle_presets.json")
     parser.add_argument("--font-source", default="/System/Library/Fonts/Supplemental/Songti.ttc")
@@ -348,9 +359,10 @@ def main() -> int:
             "font_policy": "hyperframes_project_generator_decides_embedding",
         },
         "canvas": {
-            "width": 720,
-            "height": 1280,
-            "fps": 30,
+            "preset": resolution_preset(args.width, args.height),
+            "width": args.width,
+            "height": args.height,
+            "fps": args.fps,
         },
         "captions": captions,
         "summary": {

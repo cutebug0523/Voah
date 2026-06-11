@@ -5,7 +5,7 @@ import path from "node:path";
 import { optionalInt, optionalNumber } from "./args.js";
 import { UserError } from "./errors.js";
 import { readJson, writeJson } from "./json.js";
-import { markDownstreamStale, markStage, refreshActiveArtifacts, recordStageOutputHashes, detectUpstreamChange, STAGE_ORDER, writeTaskManifest, loadTaskManifest } from "./manifest.js";
+import { canvasFromOptions, markDownstreamStale, markStage, refreshActiveArtifacts, recordStageOutputHashes, detectUpstreamChange, STAGE_ORDER, writeTaskManifest, loadTaskManifest } from "./manifest.js";
 import { compactId } from "./paths.js";
 import { createTaskRun, isRunSupersededError, markRunStage, promoteStageOutputs, updateTaskRun } from "./taskRun.js";
 import { SecretService } from "../services/secretService.js";
@@ -231,6 +231,7 @@ export async function runTtsStage({ workspace, taskDir, runContext, options = {}
 
 export async function runRetrieveStage({ workspace, taskDir, runContext, options = {} }) {
   const manifest = await requireTaskManifest(taskDir);
+  const canvas = canvasFromOptions(options, manifest.canvas);
   const audioSections = path.join(taskDir, "audio_sections.json");
   const voiceWav = path.join(taskDir, "voice.wav");
   const shotIndex = path.join(resolveIntakeRun(workspace, manifest), "shot_index.json");
@@ -262,11 +263,11 @@ export async function runRetrieveStage({ workspace, taskDir, runContext, options
       "--selection-planner",
       options["selection-planner"] || "auto",
       "--width",
-      String(optionalInt(options.width, 720)),
+      String(canvas.width),
       "--height",
-      String(optionalInt(options.height, 1280)),
+      String(canvas.height),
       "--fps",
-      String(optionalInt(options.fps, 30)),
+      String(canvas.fps),
       "--preset",
       options.preset || "veryfast"
     ],
@@ -286,6 +287,7 @@ export async function runRetrieveStage({ workspace, taskDir, runContext, options
 
 export async function runSubtitleStage({ workspace, taskDir, runContext, options = {} }) {
   const manifest = await requireTaskManifest(taskDir);
+  const canvas = canvasFromOptions(options, manifest.canvas);
   const audioSections = path.join(taskDir, "audio_sections.json");
   const preview = path.join(taskDir, "preview_no_subtitles.mp4");
   const voiceWav = path.join(taskDir, "voice.wav");
@@ -304,6 +306,12 @@ export async function runSubtitleStage({ workspace, taskDir, runContext, options
       outputDir,
       "--preset",
       options["subtitle-preset"] || options.preset || manifest.subtitle?.preset || "songti_white_gold_lower",
+      "--width",
+      String(canvas.width),
+      "--height",
+      String(canvas.height),
+      "--fps",
+      String(canvas.fps),
       ...(options["font-source"] || manifest.subtitle?.font_source ? ["--font-source", options["font-source"] || manifest.subtitle?.font_source] : []),
       options["no-split-punctuation"] ? "--no-split-punctuation" : "--split-punctuation"
     ],

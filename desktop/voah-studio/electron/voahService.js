@@ -560,7 +560,11 @@ function tallyTasks(tasks) {
   return c;
 }
 
-function createBatch({ product, count, targetDuration, intakeRun, concurrency = 1, extraArgs = [] }) {
+function createBatch({ product, count, targetDuration, intakeRun, concurrency = 1, resolution = "720p", extraArgs = [] }) {
+  return runVoah(buildCreateBatchArgs({ product, count, targetDuration, intakeRun, concurrency, resolution, extraArgs }));
+}
+
+export function buildCreateBatchArgs({ product, count, targetDuration, intakeRun, concurrency = 1, resolution = "720p", extraArgs = [] }) {
   const args = [
     "batch",
     "run",
@@ -573,11 +577,13 @@ function createBatch({ product, count, targetDuration, intakeRun, concurrency = 
     "--target-duration",
     String(targetDuration),
     "--concurrency",
-    String(concurrency)
+    String(concurrency),
+    "--resolution",
+    resolution || "720p"
   ];
   if (intakeRun) args.push("--intake-run", intakeRun);
   args.push(...extraArgs);
-  return runVoah(args);
+  return args;
 }
 
 function retryTask({ taskDir, fromStage }) {
@@ -1151,7 +1157,11 @@ function resolveSubtitleFontSettings(subtitle = {}) {
 
 // ---- 精修打样 ----
 
-function createSampleTask({ product, productName, targetDuration, intakeRun, extraArgs = [] }) {
+function createSampleTask({ product, productName, targetDuration, intakeRun, resolution = "720p", extraArgs = [] }) {
+  return runVoah(buildCreateSampleTaskArgs({ product, productName, targetDuration, intakeRun, resolution, extraArgs }));
+}
+
+export function buildCreateSampleTaskArgs({ product, productName, targetDuration, intakeRun, resolution = "720p", extraArgs = [] }) {
   const args = [
     "task",
     "create",
@@ -1161,13 +1171,15 @@ function createSampleTask({ product, productName, targetDuration, intakeRun, ext
     product || "",
     "--target-duration",
     String(targetDuration || 45),
+    "--resolution",
+    resolution || "720p",
     "--label",
     "studio_sample"
   ];
   if (productName) args.push("--product-name", productName);
   if (intakeRun) args.push("--intake-run", intakeRun);
   args.push(...extraArgs);
-  return runVoah(args);
+  return args;
 }
 
 function runCopyStage(taskDir) {

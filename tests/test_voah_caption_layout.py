@@ -100,6 +100,25 @@ class CaptionLayoutTest(unittest.TestCase):
         self.assertIn('font-family: "VoahSystemSongti", serif;', css)
         self.assertNotIn("var(--voah-caption-font)", css)
 
+    def test_songti_caption_css_scales_for_1080p(self):
+        css = hyperframes.style_css_for_preset(
+            "songti_white_gold_lower",
+            '"VoahSystemSongti", serif',
+            1080,
+        )
+
+        self.assertIn("max-width: 978px;", css)
+        self.assertIn("font-size: 81px;", css)
+        self.assertIn("bottom: 390px;", css)
+        self.assertIn("-webkit-text-stroke: 3.3px", css)
+
+    def test_overlay_fallback_style_scales_for_1080p(self):
+        style = overlay.scaled_caption_style("songti_white_gold_lower", 1080)
+
+        self.assertEqual(style["font_size"], 81)
+        self.assertEqual(style["stroke"], 4)
+        self.assertEqual(style["bottom"], 390)
+
     def test_overlay_fallback_wraps_by_rendered_pixel_width(self):
         font = overlay.load_font("/System/Library/Fonts/Supplemental/Songti.ttc", 54)
         max_width = overlay.caption_text_max_width(720, "songti_white_gold_lower")

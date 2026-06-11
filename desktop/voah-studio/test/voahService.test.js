@@ -6,7 +6,7 @@ import path from "node:path";
 import { dedupeIntakeRuns, normalizeIntakeStatus, summarizeIntakeRuns } from "../electron/intakeStatus.js";
 import { isTaskAcknowledged, withTaskAcknowledgement } from "../electron/taskAcknowledgements.js";
 import { listTaskRuns } from "../electron/taskRuns.js";
-import { normalizeClaimsForSave, providerRowsFromModules } from "../electron/voahService.js";
+import { buildCreateBatchArgs, buildCreateSampleTaskArgs, normalizeClaimsForSave, providerRowsFromModules } from "../electron/voahService.js";
 
 test("intake status prefers explicit failed result over missing shot index", () => {
   const status = normalizeIntakeStatus({
@@ -175,4 +175,25 @@ test("studio preserves core and support claim tiers when saving", () => {
     { text: "防晒底妆二合一", tier: "core", rank: 1 },
     { text: "轻薄服帖", tier: "support", rank: 2 }
   ]);
+});
+
+test("studio passes resolution to batch and sample CLI args", () => {
+  const batchArgs = buildCreateBatchArgs({
+    product: "demo",
+    count: 2,
+    targetDuration: 45,
+    intakeRun: "/tmp/intake",
+    concurrency: 1,
+    resolution: "1080p"
+  });
+  assert.deepEqual(batchArgs.slice(batchArgs.indexOf("--resolution"), batchArgs.indexOf("--resolution") + 2), ["--resolution", "1080p"]);
+
+  const sampleArgs = buildCreateSampleTaskArgs({
+    product: "demo",
+    productName: "Demo",
+    targetDuration: 45,
+    intakeRun: "/tmp/intake",
+    resolution: "1080p"
+  });
+  assert.deepEqual(sampleArgs.slice(sampleArgs.indexOf("--resolution"), sampleArgs.indexOf("--resolution") + 2), ["--resolution", "1080p"]);
 });

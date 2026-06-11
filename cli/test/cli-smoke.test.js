@@ -77,7 +77,9 @@ test("task create writes task_manifest and task_brief without running models", a
     "--subtitle-preset",
     "live_bar_lower",
     "--font-source",
-    "/tmp/VoahFont.ttf"
+    "/tmp/VoahFont.ttf",
+    "--resolution",
+    "1080p"
   ]);
   assert.equal(result.code, 0, result.stderr);
   const taskDir = result.stdout.match(/task_dir=(.*)/)?.[1].trim();
@@ -96,6 +98,8 @@ test("task create writes task_manifest and task_brief without running models", a
   assert.equal(manifest.tts.voice_modify.timbre, -3);
   assert.equal(manifest.subtitle.preset, "live_bar_lower");
   assert.equal(manifest.subtitle.font_source, "/tmp/VoahFont.ttf");
+  assert.equal(manifest.resolution, "1080p");
+  assert.deepEqual(manifest.canvas, { preset: "1080p", width: 1080, height: 1920, fps: 30 });
   const brief = JSON.parse(await readFile(path.join(taskDir, "task_brief.json"), "utf8"));
   assert.deepEqual(brief.product_claims, [{ text: "服帖自然" }]);
   assert.deepEqual(brief.product_campaigns, [{ text: "直播间限时福利" }]);
@@ -123,6 +127,8 @@ test("batch run --create-only writes batch and task manifests", async () => {
     "2",
     "--concurrency",
     "2",
+    "--resolution",
+    "1080p",
     "--create-only"
   ]);
   assert.equal(result.code, 0, result.stderr);
@@ -131,9 +137,14 @@ test("batch run --create-only writes batch and task manifests", async () => {
   const batch = JSON.parse(await readFile(path.join(batchDir, "batch_manifest.json"), "utf8"));
   assert.equal(batch.tasks.length, 2);
   assert.equal(batch.concurrency, 2);
+  assert.equal(batch.resolution, "1080p");
+  assert.deepEqual(batch.canvas, { preset: "1080p", width: 1080, height: 1920, fps: 30 });
   for (const task of batch.tasks) {
     assert.ok(existsSync(path.join(task.task_dir, "task_manifest.json")));
     assert.ok(existsSync(path.join(task.task_dir, "task_brief.json")));
+    const taskManifest = JSON.parse(await readFile(path.join(task.task_dir, "task_manifest.json"), "utf8"));
+    assert.equal(taskManifest.resolution, "1080p");
+    assert.deepEqual(taskManifest.canvas, { preset: "1080p", width: 1080, height: 1920, fps: 30 });
   }
 });
 

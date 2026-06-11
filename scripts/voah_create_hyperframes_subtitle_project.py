@@ -117,50 +117,62 @@ def font_face_css(font_source: Path, project_dir: Path) -> tuple[str, str, dict[
     )
 
 
-def style_css_for_preset(preset: str, font_stack: str) -> str:
+def px(value: float) -> str:
+    rounded = round(float(value), 2)
+    if rounded == int(rounded):
+        return f"{int(rounded)}px"
+    return f"{rounded}px"
+
+
+def style_scale(canvas_width: int) -> float:
+    return max(0.1, float(canvas_width or 720) / 720.0)
+
+
+def style_css_for_preset(preset: str, font_stack: str, canvas_width: int = 720) -> str:
+    scale = style_scale(canvas_width)
     if preset == "live_bar_lower":
-        css = """
-      .live-bar-caption {
+        css = f"""
+      .live-bar-caption {{
         position: absolute;
-        left: 46px;
-        right: 46px;
-        bottom: 246px;
-        min-height: 94px;
+        left: {px(46 * scale)};
+        right: {px(46 * scale)};
+        bottom: {px(246 * scale)};
+        min-height: {px(94 * scale)};
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 18px 30px 20px;
-        border-radius: 8px;
+        padding: {px(18 * scale)} {px(30 * scale)} {px(20 * scale)};
+        border-radius: {px(8 * scale)};
         font-family: __VOAH_CAPTION_FONT_STACK__;
-        font-size: 44px;
+        font-size: {px(44 * scale)};
         line-height: 1.12;
         font-weight: 900;
         text-align: center;
         letter-spacing: 0;
         color: #fffdf4;
         background: rgba(18, 22, 20, 0.82);
-        border: 2px solid rgba(244, 209, 155, 0.78);
+        border: {px(2 * scale)} solid rgba(244, 209, 155, 0.78);
         box-shadow:
-          0 10px 26px rgba(0, 0, 0, 0.36),
-          inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-        text-shadow: 2px 3px 5px rgba(0, 0, 0, 0.62);
-      }
+          0 {px(10 * scale)} {px(26 * scale)} rgba(0, 0, 0, 0.36),
+          inset 0 0 0 {px(1 * scale)} rgba(255, 255, 255, 0.12);
+        text-shadow: {px(2 * scale)} {px(3 * scale)} {px(5 * scale)} rgba(0, 0, 0, 0.62);
+      }}
 
-      .live-bar-caption .highlight {
+      .live-bar-caption .highlight {{
         color: #f6cf82;
-      }
+      }}
 """
         return css.replace("__VOAH_CAPTION_FONT_STACK__", font_stack)
-    css = """
-      .songti-caption {
+    css = f"""
+      .songti-caption {{
         position: absolute;
-        left: 34px;
-        right: 34px;
-        bottom: 260px;
+        left: {px(34 * scale)};
+        right: {px(34 * scale)};
+        bottom: {px(260 * scale)};
         box-sizing: border-box;
-        max-width: 652px;
+        max-width: {px(652 * scale)};
         font-family: __VOAH_CAPTION_FONT_STACK__;
-        font-size: 54px;
+        font-size: {px(54 * scale)};
         line-height: 1.08;
         font-weight: 900;
         text-align: center;
@@ -169,16 +181,16 @@ def style_css_for_preset(preset: str, font_stack: str) -> str:
         word-break: break-word;
         overflow-wrap: break-word;
         color: #fffdf4;
-        -webkit-text-stroke: 2.2px rgba(16, 16, 16, 0.94);
+        -webkit-text-stroke: {px(2.2 * scale)} rgba(16, 16, 16, 0.94);
         text-shadow:
-          0 2px 0 rgba(255, 255, 255, 0.35),
-          3px 5px 7px rgba(0, 0, 0, 0.58),
-          0 0 10px rgba(0, 0, 0, 0.22);
-      }
+          0 {px(2 * scale)} 0 rgba(255, 255, 255, 0.35),
+          {px(3 * scale)} {px(5 * scale)} {px(7 * scale)} rgba(0, 0, 0, 0.58),
+          0 0 {px(10 * scale)} rgba(0, 0, 0, 0.22);
+      }}
 
-      .songti-caption .highlight {
+      .songti-caption .highlight {{
         color: #f4d19b;
-      }
+      }}
 """
     return css.replace("__VOAH_CAPTION_FONT_STACK__", font_stack)
 
@@ -211,7 +223,7 @@ def build_index_html(project_dir: Path, base_video: Path, voice_audio: Path, pla
     height = int(plan.get("canvas", {}).get("height") or 1280)
     preset = str(plan.get("style", {}).get("preset") or "songti_white_gold_lower")
     captions = "\n".join(caption_html(caption, preset) for caption in plan.get("captions") or [])
-    preset_css = style_css_for_preset(preset, font_stack)
+    preset_css = style_css_for_preset(preset, font_stack, width)
     return f'''<!doctype html>
 <html>
   <head>

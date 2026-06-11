@@ -2,6 +2,11 @@ import { useEffect, useState } from "react";
 import { useStore } from "../hooks/useStore.js";
 import { DURATION_PRESETS } from "../lib/status.js";
 
+const RESOLUTION_PRESETS = [
+  { value: "720p", label: "720p" },
+  { value: "1080p", label: "1080p" }
+];
+
 export function NewBatchDrawer({ open, onClose, onOpenSample }) {
   const products = useStore((s) => s.products);
   const studioSettings = useStore((s) => s.studioSettings);
@@ -13,6 +18,7 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
   const [duration, setDuration] = useState(45);
   const [customDuration, setCustomDuration] = useState("");
   const [concurrency, setConcurrency] = useState(1);
+  const [resolution, setResolution] = useState("720p");
   const [submitting, setSubmitting] = useState(false);
   const [sampling, setSampling] = useState(false);
   const [result, setResult] = useState(null);
@@ -39,6 +45,7 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
       targetDuration,
       intakeRun: selected.latest_intake_run,
       concurrency: Number(concurrency),
+      resolution,
       extraArgs: productionArgs(studioSettings)
     });
     setSubmitting(false);
@@ -57,6 +64,7 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
       productName: selected?.name || product,
       targetDuration,
       intakeRun: selected.latest_intake_run,
+      resolution,
       extraArgs: productionArgs(studioSettings)
     });
     setSampling(false);
@@ -153,6 +161,19 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
                   onChange={(e) => setConcurrency(e.target.value)}
                   className="w-20 px-3 py-2 rounded-lg border border-slate-200 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none"
                 />
+              </Field>
+              <Field label="分辨率">
+                <select
+                  value={resolution}
+                  onChange={(e) => setResolution(e.target.value)}
+                  className="w-28 px-3 py-2 rounded-lg border border-slate-200 bg-white focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none"
+                >
+                  {RESOLUTION_PRESETS.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
               </Field>
             </div>
           </details>

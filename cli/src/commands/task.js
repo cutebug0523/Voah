@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseArgs, requireOption, optionalInt, optionalNumber } from "../core/args.js";
 import { UserError } from "../core/errors.js";
 import { readJson, writeJson } from "../core/json.js";
-import { createTaskManifest, writeTaskManifest } from "../core/manifest.js";
+import { canvasFromOptions, createTaskManifest, writeTaskManifest } from "../core/manifest.js";
 import { compactDateTime, compactId, ensureDir, resolvePath, resolveWorkspace, slugify } from "../core/paths.js";
 import { runPipeline, writeTaskBrief } from "../core/taskPipeline.js";
 
@@ -38,6 +38,7 @@ async function createTask(argv) {
     throw new UserError(`intake-run 缺少 shot_index.json：${intakeRun}`);
   }
   const targetDurationS = optionalNumber(options["target-duration"] ?? options["target-duration-s"], 45);
+  const canvas = canvasFromOptions(options);
   const label = options.label || `${targetDurationS}秒${options.platform || "抖音"}投放版`;
   const taskId = compactId("task");
   const taskSlug = `${compactDateTime()}_${slugify(label)}_${taskId.slice(-6)}`;
@@ -50,7 +51,8 @@ async function createTask(argv) {
     intakeRun,
     taskDir,
     targetDurationS,
-    label
+    label,
+    canvas
   });
   manifest.tts = {
     provider: options["tts-provider"] || "minimax-official",

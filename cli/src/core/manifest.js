@@ -32,7 +32,8 @@ export async function writeTaskManifest(taskDir, manifest) {
   await writeJson(manifestPath(taskDir), manifest);
 }
 
-export function createTaskManifest({ taskId, productSlug, productName, intakeRun, taskDir, targetDurationS, label }) {
+export function createTaskManifest({ taskId, productSlug, productName, intakeRun, taskDir, targetDurationS, label, canvas }) {
+  const normalizedCanvas = normalizeCanvas(canvas);
   return {
     schema_version: "voah.task_manifest.v1",
     task_id: taskId || compactId("task"),
@@ -42,6 +43,8 @@ export function createTaskManifest({ taskId, productSlug, productName, intakeRun
     task_dir: taskDir,
     label: label || "",
     target_duration_s: targetDurationS,
+    canvas: normalizedCanvas,
+    resolution: normalizedCanvas.preset,
     status: "queued",
     active_artifacts: {},
     stages: {},
@@ -51,6 +54,48 @@ export function createTaskManifest({ taskId, productSlug, productName, intakeRun
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
+}
+
+export function canvasFromOptions(options = {}, fallback = {}) {
+  if (options.resolution) {
+    return canvasFromResolution(options.resolution);
+  }
+  const width = Number(options.width ?? fallback.width ?? 720);
+  const height = Number(options.height ?? fallback.height ?? 1280);
+  return normalizeCanvas({
+    width,
+    height,
+    fps: options.fps ?? fallback.fps ?? 30,
+    preset: presetForCanvas(width, height)
+  });
+}
+
+export function canvasFromResolution(resolution = "720p") {
+  const value = String(resolution || "720p").trim().toLowerCase();
+  if (value === "1080p" || value === "1080" || value === "fhd") {
+    return { preset: "1080p", width: 1080, height: 1920, fps: 30 };
+  }
+  if (value === "720p" || value === "720" || value === "hd") {
+    return { preset: "720p", width: 720, height: 1280, fps: 30 };
+  }
+  throw new Error(`未知分辨率档位：${resolution}`);
+}
+
+export function normalizeCanvas(canvas = {}) {
+  const width = Math.max(1, Math.round(Number(canvas.width || 720)));
+  const height = Math.max(1, Math.round(Number(canvas.height || 1280)));
+  return {
+    preset: canvas.preset || presetForCanvas(width, height),
+    width,
+    height,
+    fps: Math.max(1, Math.round(Number(canvas.fps || 30)))
+  };
+}
+
+function presetForCanvas(width, height) {
+  if (Number(width) === 1080 && Number(height) === 1920) return "1080p";
+  if (Number(width) === 720 && Number(height) === 1280) return "720p";
+  return "custom";
 }
 
 export async function markStage(taskDir, stage, patch) {
