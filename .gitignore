@@ -36,8 +36,7 @@ cache/*
 GPT-SoVITS/
 _research/*
 !_research/README.md
-ohmycrab/*
-!ohmycrab/README.md
+ohmycrab/
 
 # Large media files should stay in local workspace or artifact storage
 *.mp4
