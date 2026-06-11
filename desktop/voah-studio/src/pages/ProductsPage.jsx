@@ -5,6 +5,7 @@ import { useStore } from "../hooks/useStore.js";
 const STATUS_META = {
   ready: { label: "就绪", cls: "text-ok bg-ok/5 border-ok/20" },
   intaking: { label: "入库中", cls: "text-run bg-run/5 border-run/20" },
+  intake_failed: { label: "入库失败", cls: "text-err bg-err/5 border-err/20" },
   pending_intake: { label: "待入库", cls: "text-ink-500 bg-slate-50 border-slate-200" }
 };
 
@@ -71,7 +72,7 @@ export function ProductsPage() {
         </div>
       </section>
 
-      <ProductDetail product={selected} onStartIntake={() => setDrawer("intake")} />
+        <ProductDetail product={selected} onStartIntake={() => setDrawer("intake")} />
       <ProductDrawer open={drawer === "new"} onClose={() => setDrawer(null)} />
       <IntakeDrawer product={selected} open={drawer === "intake"} onClose={() => setDrawer(null)} />
     </div>
@@ -105,7 +106,7 @@ function ProductDetail({ product, onStartIntake }) {
   const claims = detail?.claims?.claims || [];
   const campaigns = detail?.campaigns?.campaigns || [];
   const blocked = detail?.blocked_terms?.terms || [];
-  const runs = detail?.intake_runs || [];
+  const runs = (detail?.intake_runs || []).filter((run) => !run.system);
 
   async function save() {
     setSaving(true);
@@ -191,11 +192,19 @@ function ProductDetail({ product, onStartIntake }) {
                 <div key={run.run_dir} className="px-3 py-2 flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-xs font-medium truncate">{run.name}</div>
-                    <div className="text-[11px] text-ink-400">{run.shot_count != null ? `${run.shot_count} 段` : "处理中"}</div>
+                    <div className={`text-[11px] ${run.status === "failed" ? "text-err" : run.status === "stalled" ? "text-warn" : "text-ink-400"}`}>
+                      {runStatusText(run)}
+                    </div>
+                    {run.error?.message && <div className="text-[11px] text-err truncate max-w-[360px]">{run.error.message}</div>}
                   </div>
-                  <button onClick={() => window.voah?.reveal(run.run_dir)} className="text-xs text-brand-600 hover:underline">
-                    目录
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {run.progress?.percent > 0 && run.status === "running" && (
+                      <span className="text-[11px] text-run">{run.progress.percent}%</span>
+                    )}
+                    <button onClick={() => window.voah?.reveal(run.run_dir)} className="text-xs text-brand-600 hover:underline">
+                      目录
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -228,6 +237,18 @@ function toEditState(detail, product) {
 
 function linesFromItems(items) {
   return (items || []).map((item) => item.text || item.claim || item.name || item.term || item).filter(Boolean).join("\n");
+}
+
+function runStatusText(run) {
+  if (run.ready && run.shot_count != null) return `${run.shot_count} 段`;
+  if (run.status === "failed") return "失败";
+  if (run.status === "stalled") return "需查看";
+  if (run.status === "succeeded") {
+    const skipped = Number(run.incremental?.skipped_count || 0);
+    return skipped ? `已跳过 ${skipped} 个` : "完成";
+  }
+  if (run.status === "running") return run.stage_label || "处理中";
+  return "待处理";
 }
 
 function ProductDrawer({ open, onClose }) {
@@ -322,7 +343,7 @@ function IntakeDrawer({ product, open, onClose }) {
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
-        <DrawerHead title="素材入库" onClose={onClose} />
+        <DrawerHead title="添加素材" onClose={onClose} />
         <div className="flex-1 p-5 space-y-4">
           <div className="text-xs text-ink-500">
             {product?.name} · {product?.slug}
@@ -350,7 +371,7 @@ function IntakeDrawer({ product, open, onClose }) {
             disabled={!sourceDir || !product?.slug || busy}
             className="w-full py-2.5 rounded-lg bg-brand-600 hover:bg-brand-700 disabled:bg-ink-300 text-white font-medium"
           >
-            {busy ? "启动中…" : "开始入库"}
+              {busy ? "启动中…" : "开始处理"}
           </button>
         </div>
       </div>

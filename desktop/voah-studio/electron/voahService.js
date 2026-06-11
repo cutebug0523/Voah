@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dialog, shell } from "electron";
 import { SecretService } from "../../../cli/src/services/secretService.js";
 import { FALLBACK_TTS_VOICES, FONT_OPTIONS, VOICE_NAME_ZH } from "../src/lib/studioOptions.js";
+import { elapsedSeconds, intakeStatusLabel, normalizeIntakeStatus, summarizeIntakeRuns } from "./intakeStatus.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +36,7 @@ const MODEL_MODULES = [
 
 export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:listProducts", () => listProducts());
+  ipcMain.handle("voah:listTaskCenter", () => listTaskCenter());
   ipcMain.handle("voah:inspectProduct", (_e, slug) => inspectProduct(slug));
   ipcMain.handle("voah:createProduct", (_e, params) => createProduct(params));
   ipcMain.handle("voah:saveProductDetail", (_e, params) => saveProductDetail(params));
@@ -101,21 +103,28 @@ async function listProducts() {
       brand: "",
       product_dir: path.join(PRODUCTS_DIR, slug)
     };
+    const mergedRun = runs.find((run) => run.name === "_merged" && run.ready);
+    const latestReady = mergedRun || runs.find((run) => run.ready && !run.system);
+    const running = runs.some((run) => ["running", "stalled"].includes(run.status));
+    const failed = runs.some((run) => run.status === "failed");
     bySlug.set(slug, {
       ...existing,
-      latest_intake_run: runs.find((run) => run.ready)?.run_dir || null,
-      intake_run_count: runs.filter((run) => run.ready).length,
-      status: runs.some((run) => run.status === "running")
+      latest_intake_run: latestReady?.run_dir || null,
+      intake_run_count: runs.filter((run) => run.ready && !run.system).length,
+      intake_summary: summarizeIntakeRuns(runs),
+      status: running
         ? "intaking"
-        : runs.some((run) => run.ready)
+        : latestReady
           ? "ready"
-          : "pending_intake"
+          : failed
+            ? "intake_failed"
+            : "pending_intake"
     });
   }
 
   const products = [...bySlug.values()];
   products.sort((a, b) => {
-    const rank = { intaking: 0, ready: 1, pending_intake: 2 };
+    const rank = { intaking: 0, intake_failed: 1, ready: 2, pending_intake: 3 };
     return (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || a.name.localeCompare(b.name, "zh-Hans-CN");
   });
   return products;
@@ -125,7 +134,8 @@ async function inspectProduct(slug) {
   if (!slug) return { ok: false, error: "缺少产品 slug" };
   const productDir = path.join(PRODUCTS_DIR, slug);
   const intake_runs = await intakeRunsForSlug(slug);
-  const inferred = await inferProductContext(intake_runs.find((run) => run.ready)?.run_dir);
+  const inferredRun = intake_runs.find((run) => run.name === "_merged" && run.ready) || intake_runs.find((run) => run.ready);
+  const inferred = await inferProductContext(inferredRun?.run_dir);
   const product = await readJsonSafe(path.join(productDir, "product.json"));
   const claims = await readJsonSafe(path.join(productDir, "claims.json"));
   const campaigns = await readJsonSafe(path.join(productDir, "campaigns.json"));
@@ -186,7 +196,7 @@ async function listIntakeRuns(slug) {
 async function startIntake({ product, productName, sourceDir, limit, label, extraArgs = [] }) {
   const args = [
     "intake",
-    "run",
+    "add",
     "--workspace",
     WORKSPACE,
     "--product",
@@ -218,24 +228,73 @@ async function intakeRunsForSlug(slug) {
   for (const name of await safeReaddir(dir)) {
     const runDir = path.join(dir, name);
     if (!(await isDir(runDir))) continue;
+    if (name === "_jobs") {
+      runs.push(...(await intakeJobsForSlug(slug, runDir)));
+      continue;
+    }
     const shotIndex = await readJsonSafe(path.join(runDir, "shot_index.json"));
+    const statusPayload = await readJsonSafe(path.join(runDir, "desktop_intake_status.json"));
+    const result = await readJsonSafe(path.join(runDir, "desktop_intake_result.json"));
     const manifest =
       (await readJsonSafe(path.join(runDir, "run_manifest.json"))) ||
       (await readJsonSafe(path.join(runDir, "intake_manifest.json"))) ||
       {};
     const ready = Boolean(shotIndex);
+    const status = normalizeIntakeStatus({ ready, statusPayload, result, manifest });
+    const updatedAt = statusPayload?.updated_at || result?.finished_at || manifest.updated_at || manifest.finished_at || manifest.created_at || "";
     runs.push({
       run_dir: runDir,
       name,
       ready,
-      status: ready ? "ready" : manifest.status || "running",
+      system: name.startsWith("_"),
+      status,
+      current_stage: statusPayload?.current_stage || "",
+      stage_label: statusPayload?.stage_label || intakeStatusLabel(status),
+      progress: statusPayload?.progress || {},
+      incremental: result?.incremental || statusPayload?.incremental || {},
+      error: result?.error || statusPayload?.error || manifest.error || null,
+      logs: statusPayload?.logs || result?.logs || manifest.logs || {},
       shot_count: Array.isArray(shotIndex?.shots) ? shotIndex.shots.length : Array.isArray(shotIndex?.records) ? shotIndex.records.length : null,
-      created_at: manifest.created_at || manifest.started_at || "",
-      updated_at: manifest.updated_at || ""
+      created_at: statusPayload?.started_at || result?.created_at || manifest.created_at || manifest.started_at || "",
+      updated_at: updatedAt,
+      elapsed_s: elapsedSeconds(statusPayload?.started_at || manifest.created_at || "", updatedAt)
     });
   }
   runs.sort((a, b) => b.name.localeCompare(a.name));
   return runs;
+}
+
+async function intakeJobsForSlug(slug, jobsDir) {
+  const jobs = [];
+  for (const jobId of await safeReaddir(jobsDir)) {
+    const jobDir = path.join(jobsDir, jobId);
+    if (!(await isDir(jobDir))) continue;
+    const statusPayload = await readJsonSafe(path.join(jobDir, "desktop_intake_status.json"));
+    const result = await readJsonSafe(path.join(jobDir, "desktop_intake_result.json"));
+    if (!statusPayload && !result) continue;
+    const runDir = statusPayload?.run_dir || result?.outputs?.run_dir || jobDir;
+    const ready = Boolean(result?.outputs?.merged_shot_index || result?.outputs?.shot_index);
+    const status = normalizeIntakeStatus({ ready, statusPayload, result, manifest: {} });
+    jobs.push({
+      run_dir: runDir || jobDir,
+      name: jobId,
+      ready: false,
+      system: true,
+      status,
+      current_stage: statusPayload?.current_stage || "",
+      stage_label: statusPayload?.stage_label || intakeStatusLabel(status),
+      progress: statusPayload?.progress || {},
+      incremental: result?.incremental || statusPayload?.incremental || {},
+      error: result?.error || statusPayload?.error || null,
+      logs: statusPayload?.logs || result?.logs || {},
+      shot_count: null,
+      created_at: statusPayload?.started_at || result?.created_at || "",
+      updated_at: statusPayload?.updated_at || result?.finished_at || "",
+      elapsed_s: elapsedSeconds(statusPayload?.started_at || result?.created_at || "", statusPayload?.updated_at || result?.finished_at || ""),
+      product_slug: slug
+    });
+  }
+  return jobs;
 }
 
 async function inferProductContext(runDir) {
@@ -581,6 +640,120 @@ async function collectTaskDirs() {
     }
   }
   return [...new Set(dirs)];
+}
+
+// ---- 任务中心 ----
+
+async function listTaskCenter() {
+  const [products, batches, outputs] = await Promise.all([listProducts(), listBatches(), listOutputs()]);
+  const intakeTasks = [];
+  for (const product of products) {
+    const runs = await intakeRunsForSlug(product.slug);
+    for (const run of runs) {
+      if (!["running", "stalled", "failed"].includes(run.status)) continue;
+      intakeTasks.push({
+        id: `intake:${product.slug}:${run.name}`,
+        kind: "intake",
+        kind_label: "入库",
+        product_slug: product.slug,
+        product_name: product.name,
+        title: product.name,
+        status: run.status,
+        stage_label: run.stage_label || intakeStatusLabel(run.status),
+        progress: normalizeProgress(run.progress),
+        elapsed_s: run.elapsed_s,
+        updated_at: run.updated_at,
+        target_path: run.run_dir,
+        error: run.error?.message || ""
+      });
+    }
+  }
+
+  const running = [];
+  const needsAttention = [];
+  for (const task of intakeTasks) {
+    if (["running", "stalled"].includes(task.status)) running.push(task);
+    if (["failed", "stalled"].includes(task.status)) needsAttention.push(task);
+  }
+
+  for (const batch of batches) {
+    for (const task of batch.tasks || []) {
+      const item = {
+        id: `task:${task.task_dir}`,
+        kind: "video",
+        kind_label: "出片",
+        product_slug: batch.product_slug,
+        product_name: batch.product_name,
+        title: `${batch.product_name || batch.product_slug} #${task.index || ""}`.trim(),
+        status: task.status,
+        stage_label: taskStageLabel(task.current_stage || task.failed_stage),
+        progress: batchProgress(batch, task),
+        elapsed_s: null,
+        updated_at: batch.updated_at || batch.created_at || "",
+        target_path: task.task_dir,
+        error: task.failed_stage ? taskStageLabel(task.failed_stage) : ""
+      };
+      if (task.status === "running" || task.status === "queued") running.push(item);
+      if (task.status === "failed" || task.status === "needs_review") needsAttention.push(item);
+    }
+  }
+
+  const summary = {
+    target: 150,
+    succeeded: outputs.filter((item) => ["succeeded", "completed"].includes(item.status)).length,
+    needs_review: outputs.filter((item) => item.status === "needs_review" || item.qa_status === "manual_review").length,
+    failed: needsAttention.filter((item) => item.status === "failed").length,
+    running: running.length,
+    total: outputs.length
+  };
+
+  return {
+    ok: true,
+    summary,
+    running: sortTasks(running),
+    needs_attention: sortTasks(needsAttention),
+    recent_outputs: outputs.slice(0, 8).map((item) => ({
+      id: `output:${item.task_dir}`,
+      kind: "output",
+      kind_label: "成片",
+      product_slug: item.product_slug,
+      product_name: item.product_name,
+      title: item.label || item.product_name || item.product_slug,
+      status: item.status,
+      stage_label: item.qa_status === "ok" ? "完成" : "待审",
+      updated_at: item.updated_at,
+      target_path: item.final_video || item.task_dir,
+      final_video: item.final_video
+    }))
+  };
+}
+
+function sortTasks(items) {
+  return [...items].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+}
+
+function normalizeProgress(progress = {}) {
+  const total = Number(progress.total || 0);
+  const processed = Number(progress.processed || 0);
+  const percent = Number(progress.percent || (total > 0 ? Math.round((processed / total) * 100) : 0));
+  return { total, processed, percent: Math.max(0, Math.min(100, percent || 0)) };
+}
+
+function batchProgress(batch, task) {
+  if (task.status === "running") return { processed: batch.counts.succeeded, total: batch.total, percent: Math.round((batch.counts.succeeded / Math.max(1, batch.total)) * 100) };
+  if (task.status === "queued") return { processed: batch.counts.succeeded, total: batch.total, percent: 0 };
+  return { processed: 1, total: 1, percent: 100 };
+}
+
+function taskStageLabel(stage) {
+  return {
+    copy: "文案",
+    tts: "配音",
+    retrieve: "选素材",
+    subtitle: "字幕",
+    render: "渲染",
+    qa: "质检"
+  }[stage] || "处理中";
 }
 
 // ---- 设置 ----

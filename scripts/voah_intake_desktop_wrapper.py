@@ -10,9 +10,11 @@ downstream retrieval workers.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +37,21 @@ DIMENSION = 2560
 EMBEDDING_MODEL = "qwen3-vl-embedding"
 STAGE = "material_intake"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".webm"}
+INTAKE_STATUS_FILE = "desktop_intake_status.json"
+INTAKE_RESULT_FILE = "desktop_intake_result.json"
+MATERIAL_REGISTRY_FILE = "material_registry.json"
+STAGE_LABELS = {
+    "queued": "排队中",
+    "scan": "扫描素材",
+    "run_intake": "理解切分",
+    "trim_upload": "裁切上传",
+    "refine_child_vlm": "画面校准",
+    "vectorize": "素材向量",
+    "build_shot_index": "整理素材",
+    "merge_index": "更新素材库",
+    "done": "已完成",
+    "failed": "失败",
+}
 
 
 class WorkerError(RuntimeError):
@@ -65,14 +82,31 @@ def load_json(path: Path) -> Any:
 
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    tmp.replace(path)
+
+
+def load_json_safe(path: Path, fallback: Any = None) -> Any:
+    try:
+        return load_json(path)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return fallback
 
 
 def read_text_if_exists(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def read_tail_if_exists(path: Path | None, max_chars: int = 4000) -> str:
+    if not path or not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return text[-max_chars:]
 
 
 def validate_slug(value: str, field_name: str) -> str:
@@ -89,6 +123,11 @@ def validate_slug(value: str, field_name: str) -> str:
 
 def validate_run_label(value: str) -> str:
     return validate_slug(value or "desktop_intake_v1", "run_label")
+
+
+def sanitize_stem(value: str, fallback: str = "video") -> str:
+    text = re.sub(r"[^A-Za-z0-9_.\-\u4e00-\u9fff]+", "_", str(value or "")).strip("._-")
+    return text or fallback
 
 
 def as_abs(path_value: str | Path, base: Path | None = None) -> Path:
@@ -128,6 +167,19 @@ def as_bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def iso_to_epoch(value: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    normalized = text
+    if re.match(r".*[+-]\d{4}$", normalized):
+        normalized = normalized[:-5] + normalized[-5:-2] + ":" + normalized[-2:]
+    try:
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def shot_id_of(record: dict[str, Any]) -> str:
@@ -171,6 +223,387 @@ def load_job_input(path: Path | None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise WorkerError("invalid_job_input", "job input must be a JSON object")
     return data
+
+
+def product_data_dir(config: dict[str, Any]) -> Path:
+    return Path(config["workspace"]) / "data" / "products" / str(config["product_slug"])
+
+
+def registry_path(config: dict[str, Any]) -> Path:
+    return product_data_dir(config) / MATERIAL_REGISTRY_FILE
+
+
+def intake_job_status_dir(config: dict[str, Any]) -> Path:
+    return (
+        Path(config["workspace"])
+        / "cache"
+        / "voah_video_intake"
+        / str(config["product_slug"])
+        / "_jobs"
+        / str(config["job_id"])
+    )
+
+
+def scan_source_videos(source_dir: Path, max_videos: int = 0) -> list[Path]:
+    videos = [
+        path for path in sorted(source_dir.iterdir())
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+    ]
+    if max_videos > 0:
+        return videos[:max_videos]
+    return videos
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def fingerprint_video(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "source_path": str(path),
+        "filename": path.name,
+        "source_fingerprint": file_sha256(path),
+        "bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "suffix": path.suffix.lower(),
+    }
+
+
+def load_material_registry(config: dict[str, Any]) -> dict[str, Any]:
+    payload = load_json_safe(registry_path(config), {})
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("schema_version", "voah.material_registry.v1")
+    payload.setdefault("product_slug", config["product_slug"])
+    payload.setdefault("items", [])
+    if not isinstance(payload["items"], list):
+        payload["items"] = []
+    return payload
+
+
+def bootstrap_registry_from_existing_runs(config: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any]:
+    items = [
+        item for item in registry.get("items") or []
+        if isinstance(item, dict) and item.get("source_fingerprint")
+    ]
+    by_fp = {str(item.get("source_fingerprint")): item for item in items}
+    changed = False
+    now = now_text()
+    for run_dir in ready_run_dirs_for_product(config):
+        assets = load_json_safe(run_dir / "assets.json", [])
+        if not isinstance(assets, list):
+            continue
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            local = Path(str(first(asset, "local_path", default=nested_get(asset, "file", "local") or "")))
+            if not local.exists() or not local.is_file():
+                continue
+            try:
+                record = fingerprint_video(local)
+            except OSError:
+                continue
+            fp = record["source_fingerprint"]
+            item = by_fp.get(fp)
+            if not item:
+                item = {
+                    "source_fingerprint": fp,
+                    "source_path_history": [],
+                    "created_at": now,
+                }
+                items.append(item)
+                by_fp[fp] = item
+                changed = True
+            history = item.setdefault("source_path_history", [])
+            if str(local) not in history:
+                history.append(str(local))
+                changed = True
+            if item.get("status") != "ready":
+                changed = True
+            item.update(
+                {
+                    "filename": local.name,
+                    "bytes": record["bytes"],
+                    "source_mtime_ns": record["mtime_ns"],
+                    "status": "ready",
+                    "asset_id": first(asset, "asset_id", "id", default=item.get("asset_id", "")),
+                    "duration_s": as_float(nested_get(asset, "media", "duration_s") or nested_get(asset, "file", "duration_s")),
+                    "latest_intake_run": str(run_dir),
+                    "first_intake_run": item.get("first_intake_run") or str(run_dir),
+                    "updated_at": now,
+                }
+            )
+    if changed:
+        registry["items"] = sorted(items, key=lambda item: str(item.get("filename") or item.get("source_fingerprint") or ""))
+        registry["updated_at"] = now
+        write_json(registry_path(config), registry)
+    return registry
+
+
+def registry_ready_fingerprints(registry: dict[str, Any]) -> set[str]:
+    ready: set[str] = set()
+    for item in registry.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") != "ready":
+            continue
+        fp = str(item.get("source_fingerprint") or "")
+        if fp:
+            ready.add(fp)
+    return ready
+
+
+def scan_incremental_sources(config: dict[str, Any]) -> dict[str, Any]:
+    videos = scan_source_videos(config["source_dir"], config["max_videos"])
+    registry = bootstrap_registry_from_existing_runs(config, load_material_registry(config))
+    ready = registry_ready_fingerprints(registry)
+    source_records = [fingerprint_video(path) for path in videos]
+    skipped: list[dict[str, Any]] = []
+    selected: list[dict[str, Any]] = []
+    existing_failed: list[dict[str, Any]] = []
+    include_failed = bool(config.get("include_existing_failed"))
+    force = bool(config.get("force_reindex"))
+    by_fp = {
+        str(item.get("source_fingerprint") or ""): item
+        for item in registry.get("items") or []
+        if isinstance(item, dict) and item.get("source_fingerprint")
+    }
+    for record in source_records:
+        fp = record["source_fingerprint"]
+        existing = by_fp.get(fp)
+        if not force and fp in ready:
+            skipped.append({**record, "reason": "already_ready"})
+            continue
+        if not force and existing and existing.get("status") == "failed" and not include_failed:
+            existing_failed.append(record)
+            continue
+        selected.append(record)
+    return {
+        "registry": registry,
+        "source_records": source_records,
+        "selected": selected,
+        "skipped": skipped,
+        "existing_failed": existing_failed,
+        "force_reindex": force,
+        "include_existing_failed": include_failed,
+    }
+
+
+def prepare_selected_source_dir(records: list[dict[str, Any]], workspace: Path, job_id: str) -> Path:
+    temp_root = Path(tempfile.mkdtemp(prefix=f"voah-intake-sources-{job_id[:8]}-"))
+    for index, record in enumerate(records, start=1):
+        source = Path(record["source_path"])
+        stem = sanitize_stem(source.stem)
+        target = temp_root / f"{index:03d}_{stem}_{record['source_fingerprint'][:10]}{source.suffix.lower()}"
+        try:
+            target.symlink_to(source)
+        except OSError:
+            shutil.copy2(source, target)
+        record["staged_path"] = str(target)
+        record["staged_filename"] = target.name
+    return temp_root
+
+
+def cleanup_temp_source_dir(path: Path | None) -> None:
+    if path and path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def find_asset_for_source(assets: list[Any], source_path: str, fingerprint: str) -> dict[str, Any] | None:
+    source = Path(source_path)
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        local_path = Path(str(first(asset, "local_path", default=nested_get(asset, "file", "local") or "")))
+        if local_path.name == source.name or fingerprint[:10] in local_path.name:
+            return asset
+    return None
+
+
+def rewrite_run_source_paths(run_dir: Path, incremental: dict[str, Any]) -> None:
+    selected = incremental.get("selected") or []
+    by_staged_name = {
+        str(record.get("staged_filename") or ""): record
+        for record in selected
+        if record.get("staged_filename")
+    }
+    if not by_staged_name:
+        return
+    assets_path = run_dir / "assets.json"
+    assets = load_json_safe(assets_path, [])
+    if not isinstance(assets, list):
+        return
+    changed = False
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        local = Path(str(first(asset, "local_path", default=nested_get(asset, "file", "local") or "")))
+        record = by_staged_name.get(local.name)
+        if not record:
+            continue
+        original = record["source_path"]
+        asset["local_path"] = original
+        asset["file_name"] = Path(original).name
+        asset.setdefault("file", {})["local"] = original
+        asset.setdefault("media", {})["source_fingerprint"] = record["source_fingerprint"]
+        asset.setdefault("file", {})["source_fingerprint"] = record["source_fingerprint"]
+        asset["source_fingerprint"] = record["source_fingerprint"]
+        changed = True
+    if changed:
+        write_json(assets_path, assets)
+
+
+def upsert_registry_items(
+    config: dict[str, Any],
+    run_dir: Path,
+    incremental: dict[str, Any],
+    status: str,
+    error: WorkerError | None = None,
+) -> dict[str, Any]:
+    registry = load_material_registry(config)
+    now = now_text()
+    items: list[dict[str, Any]] = [
+        item for item in registry.get("items") or []
+        if isinstance(item, dict) and item.get("source_fingerprint")
+    ]
+    by_fp = {str(item.get("source_fingerprint")): item for item in items}
+    assets = load_json_safe(run_dir / "assets.json", []) if run_dir else []
+    if not isinstance(assets, list):
+        assets = []
+    selected = incremental.get("selected") or []
+    for record in selected:
+        fp = str(record["source_fingerprint"])
+        item = by_fp.get(fp)
+        if not item:
+            item = {
+                "source_fingerprint": fp,
+                "source_path_history": [],
+                "created_at": now,
+            }
+            items.append(item)
+            by_fp[fp] = item
+        history = item.setdefault("source_path_history", [])
+        if record["source_path"] not in history:
+            history.append(record["source_path"])
+        asset = find_asset_for_source(assets, record["source_path"], fp)
+        item.update(
+            {
+                "filename": record["filename"],
+                "bytes": record["bytes"],
+                "source_mtime_ns": record["mtime_ns"],
+                "status": status,
+                "latest_intake_run": str(run_dir) if run_dir else item.get("latest_intake_run", ""),
+                "updated_at": now,
+            }
+        )
+        if not item.get("first_intake_run") and run_dir:
+            item["first_intake_run"] = str(run_dir)
+        if asset:
+            item["asset_id"] = first(asset, "asset_id", "id", default="")
+            item["duration_s"] = as_float(nested_get(asset, "media", "duration_s") or nested_get(asset, "file", "duration_s"))
+        if error:
+            item["error"] = {"code": error.code, "message": error.message}
+        elif "error" in item:
+            item.pop("error", None)
+    registry.update(
+        {
+            "schema_version": "voah.material_registry.v1",
+            "product_slug": config["product_slug"],
+            "updated_at": now,
+            "items": sorted(items, key=lambda item: str(item.get("filename") or item.get("source_fingerprint") or "")),
+            "last_job_id": config["job_id"],
+        }
+    )
+    write_json(registry_path(config), registry)
+    return registry
+
+
+def ready_run_dirs_for_product(config: dict[str, Any]) -> list[Path]:
+    product_root = Path(config["workspace"]) / "cache" / "voah_video_intake" / str(config["product_slug"])
+    dirs: list[Path] = []
+    if not product_root.exists():
+        return dirs
+    for path in product_root.iterdir():
+        if not path.is_dir() or path.name.startswith("_"):
+            continue
+        if (path / "shot_index.json").exists():
+            dirs.append(path)
+    dirs.sort(key=lambda item: item.stat().st_mtime)
+    return dirs
+
+
+def build_merged_index(config: dict[str, Any], registry: dict[str, Any]) -> Path | None:
+    run_dirs = ready_run_dirs_for_product(config)
+    if not run_dirs:
+        return None
+    merged_dir = Path(config["workspace"]) / "cache" / "voah_video_intake" / str(config["product_slug"]) / "_merged"
+    records: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen_ids: set[str] = set()
+    latest_mtime = 0.0
+    for run_dir in run_dirs:
+        index = load_json_safe(run_dir / "shot_index.json", {})
+        run_records = index.get("records") if isinstance(index, dict) else []
+        if not isinstance(run_records, list):
+            continue
+        latest_mtime = max(latest_mtime, run_dir.stat().st_mtime)
+        for record in run_records:
+            if not isinstance(record, dict):
+                continue
+            shot_id = str(record.get("shot_id") or record.get("id") or "")
+            merged_id = f"{run_dir.name}:{shot_id}" if shot_id else f"{run_dir.name}:{len(records)}"
+            if merged_id in seen_ids:
+                continue
+            seen_ids.add(merged_id)
+            records.append({
+                **record,
+                "merged_record_id": merged_id,
+                "source_run_dir": str(run_dir),
+                "source_run_name": run_dir.name,
+            })
+        warnings.extend(index.get("warnings") or [])
+    merged = {
+        "schema_version": "voah.shot_index.merged.v1",
+        "source": "product_merged_intake_runs",
+        "product_slug": config["product_slug"],
+        "product_name": config["product_name"],
+        "created_at": now_text(),
+        "updated_at": now_text(),
+        "source_run_dirs": [str(item) for item in run_dirs],
+        "total_runs": len(run_dirs),
+        "total_shots": len(records),
+        "records": records,
+        "warnings": warnings,
+    }
+    write_json(merged_dir / "shot_index.json", merged)
+    write_json(merged_dir / "material_registry_snapshot.json", registry)
+    write_json(
+        merged_dir / "run_manifest.json",
+        {
+            "schema_version": "voah.merged_intake_manifest.v1",
+            "status": "ready",
+            "created_at": now_text(),
+            "updated_at": now_text(),
+            "product": {"name": config["product_name"], "slug": config["product_slug"]},
+            "source_run_dirs": [str(item) for item in run_dirs],
+            "outputs": {
+                "shot_index": "shot_index.json",
+                "material_registry_snapshot": "material_registry_snapshot.json",
+            },
+            "qa": {
+                "status": "ok" if records else "manual_review",
+                "shot_index_record_count": len(records),
+            },
+        },
+    )
+    if latest_mtime:
+        os.utime(merged_dir / "shot_index.json", (latest_mtime, time.time()))
+    return merged_dir
 
 
 def nested_get(data: dict[str, Any], *keys: str) -> Any:
@@ -261,9 +694,19 @@ def resolve_config(args: argparse.Namespace) -> dict[str, Any]:
         "refine_timeout_s": int(arg_or_job(args, job, "refine_timeout_s", ("options", "refine_timeout_s")) or 600),
         "skip_upload": bool(args.skip_upload) or as_bool(nested_get(job, "options", "skip_upload")),
         "skip_vectorize": bool(args.skip_vectorize) or as_bool(nested_get(job, "options", "skip_vectorize")),
+        "mode": str(arg_or_job(args, job, "mode", ("options", "mode")) or "add").strip() or "add",
+        "force_reindex": bool(args.force_reindex) or as_bool(nested_get(job, "options", "force_reindex")),
+        "include_existing_failed": (
+            bool(args.include_existing_failed)
+            or as_bool(nested_get(job, "options", "include_existing_failed"))
+        ),
     }
     if config["skip_upload"]:
         config["skip_vectorize"] = True
+    if config["mode"] not in {"add", "run"}:
+        raise WorkerError("invalid_input", "mode must be add or run")
+    if config["mode"] == "run":
+        config["force_reindex"] = True
     return config
 
 
@@ -300,18 +743,144 @@ def validate_preflight(config: dict[str, Any]) -> None:
         )
 
 
+def stage_label(stage: str) -> str:
+    return STAGE_LABELS.get(stage, stage)
+
+
+def output_readiness(run_dir: Path | None) -> dict[str, bool]:
+    if not run_dir:
+        return {
+            "run_dir": False,
+            "shot_index": False,
+            "physical_shots": False,
+            "embedding_results": False,
+            "desktop_result": False,
+        }
+    return {
+        "run_dir": run_dir.exists(),
+        "shot_index": (run_dir / "shot_index.json").exists(),
+        "physical_shots": (run_dir / "physical_shots.json").exists(),
+        "embedding_results": (run_dir / "embedding_results.json").exists(),
+        "desktop_result": (run_dir / INTAKE_RESULT_FILE).exists(),
+    }
+
+
+def progress_from_log(stdout_path: Path | None, fallback: dict[str, Any] | None = None) -> dict[str, Any]:
+    progress = dict(fallback or {})
+    text = read_tail_if_exists(stdout_path, 20000)
+    matches = re.findall(r"\[(\d+)/(\d+)\]", text)
+    if matches:
+        processed, total = matches[-1]
+        progress.update({"processed": int(processed), "total": int(total)})
+        total_i = int(total)
+        if total_i > 0:
+            progress["percent"] = round(int(processed) * 100 / total_i)
+    return progress
+
+
+def status_file_paths(config: dict[str, Any], run_dir: Path | None = None) -> list[Path]:
+    paths = [intake_job_status_dir(config) / INTAKE_STATUS_FILE]
+    if run_dir:
+        paths.append(run_dir / INTAKE_STATUS_FILE)
+    return paths
+
+
+def write_status(
+    config: dict[str, Any],
+    status: str,
+    current_stage: str,
+    run_dir: Path | None = None,
+    stdout_path: Path | None = None,
+    stderr_path: Path | None = None,
+    progress: dict[str, Any] | None = None,
+    incremental: dict[str, Any] | None = None,
+    error: WorkerError | None = None,
+    finished: bool = False,
+) -> dict[str, Any]:
+    previous = load_json_safe(intake_job_status_dir(config) / INTAKE_STATUS_FILE, {})
+    now = now_text()
+    started_at = previous.get("started_at") or now
+    progress_payload = progress_from_log(stdout_path, progress)
+    incremental_counts = {}
+    if incremental:
+        incremental_counts = {
+            "source_count": len(incremental.get("source_records") or []),
+            "new_count": len(incremental.get("selected") or []),
+            "skipped_count": len(incremental.get("skipped") or []),
+            "existing_failed_count": len(incremental.get("existing_failed") or []),
+            "force_reindex": bool(incremental.get("force_reindex")),
+            "include_existing_failed": bool(incremental.get("include_existing_failed")),
+        }
+    payload = {
+        "schema_version": "voah.desktop_intake_status.v1",
+        "job_id": config["job_id"],
+        "pid": os.getpid(),
+        "stage": STAGE,
+        "status": status,
+        "current_stage": current_stage,
+        "stage_label": stage_label(current_stage),
+        "started_at": started_at,
+        "updated_at": now,
+        "finished_at": now if finished else "",
+        "product": {"name": config.get("product_name", ""), "slug": config.get("product_slug", "")},
+        "inputs": {
+            "source_dir": str(config.get("source_dir", "")),
+            "max_videos": config.get("max_videos", 0),
+        },
+        "mode": config.get("mode", "add"),
+        "run_dir": str(run_dir) if run_dir else str(previous.get("run_dir") or ""),
+        "progress": progress_payload,
+        "incremental": incremental_counts,
+        "outputs_ready": output_readiness(run_dir),
+        "logs": {
+            "stdout_path": str(stdout_path) if stdout_path else str(previous.get("logs", {}).get("stdout_path", "")),
+            "stderr_path": str(stderr_path) if stderr_path else str(previous.get("logs", {}).get("stderr_path", "")),
+        },
+        "last_log_tail": read_tail_if_exists(stdout_path, 4000),
+        "error": {"code": error.code, "message": error.message} if error else None,
+    }
+    for path in status_file_paths(config, run_dir):
+        write_json(path, payload)
+    return payload
+
+
+def mark_manifest_failed(
+    run_dir: Path,
+    error: WorkerError,
+    stdout_path: Path | None,
+    stderr_path: Path | None,
+) -> None:
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = load_json_safe(manifest_path, {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    manifest["status"] = "failed"
+    manifest["updated_at"] = now_text()
+    manifest["finished_at"] = manifest["updated_at"]
+    manifest["error"] = {"code": error.code, "message": error.message}
+    manifest["logs"] = {
+        "stdout_path": str(stdout_path) if stdout_path else "",
+        "stderr_path": str(stderr_path) if stderr_path else "",
+    }
+    qa = manifest.setdefault("qa", {})
+    qa["status"] = "failed"
+    write_json(manifest_path, manifest)
+
+
 def run_command(
     cmd: list[str],
     stdout_path: Path,
     stderr_path: Path,
     cwd: Path,
     env: dict[str, str] | None = None,
+    heartbeat: Any | None = None,
+    heartbeat_interval_s: float = 5.0,
 ) -> None:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     with stdout_path.open("a", encoding="utf-8") as out, stderr_path.open("a", encoding="utf-8") as err:
         out.write("$ " + " ".join(cmd) + "\n")
         out.flush()
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(cwd),
             stdout=out,
@@ -319,6 +888,15 @@ def run_command(
             text=True,
             env=env or os.environ.copy(),
         )
+        last_heartbeat = 0.0
+        while True:
+            returncode = proc.poll()
+            if heartbeat and time.time() - last_heartbeat >= heartbeat_interval_s:
+                heartbeat()
+                last_heartbeat = time.time()
+            if returncode is not None:
+                break
+            time.sleep(0.5)
     if proc.returncode != 0:
         raise WorkerError(
             "worker_exit_nonzero",
@@ -646,6 +1224,8 @@ def update_run_manifest(
         qa_warnings.append(f"{remaining_refine} physical shots still need VLM refine")
 
     manifest.setdefault("schema_version", "1.3.0")
+    manifest["status"] = "ready"
+    manifest["updated_at"] = now_text()
     manifest["desktop_wrapper"] = {
         "schema_version": "1.0.0",
         "job_id": config["job_id"],
@@ -669,6 +1249,7 @@ def update_run_manifest(
             "embedding_results": "embedding_results.json",
             "shot_index": "shot_index.json",
             "desktop_result": "desktop_intake_result.json",
+            "desktop_status": "desktop_intake_status.json",
         }
     )
     manifest["logs"] = {
@@ -713,6 +1294,8 @@ def build_success_result(
     manifest: dict[str, Any],
     stdout_path: Path,
     stderr_path: Path,
+    incremental: dict[str, Any] | None = None,
+    merged_dir: Path | None = None,
 ) -> dict[str, Any]:
     qa = manifest.get("qa") or {}
     outputs = {
@@ -727,7 +1310,11 @@ def build_success_result(
         "vectorization_inputs": str(run_dir / "vectorization_inputs.json"),
         "embedding_results": str(run_dir / "embedding_results.json"),
         "shot_index": str(run_dir / "shot_index.json"),
-        "desktop_result": str(run_dir / "desktop_intake_result.json"),
+        "desktop_result": str(run_dir / INTAKE_RESULT_FILE),
+        "desktop_status": str(run_dir / INTAKE_STATUS_FILE),
+        "merged_run_dir": str(merged_dir) if merged_dir else "",
+        "merged_shot_index": str(merged_dir / "shot_index.json") if merged_dir else "",
+        "material_registry": str(registry_path(config)),
     }
     result = {
         "schema_version": "1.0.0",
@@ -747,6 +1334,9 @@ def build_success_result(
         },
         "options": {
             "run_label": config["run_label"],
+            "mode": config.get("mode", "add"),
+            "force_reindex": config.get("force_reindex", False),
+            "include_existing_failed": config.get("include_existing_failed", False),
             "scene_threshold": config["scene_threshold"],
             "candidate_min_duration": config["candidate_min_duration"],
             "min_physical_duration": config["min_physical_duration"],
@@ -757,6 +1347,7 @@ def build_success_result(
             "skip_vectorize": config["skip_vectorize"],
         },
         "outputs": outputs,
+        "incremental": incremental_summary(incremental),
         "artifacts": [
             artifact("intake_manifest", run_dir / "run_manifest.json", str(manifest.get("schema_version", "1.3.0"))),
             artifact("assets", run_dir / "assets.json"),
@@ -767,6 +1358,7 @@ def build_success_result(
             artifact("vectorization_inputs", run_dir / "vectorization_inputs.json"),
             artifact("embedding_results", run_dir / "embedding_results.json"),
             artifact("shot_index", run_dir / "shot_index.json", "1.3.0"),
+            artifact("desktop_status", run_dir / INTAKE_STATUS_FILE, "voah.desktop_intake_status.v1"),
         ],
         "qa": {
             "status": qa.get("status", "ok"),
@@ -792,6 +1384,85 @@ def build_success_result(
             "copy:createBrief",
             "assembly:createCandidates",
         ],
+    }
+    return result
+
+
+def incremental_summary(incremental: dict[str, Any] | None) -> dict[str, Any]:
+    if not incremental:
+        return {
+            "source_count": 0,
+            "new_count": 0,
+            "skipped_count": 0,
+            "existing_failed_count": 0,
+        }
+    return {
+        "source_count": len(incremental.get("source_records") or []),
+        "new_count": len(incremental.get("selected") or []),
+        "skipped_count": len(incremental.get("skipped") or []),
+        "existing_failed_count": len(incremental.get("existing_failed") or []),
+        "skipped": [
+            {
+                "filename": item.get("filename", ""),
+                "source_fingerprint": item.get("source_fingerprint", ""),
+                "reason": item.get("reason", "already_ready"),
+            }
+            for item in (incremental.get("skipped") or [])
+        ],
+    }
+
+
+def build_skipped_result(
+    config: dict[str, Any],
+    incremental: dict[str, Any],
+    merged_dir: Path | None,
+) -> dict[str, Any]:
+    result = {
+        "schema_version": "1.0.0",
+        "job_id": config["job_id"],
+        "stage": STAGE,
+        "status": "succeeded",
+        "created_at": now_text(),
+        "finished_at": now_text(),
+        "product": {
+            "name": config["product_name"],
+            "slug": config["product_slug"],
+        },
+        "inputs": {
+            "workspace_root": str(config["workspace"]),
+            "source_dir": str(config["source_dir"]),
+            "max_videos": config["max_videos"],
+        },
+        "options": {
+            "run_label": config["run_label"],
+            "mode": config.get("mode", "add"),
+            "force_reindex": config.get("force_reindex", False),
+            "include_existing_failed": config.get("include_existing_failed", False),
+        },
+        "outputs": {
+            "run_dir": "",
+            "desktop_result": str(intake_job_status_dir(config) / INTAKE_RESULT_FILE),
+            "desktop_status": str(intake_job_status_dir(config) / INTAKE_STATUS_FILE),
+            "merged_run_dir": str(merged_dir) if merged_dir else "",
+            "merged_shot_index": str(merged_dir / "shot_index.json") if merged_dir else "",
+            "material_registry": str(registry_path(config)),
+        },
+        "incremental": incremental_summary(incremental),
+        "qa": {
+            "status": "ok",
+            "warnings": [],
+            "asset_count": 0,
+            "shot_index_record_count": None,
+        },
+        "logs": {
+            "stdout_path": "",
+            "stderr_path": "",
+        },
+        "next_consumers": [
+            "intake:importRun",
+            "copy:createBrief",
+            "assembly:createCandidates",
+        ] if merged_dir else [],
     }
     return result
 
@@ -855,12 +1526,41 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
     output_root = workspace / "cache" / "voah_video_intake" / product_slug
     scripts_dir = config["intake_scripts_dir"]
     output_root.mkdir(parents=True, exist_ok=True)
+    product_data_dir(config).mkdir(parents=True, exist_ok=True)
     started_at_s = time.time()
     run_dir: Path | None = None
     stdout_path: Path | None = None
     stderr_path: Path | None = None
+    incremental: dict[str, Any] | None = None
+    temp_source_dir: Path | None = None
+    effective_source_dir = config["source_dir"]
+
+    write_status(config, "queued", "queued")
 
     try:
+        write_status(config, "running", "scan")
+        incremental = scan_incremental_sources(config)
+        selected = incremental.get("selected") or []
+        if not selected:
+            registry = load_material_registry(config)
+            merged_dir = build_merged_index(config, registry)
+            result = build_skipped_result(config, incremental, merged_dir)
+            write_status(
+                config,
+                "succeeded",
+                "done",
+                progress={"processed": 0, "total": 0, "percent": 100},
+                incremental=incremental,
+                finished=True,
+            )
+            write_json(intake_job_status_dir(config) / INTAKE_RESULT_FILE, result)
+            return result
+
+        temp_source_dir = prepare_selected_source_dir(selected, workspace, config["job_id"])
+        effective_source_dir = temp_source_dir
+        staged_max_videos = len(selected)
+        config_for_run = {**config, "source_dir": effective_source_dir, "max_videos": staged_max_videos}
+
         with tempfile.TemporaryDirectory(prefix="voah-intake-") as temp_name:
             temp_dir = Path(temp_name)
             temp_stdout = temp_dir / "stdout.log"
@@ -871,7 +1571,7 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                 "--skill-runner",
                 str(scripts_dir / "run_intake.py"),
                 "--target-dir",
-                str(config["source_dir"]),
+                str(effective_source_dir),
                 "--product",
                 config["product_name"],
                 "--product-slug",
@@ -883,7 +1583,7 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                 "--run-label",
                 config["run_label"],
                 "--max-videos",
-                str(config["max_videos"]),
+                str(staged_max_videos),
                 "--scene-threshold",
                 str(config["scene_threshold"]),
                 "--candidate-min-duration",
@@ -896,13 +1596,23 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                 str(config["omni_proxy_fps"]),
             ]
             try:
-                run_command(run_cmd, temp_stdout, temp_stderr, workspace)
-            except WorkerError as exc:
-                run_dir = newest_run_dir(
-                    output_root,
-                    config["run_label"],
-                    started_at_s,
+                run_command(
+                    run_cmd,
+                    temp_stdout,
+                    temp_stderr,
+                    workspace,
+                    heartbeat=lambda: write_status(
+                        config,
+                        "running",
+                        "run_intake",
+                        run_dir=newest_run_dir(output_root, config["run_label"], started_at_s),
+                        stdout_path=temp_stdout,
+                        stderr_path=temp_stderr,
+                        incremental=incremental,
+                    ),
                 )
+            except WorkerError as exc:
+                run_dir = newest_run_dir(output_root, config["run_label"], started_at_s)
                 if run_dir:
                     stdout_path, stderr_path = move_temp_logs(temp_dir, run_dir, config["job_id"])
                     exc.run_dir = run_dir
@@ -918,6 +1628,8 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                 raise WorkerError("run_dir_not_found", "intake run completed but run dir could not be found")
 
             stdout_path, stderr_path = move_temp_logs(temp_dir, run_dir, config["job_id"])
+            rewrite_run_source_paths(run_dir, incremental)
+            write_status(config, "running", "run_intake", run_dir, stdout_path, stderr_path, incremental=incremental)
             write_json(
                 run_dir / "logs" / config["job_id"] / "command.safe.json",
                 {
@@ -939,16 +1651,21 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                     "stage": STAGE,
                     "workspace": {"root": str(workspace), "cache_root": str(workspace / "cache")},
                     "product": {"name": config["product_name"], "slug": product_slug},
-                    "inputs": {"source_dir": str(config["source_dir"])},
+                    "inputs": {"source_dir": str(config["source_dir"]), "selected_source_dir": str(effective_source_dir)},
                     "options": {
                         "run_label": config["run_label"],
                         "max_videos": config["max_videos"],
+                        "selected_videos": len(selected),
+                        "skipped_videos": len(incremental.get("skipped") or []),
                         "scene_threshold": config["scene_threshold"],
                         "candidate_min_duration": config["candidate_min_duration"],
                         "min_physical_duration": config["min_physical_duration"],
                         "refine_children": config["refine_children"],
                         "refine_workers": config["refine_workers"],
                         "refine_limit": config["refine_limit"],
+                        "mode": config["mode"],
+                        "force_reindex": config["force_reindex"],
+                        "include_existing_failed": config["include_existing_failed"],
                     },
                     "env": {"required_keys": ["DASHSCOPE_API_KEY"]},
                 },
@@ -961,8 +1678,16 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             }
         ]
         run_manifest = load_json(run_dir / "run_manifest.json")
+        run_manifest.setdefault("desktop_wrapper", {})["incremental"] = {
+            "source_count": len(incremental.get("source_records") or []),
+            "new_count": len(incremental.get("selected") or []),
+            "skipped_count": len(incremental.get("skipped") or []),
+            "existing_failed_count": len(incremental.get("existing_failed") or []),
+        }
+        write_json(run_dir / "run_manifest.json", run_manifest)
 
         if not config["skip_upload"]:
+            write_status(config, "running", "trim_upload", run_dir, stdout_path, stderr_path, incremental=incremental)
             trim_cmd = [
                 sys.executable,
                 str(scripts_dir / "trim_and_upload.py"),
@@ -973,7 +1698,13 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             ]
             trim_retry_used = False
             try:
-                run_command(trim_cmd, stdout_path, stderr_path, workspace)
+                run_command(
+                    trim_cmd,
+                    stdout_path,
+                    stderr_path,
+                    workspace,
+                    heartbeat=lambda: write_status(config, "running", "trim_upload", run_dir, stdout_path, stderr_path, incremental=incremental),
+                )
             except WorkerError:
                 if not (run_dir / "trim_upload_results_physical.json").exists():
                     raise
@@ -995,7 +1726,13 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                     "--max-attempts",
                     "3",
                 ]
-                run_command(retry_cmd, stdout_path, stderr_path, workspace)
+                run_command(
+                    retry_cmd,
+                    stdout_path,
+                    stderr_path,
+                    workspace,
+                    heartbeat=lambda: write_status(config, "running", "trim_upload", run_dir, stdout_path, stderr_path, incremental=incremental),
+                )
                 commands_for_log.append({"name": "retry_trim_uploads", "argv": retry_cmd})
                 trim_retry_used = True
                 if not trim_upload_complete(run_dir):
@@ -1026,6 +1763,7 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             write_json(run_dir / "run_manifest.json", run_manifest)
 
         if config["refine_children"] and not config["skip_upload"]:
+            write_status(config, "running", "refine_child_vlm", run_dir, stdout_path, stderr_path, incremental=incremental)
             refine_cmd = [
                 sys.executable,
                 str(REPO_SCRIPTS_DIR / "voah_refine_child_vlm.py"),
@@ -1045,7 +1783,13 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             ]
             if config["refine_limit"] > 0:
                 refine_cmd.extend(["--limit", str(config["refine_limit"])])
-            run_command(refine_cmd, stdout_path, stderr_path, workspace)
+            run_command(
+                refine_cmd,
+                stdout_path,
+                stderr_path,
+                workspace,
+                heartbeat=lambda: write_status(config, "running", "refine_child_vlm", run_dir, stdout_path, stderr_path, incremental=incremental),
+            )
             commands_for_log.append({"name": "refine_child_vlm", "argv": refine_cmd})
             refine_results = load_json(run_dir / "child_vlm_refine_results.json")
             append_step(
@@ -1076,6 +1820,7 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
             write_json(run_dir / "run_manifest.json", run_manifest)
 
         if not config["skip_vectorize"]:
+            write_status(config, "running", "vectorize", run_dir, stdout_path, stderr_path, incremental=incremental)
             vector_cmd = [
                 sys.executable,
                 str(REPO_SCRIPTS_DIR / "voah_vectorize_intake.py"),
@@ -1091,7 +1836,13 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
                 "--uploads",
                 str(run_dir / "trim_upload_results_physical.json"),
             ]
-            run_command(vector_cmd, stdout_path, stderr_path, workspace)
+            run_command(
+                vector_cmd,
+                stdout_path,
+                stderr_path,
+                workspace,
+                heartbeat=lambda: write_status(config, "running", "vectorize", run_dir, stdout_path, stderr_path, incremental=incremental),
+            )
             commands_for_log.append({"name": "vectorize_physical_shots", "argv": vector_cmd})
             append_step(
                 run_manifest,
@@ -1115,6 +1866,7 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
         if config["skip_vectorize"]:
             raise WorkerError("vectorization_skipped", "shot_index requires embedding_results.json")
 
+        write_status(config, "running", "build_shot_index", run_dir, stdout_path, stderr_path, incremental=incremental)
         shot_index_path, shot_index = build_shot_index(
             run_dir,
             config["product_name"],
@@ -1141,17 +1893,42 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
         )
         write_json(run_dir / "run_manifest.json", run_manifest)
         manifest = update_run_manifest(run_dir, config, shot_index, stdout_path, stderr_path)
-        result = build_success_result(config, run_dir, manifest, stdout_path, stderr_path)
-        write_json(run_dir / "desktop_intake_result.json", result)
+
+        write_status(config, "running", "merge_index", run_dir, stdout_path, stderr_path, incremental=incremental)
+        registry = upsert_registry_items(config, run_dir, incremental, "ready")
+        merged_dir = build_merged_index(config, registry)
+        result = build_success_result(config, run_dir, manifest, stdout_path, stderr_path, incremental, merged_dir)
+        write_json(run_dir / INTAKE_RESULT_FILE, result)
+        write_json(intake_job_status_dir(config) / INTAKE_RESULT_FILE, result)
+        write_status(
+            config,
+            "succeeded",
+            "done",
+            run_dir,
+            stdout_path,
+            stderr_path,
+            progress={"processed": len(selected), "total": len(selected), "percent": 100},
+            incremental=incremental,
+            finished=True,
+        )
         return result
     except WorkerError as exc:
+        if incremental and run_dir:
+            upsert_registry_items(config, run_dir, incremental, "failed", exc)
         if run_dir:
             exc.run_dir = run_dir
             exc.stdout_path = stdout_path
             exc.stderr_path = stderr_path
+            mark_manifest_failed(run_dir, exc, stdout_path, stderr_path)
             failure = build_failure_result(config, exc, stdout_path, stderr_path, run_dir)
-            write_json(run_dir / "desktop_intake_result.json", failure)
+            write_json(run_dir / INTAKE_RESULT_FILE, failure)
+            write_json(intake_job_status_dir(config) / INTAKE_RESULT_FILE, failure)
+            write_status(config, "failed", "failed", run_dir, stdout_path, stderr_path, incremental=incremental, error=exc, finished=True)
+        else:
+            write_status(config, "failed", "failed", incremental=incremental, error=exc, finished=True)
         raise
+    finally:
+        cleanup_temp_source_dir(temp_source_dir)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -1164,6 +1941,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--source-dir", help="Directory containing source videos.")
     parser.add_argument("--max-videos", type=int, default=None, help="Maximum direct-child videos to ingest; 0 means all.")
     parser.add_argument("--run-label", default=None, help="Suffix for the intake run directory.")
+    parser.add_argument("--mode", default=None, choices=["add", "run"], help="add skips already-ready source files; run reprocesses all.")
+    parser.add_argument("--force-reindex", action="store_true", help="Reprocess all selected source files even if the registry has them.")
+    parser.add_argument("--include-existing-failed", action="store_true", help="Retry files previously marked failed in the material registry.")
     parser.add_argument("--scene-threshold", type=float, default=None)
     parser.add_argument("--candidate-min-duration", type=float, default=None)
     parser.add_argument("--min-physical-duration", type=float, default=None)
@@ -1192,12 +1972,18 @@ def main(argv: list[str] | None = None) -> int:
         result = build_failure_result(config, exc, exc.stdout_path, exc.stderr_path, exc.run_dir)
         if result.get("outputs", {}).get("desktop_result"):
             write_json(Path(result["outputs"]["desktop_result"]), result)
+        if config:
+            write_json(intake_job_status_dir(config) / INTAKE_RESULT_FILE, result)
+            write_status(config, "failed", "failed", exc.run_dir, exc.stdout_path, exc.stderr_path, error=exc, finished=True)
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
         return 1
     except Exception as exc:  # noqa: BLE001
         error = WorkerError("unexpected_error", str(exc))
         result = build_failure_result(config, error)
+        if config:
+            write_json(intake_job_status_dir(config) / INTAKE_RESULT_FILE, result)
+            write_status(config, "failed", "failed", error=error, finished=True)
         json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
         return 1

@@ -7,6 +7,7 @@ import { SettingsPage } from "../pages/SettingsPage.jsx";
 import { NewBatchDrawer } from "../features/NewBatchDrawer.jsx";
 import { SampleDrawer } from "../features/SampleDrawer.jsx";
 import { TaskDetailDrawer } from "../features/TaskDetailDrawer.jsx";
+import { TaskCenterDrawer } from "../features/TaskCenterDrawer.jsx";
 
 const DAILY_TARGET = 150;
 
@@ -20,11 +21,13 @@ const NAV = [
 export default function App() {
   const [nav, setNav] = useState("queue");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   const [openTaskDir, setOpenTaskDir] = useState(null);
   const [sampleTaskDir, setSampleTaskDir] = useState(null);
   const refresh = useStore((s) => s.refresh);
   const batches = useStore((s) => s.batches);
-  const summary = useMemo(() => computeSummary(batches), [batches]);
+  const taskCenter = useStore((s) => s.taskCenter);
+  const summary = useMemo(() => computeSummary(batches, taskCenter), [batches, taskCenter]);
 
   useEffect(() => {
     refresh();
@@ -33,7 +36,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar nav={nav} setNav={setNav} summary={summary} />
+      <Sidebar nav={nav} setNav={setNav} summary={summary} onOpenTaskCenter={() => setTaskCenterOpen(true)} />
 
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="h-14 shrink-0 bg-white border-b border-slate-200 px-6 flex items-center justify-between">
@@ -59,11 +62,12 @@ export default function App() {
       <NewBatchDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onOpenSample={setSampleTaskDir} />
       <SampleDrawer taskDir={sampleTaskDir} onClose={() => setSampleTaskDir(null)} />
       <TaskDetailDrawer taskDir={openTaskDir} onClose={() => setOpenTaskDir(null)} />
+      <TaskCenterDrawer open={taskCenterOpen} onClose={() => setTaskCenterOpen(false)} />
     </div>
   );
 }
 
-function Sidebar({ nav, setNav, summary }) {
+function Sidebar({ nav, setNav, summary, onOpenTaskCenter }) {
   const pct = Math.min(100, Math.round((summary.succeeded / DAILY_TARGET) * 100));
   return (
     <aside className="w-52 shrink-0 bg-white border-r border-slate-200 flex flex-col">
@@ -86,8 +90,14 @@ function Sidebar({ nav, setNav, summary }) {
         ))}
       </nav>
 
-      <div className="m-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
-        <div className="text-[11px] text-ink-500 mb-2 font-medium">今日产能</div>
+      <button
+        onClick={onOpenTaskCenter}
+        className="m-2 p-3 rounded-xl bg-slate-50 border border-slate-200 text-left hover:bg-white hover:border-brand-200 transition-colors"
+      >
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] text-ink-500 font-medium">任务中心</span>
+          <i className="fa fa-angle-right text-ink-300" />
+        </div>
         <div className="flex items-end gap-1 mb-2">
           <span className="text-2xl font-bold leading-none">{summary.succeeded}</span>
           <span className="text-ink-400 text-xs mb-0.5">/ {DAILY_TARGET}</span>
@@ -100,7 +110,7 @@ function Sidebar({ nav, setNav, summary }) {
           <Stat n={summary.needs_review} label="待审" color="text-warn" />
           <Stat n={summary.failed} label="失败" color="text-err" />
         </div>
-      </div>
+      </button>
     </aside>
   );
 }

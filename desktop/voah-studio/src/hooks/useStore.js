@@ -5,6 +5,7 @@ export const useStore = create((set, get) => ({
   batches: [],
   products: [],
   outputs: [],
+  taskCenter: { summary: null, running: [], needs_attention: [], recent_outputs: [] },
   config: null,
   studioSettings: null,
   loading: true,
@@ -16,12 +17,13 @@ export const useStore = create((set, get) => ({
       return;
     }
     try {
-      const [batches, products, outputs] = await Promise.all([
+      const [batches, products, outputs, taskCenter] = await Promise.all([
         window.voah.listBatches(),
         window.voah.listProducts(),
-        window.voah.listOutputs()
+        window.voah.listOutputs(),
+        window.voah.listTaskCenter ? window.voah.listTaskCenter() : Promise.resolve(null)
       ]);
-      set({ batches, products, outputs, loading: false, lastError: "" });
+      set({ batches, products, outputs, taskCenter: normalizeTaskCenter(taskCenter, batches, outputs), loading: false, lastError: "" });
     } catch (err) {
       set({ loading: false, lastError: String(err?.message || err) });
     }
@@ -89,7 +91,8 @@ export const useStore = create((set, get) => ({
 }));
 
 // 今日产能汇总（跨所有批次）。纯函数，避免放进 zustand selector 造成无限渲染。
-export function computeSummary(batches) {
+export function computeSummary(batches, taskCenter = null) {
+  if (taskCenter?.summary) return taskCenter.summary;
   const counts = { running: 0, needs_review: 0, failed: 0, succeeded: 0, total: 0 };
   for (const b of batches) {
     counts.running += b.counts.running;
@@ -101,11 +104,23 @@ export function computeSummary(batches) {
   return counts;
 }
 
+function normalizeTaskCenter(taskCenter, batches, outputs) {
+  if (taskCenter?.ok) return taskCenter;
+  return {
+    ok: true,
+    summary: computeSummary(batches),
+    running: [],
+    needs_attention: [],
+    recent_outputs: outputs || []
+  };
+}
+
 // 轮询：运行中时 2s 一次，全空闲时降到 6s。
 export function startPolling() {
   const tick = async () => {
     await useStore.getState().refresh();
-    const s = computeSummary(useStore.getState().batches);
+    const state = useStore.getState();
+    const s = computeSummary(state.batches, state.taskCenter);
     const interval = s.running > 0 ? 2000 : 6000;
     timer = setTimeout(tick, interval);
   };

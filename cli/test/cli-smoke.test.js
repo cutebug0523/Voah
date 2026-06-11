@@ -127,6 +127,25 @@ test("batch run --create-only writes batch and task manifests", async () => {
   }
 });
 
+test("intake merge builds product-level merged shot index", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-intake-merge-test-"));
+  const runA = path.join(workspace, "cache", "voah_video_intake", "demo", "run_a");
+  const runB = path.join(workspace, "cache", "voah_video_intake", "demo", "run_b");
+  await mkdir(runA, { recursive: true });
+  await mkdir(runB, { recursive: true });
+  await writeFile(path.join(runA, "shot_index.json"), JSON.stringify({ records: [{ shot_id: "a1", visual_summary: "A" }] }));
+  await writeFile(path.join(runB, "shot_index.json"), JSON.stringify({ records: [{ shot_id: "b1", visual_summary: "B" }] }));
+  const result = await run(["intake", "merge", "--workspace", workspace, "--product", "demo", "--product-name", "Demo"]);
+  assert.equal(result.code, 0, result.stderr);
+  const mergedDir = result.stdout.match(/merged_run_dir=(.*)/)?.[1].trim();
+  assert.ok(mergedDir);
+  const merged = JSON.parse(await readFile(path.join(mergedDir, "shot_index.json"), "utf8"));
+  assert.equal(merged.total_runs, 2);
+  assert.equal(merged.total_shots, 2);
+  assert.equal(merged.records[0].source_run_name, "run_a");
+  assert.equal(merged.records[1].source_run_name, "run_b");
+});
+
 test("batch pause and resume update manifest control state", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-batch-pause-test-"));
   const intakeRun = path.join(workspace, "cache", "voah_video_intake", "demo", "run");
