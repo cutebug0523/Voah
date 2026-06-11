@@ -23,14 +23,9 @@ release/
 cache/*
 !cache/README.md
 
-原片/*
-!原片/README.md
-
-口红/*
-!口红/README.md
-
-气垫/*
-!气垫/README.md
+原片/
+口红/
+气垫/
 
 # Local model/runtime installs and external research clones
 GPT-SoVITS/
