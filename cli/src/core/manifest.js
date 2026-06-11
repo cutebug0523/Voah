@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { hashFile } from "./hash.js";
 import { readJson, writeJson } from "./json.js";
@@ -11,9 +12,9 @@ export const STAGE_OUTPUTS = {
   copy: ["copy_brief.json", "voice_script.json"],
   tts: ["tts_audio.json", "voice.wav", "audio_sections.json"],
   retrieve: ["candidate_sections.json", "timeline_selection.json", "timeline_fill.json", "preview_no_subtitles.mp4"],
-  subtitle: ["caption_plan.json", "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json"],
-  render: ["hyperframes_subtitle_burn/final_subtitled.mp4"],
-  qa: ["qa_gate_report.json", "full_pipeline_manifest.json", "desktop_quality_report.json"]
+  subtitle: ["caption_plan.json", "hyperframes_subtitle_burn"],
+  render: ["hyperframes_subtitle_burn/final_subtitled.mp4", "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json"],
+  qa: ["qa_omni_alignment_final", "qa_gate_report.json", "full_pipeline_manifest.json", "desktop_quality_report.json", "desktop_quality_report.md"]
 };
 
 export function manifestPath(taskDir) {
@@ -125,13 +126,41 @@ export async function recordStageOutputHashes(taskDir, stage) {
   for (const output of STAGE_OUTPUTS[stage] || []) {
     const file = path.join(taskDir, output);
     if (existsSync(file)) {
-      hashes[output] = await hashFile(file);
+      hashes[output] = await hashPath(file);
     }
   }
   manifest.stages[stage].output_hashes = hashes;
   manifest.updated_at = new Date().toISOString();
   await writeTaskManifest(taskDir, manifest);
   return manifest;
+}
+
+export async function hashPath(target) {
+  const info = await lstat(target);
+  if (info.isFile()) return hashFile(target);
+  if (!info.isDirectory()) return null;
+  const entries = await listFiles(target);
+  const parts = [];
+  for (const file of entries) {
+    const rel = path.relative(target, file);
+    parts.push(`${rel}:${await hashFile(file)}`);
+  }
+  return parts.join("|");
+}
+
+async function listFiles(dir) {
+  const output = [];
+  async function walk(current) {
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.isFile()) output.push(full);
+    }
+  }
+  await walk(dir);
+  output.sort();
+  return output;
 }
 
 // 检测上游产物 hash 是否相对基线发生变化。
@@ -147,7 +176,7 @@ export async function detectUpstreamChange(taskDir, beforeStage) {
     for (const [output, baseline] of Object.entries(recorded)) {
       const file = path.join(taskDir, output);
       if (!existsSync(file)) continue;
-      const current = await hashFile(file);
+      const current = await hashPath(file);
       if (current !== baseline) {
         return stage;
       }

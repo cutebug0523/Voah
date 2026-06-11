@@ -12,7 +12,7 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
   const [count, setCount] = useState(20);
   const [duration, setDuration] = useState(45);
   const [customDuration, setCustomDuration] = useState("");
-  const [concurrency, setConcurrency] = useState(3);
+  const [concurrency, setConcurrency] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [sampling, setSampling] = useState(false);
   const [result, setResult] = useState(null);

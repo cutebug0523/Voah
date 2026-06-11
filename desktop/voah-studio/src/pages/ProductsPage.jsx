@@ -106,7 +106,7 @@ function ProductDetail({ product, onStartIntake }) {
   const claims = detail?.claims?.claims || [];
   const campaigns = detail?.campaigns?.campaigns || [];
   const blocked = detail?.blocked_terms?.terms || [];
-  const runs = (detail?.intake_runs || []).filter((run) => !run.system);
+  const runs = (detail?.intake_runs || []).filter((run) => !run.system && isSuccessfulRun(run));
 
   async function save() {
     setSaving(true);
@@ -192,15 +192,9 @@ function ProductDetail({ product, onStartIntake }) {
                 <div key={run.run_dir} className="px-3 py-2 flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-xs font-medium truncate">{run.name}</div>
-                    <div className={`text-[11px] ${run.status === "failed" ? "text-err" : run.status === "stalled" ? "text-warn" : "text-ink-400"}`}>
-                      {runStatusText(run)}
-                    </div>
-                    {run.error?.message && <div className="text-[11px] text-err truncate max-w-[360px]">{run.error.message}</div>}
+                    <div className="text-[11px] text-ink-400">{runStatusText(run)}</div>
                   </div>
                   <div className="flex items-center gap-3">
-                    {run.progress?.percent > 0 && run.status === "running" && (
-                      <span className="text-[11px] text-run">{run.progress.percent}%</span>
-                    )}
                     <button onClick={() => window.voah?.reveal(run.run_dir)} className="text-xs text-brand-600 hover:underline">
                       目录
                     </button>
@@ -241,14 +235,15 @@ function linesFromItems(items) {
 
 function runStatusText(run) {
   if (run.ready && run.shot_count != null) return `${run.shot_count} 段`;
-  if (run.status === "failed") return "失败";
-  if (run.status === "stalled") return "需查看";
   if (run.status === "succeeded") {
     const skipped = Number(run.incremental?.skipped_count || 0);
     return skipped ? `已跳过 ${skipped} 个` : "完成";
   }
-  if (run.status === "running") return run.stage_label || "处理中";
-  return "待处理";
+  return "完成";
+}
+
+function isSuccessfulRun(run) {
+  return Boolean(run?.ready || ["ready", "succeeded", "completed"].includes(run?.status));
 }
 
 function ProductDrawer({ open, onClose }) {

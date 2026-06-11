@@ -420,6 +420,60 @@ cache/voah_tasks/{product_slug}/{timestamp}_{task_slug}/
   logs/
 ```
 
+### 5.6.1 Task Worktree
+
+单次任务的主目录只存稳定产物。每次运行创建独立 run workspace：
+
+```text
+task_dir/
+  task_manifest.json
+  .runs/
+    {run_id}/
+      run_manifest.json
+      inputs/
+      outputs/
+      logs/
+      work/
+```
+
+`run_id` 由 CLI 生成，格式为 `run_{timestamp}_{random}`。`run_manifest.json` 使用 `voah.task_run_manifest.v1`，必须记录：
+
+- `task_dir`、`run_dir`、`output_dir`、`logs_dir`、`work_dir`
+- `from_stage`、`stage`、`scope`
+- `status`、`pid`、`started_at`、`updated_at`、`finished_at`
+- `inputs.stable_artifacts`
+- `stages`
+- `outputs`
+- `promotion`
+- `error`
+
+`run_manifest.json` 不允许写 API key、token、签名 URL 凭证。
+
+旧任务没有 `.runs/` 时仍按主目录稳定产物读取；下一次 `task run` 或单阶段 `run` 会自动创建 `.runs/{run_id}`。
+
+### 5.6.2 Promotion
+
+worker 先写 `.runs/{run_id}/outputs`，只有阶段成功并通过 `requireStageOutputs` 基础校验后，才进入 promotion。
+
+promotion 规则：
+
+- promotion 是短锁临界区，只锁合入，不锁整条长任务。
+- 文件/目录先复制到同目录临时路径，再 rename 到主目录。
+- task manifest 原子写入。
+- `task_manifest.runs.latest` 指向最后合入 run。
+- `task_manifest.runs[{run_id}]` 记录 `promoted_paths` 和 `previous_active_artifacts`。
+- 失败 run 保留在 `.runs/{run_id}`，主目录稳定产物不变。
+- 如果更晚启动的 run 已经合入同阶段，较慢 run 标记 `superseded` 并停止继续往下跑。
+
+当前优先迁移的重文件阶段：
+
+- `retrieve`：`candidate_sections.json`、`timeline_selection.json`、`timeline_fill.json`、`preview_no_subtitles.mp4`
+- `subtitle`：`caption_plan.json`、`hyperframes_subtitle_burn/`
+- `render`：run 内 HyperFrames 工程与 `final_subtitled.mp4`
+- `qa`：run 内 QA 报告，成功后再合入主目录
+
+render 重试可以读取主目录稳定 `preview_no_subtitles.mp4` 和稳定 HyperFrames 工程，但不得直接覆盖主目录成片；所有中间文件先写 run workspace。
+
 ### 5.7 `voah task run`
 
 用途：
@@ -483,8 +537,15 @@ voah qa run {task_dir}
 规则：
 
 - 后续阶段发现上游 stale 时必须拒绝或提示 `--force-from`。
-- 单阶段复跑要保留旧版本，不直接覆盖关键产物。
+- 单阶段复跑创建新的 `.runs/{run_id}`，保留旧版本，不直接覆盖关键产物。
 - 当前生效产物通过 `task_manifest.json` 的 artifact 指针确认。
+
+retry / resume / continue 语义：
+
+- `retry`：基于主 task_dir 的稳定上游产物，创建新 run，从指定阶段重跑。
+- `continue`：从失败 run 推导可继续阶段，但输出仍写新 run；主目录只接受 promotion。
+- `batch resume`：只调度 queued / failed / needs_review / stale，不重复启动 running task。
+- `acknowledge`：只隐藏失败提醒，不改变 task 真状态。
 
 ### 5.9 `voah batch run`
 

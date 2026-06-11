@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voah.local/schemas/taskRunManifest.schema.json",
+  "title": "Voah Task Run Manifest",
+  "type": "object",
+  "required": ["schema_version", "run_id", "task_dir", "run_dir", "output_dir", "logs_dir", "work_dir", "from_stage", "status", "started_at", "stages", "inputs", "outputs", "promotion"],
+  "properties": {
+    "schema_version": {
+      "const": "voah.task_run_manifest.v1"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "task_dir": {
+      "type": "string"
+    },
+    "run_dir": {
+      "type": "string"
+    },
+    "output_dir": {
+      "type": "string"
+    },
+    "logs_dir": {
+      "type": "string"
+    },
+    "work_dir": {
+      "type": "string"
+    },
+    "from_stage": {
+      "type": "string"
+    },
+    "stage": {
+      "type": "string"
+    },
+    "scope": {
+      "enum": ["pipeline", "stage"]
+    },
+    "status": {
+      "enum": ["running", "succeeded", "failed", "promoted", "superseded", "abandoned"]
+    },
+    "pid": {
+      "type": "integer"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "stages": {
+      "type": "object"
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "outputs": {
+      "type": "object"
+    },
+    "promotion": {
+      "type": "object"
+    },
+    "error": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

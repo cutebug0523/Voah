@@ -16,6 +16,7 @@ const QA_META = {
 // 任务详情抽屉：成品一键播放 + QA 复核原因 + 分阶段重跑。
 export function TaskDetailDrawer({ taskDir, onClose }) {
   const retryTask = useStore((s) => s.retryTask);
+  const continueTask = useStore((s) => s.continueTask);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,14 +47,28 @@ export function TaskDetailDrawer({ taskDir, onClose }) {
 
   async function handleRetry(fromStage) {
     setBusy(true);
-    await retryTask(taskDir, fromStage);
-    const d = await window.voah.taskDetail(taskDir);
-    setDetail(d);
-    setBusy(false);
+    try {
+      await retryTask(taskDir, fromStage);
+      const d = await window.voah.taskDetail(taskDir);
+      setDetail(d);
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function loadLogs(stage = logStage) {
-    const res = await window.voah.readTaskLog({ taskDir, stage });
+  async function handleContinue(run) {
+    setBusy(true);
+    try {
+      await continueTask(taskDir, run?.run_id, run?.failed_stage || run?.current_stage || detail?.failed_stage || "copy");
+      const d = await window.voah.taskDetail(taskDir);
+      setDetail(d);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadLogs(stage = logStage, runId = "") {
+    const res = await window.voah.readTaskLog({ taskDir, stage, runId });
     setLogs(res);
   }
 
@@ -150,6 +165,29 @@ export function TaskDetailDrawer({ taskDir, onClose }) {
               )}
             </div>
 
+            {/* 运行记录 */}
+            <div>
+              <div className="text-xs font-medium text-ink-700 mb-2">运行记录</div>
+              {detail.runs?.length ? (
+                <div className="space-y-2">
+                  {detail.runs.slice(0, 6).map((run) => (
+                    <RunRow
+                      key={run.run_id}
+                      run={run}
+                      busy={busy}
+                      onLog={() => {
+                        setLogStage(run.failed_stage || run.current_stage || run.from_stage || "copy");
+                        loadLogs(run.failed_stage || run.current_stage || run.from_stage || "copy", run.run_id);
+                      }}
+                      onContinue={() => handleContinue(run)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-ink-400 bg-slate-50 border border-slate-200 rounded-lg p-3">暂无运行记录。</div>
+              )}
+            </div>
+
             {/* 日志 */}
             <div>
               <div className="flex items-center justify-between mb-2">
@@ -211,6 +249,45 @@ export function TaskDetailDrawer({ taskDir, onClose }) {
         )}
       </div>
     </>
+  );
+}
+
+function RunRow({ run, busy, onLog, onContinue }) {
+  const meta = runStatusMeta(run.status);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={`text-[11px] px-2 py-0.5 rounded-full border ${meta.cls}`}>{meta.label}</span>
+            <span className="text-xs text-ink-700">{run.stage_label || "任务"}</span>
+          </div>
+          <div className="mt-1 text-[11px] text-ink-400 truncate">{run.run_id}</div>
+          {run.error_summary && <div className="mt-1 text-[11px] text-err line-clamp-2">{run.error_summary}</div>}
+        </div>
+        <div className="shrink-0 flex gap-2 text-xs">
+          <button onClick={onLog} className="text-brand-600 hover:underline">日志</button>
+          {run.can_continue && (
+            <button onClick={onContinue} disabled={busy} className="text-brand-600 hover:underline disabled:opacity-50">
+              继续
+            </button>
+          )}
+          <button onClick={() => window.voah?.reveal(run.run_dir)} className="text-brand-600 hover:underline">目录</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function runStatusMeta(status) {
+  return (
+    {
+      running: { label: "运行中", cls: "text-run bg-run/5 border-run/20" },
+      failed: { label: "失败", cls: "text-err bg-err/5 border-err/20" },
+      superseded: { label: "已取代", cls: "text-ink-500 bg-slate-50 border-slate-200" },
+      promoted: { label: "已合入", cls: "text-ok bg-ok/5 border-ok/20" },
+      succeeded: { label: "完成", cls: "text-ok bg-ok/5 border-ok/20" }
+    }[status] || { label: "记录", cls: "text-ink-500 bg-slate-50 border-slate-200" }
   );
 }
 

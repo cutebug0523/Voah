@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+let clockTimer = null;
+
 // 全局状态：批次列表、产品列表。以 manifest 文件为真源，定时轮询拉取。
 export const useStore = create((set, get) => ({
   batches: [],
@@ -10,6 +12,7 @@ export const useStore = create((set, get) => ({
   studioSettings: null,
   loading: true,
   lastError: "",
+  nowMs: Date.now(),
 
   async refresh() {
     if (!window.voah) {
@@ -71,8 +74,23 @@ export const useStore = create((set, get) => ({
     return res;
   },
 
+  async continueTask(taskDir, runId, fromStage) {
+    const res = await window.voah.continueTask({ taskDir, runId, fromStage });
+    await get().refresh();
+    return res;
+  },
+
   async acknowledgeTask(task) {
     const res = await window.voah.acknowledgeTask(task);
+    await get().refresh();
+    return res;
+  },
+
+  async continueIntakeTask(task) {
+    const res = await window.voah.continueIntakeTask(task);
+    if (res?.ok) {
+      await window.voah.acknowledgeTask(task);
+    }
     await get().refresh();
     return res;
   },
@@ -123,13 +141,32 @@ function normalizeTaskCenter(taskCenter, batches, outputs) {
 
 // 轮询：运行中时 2s 一次，全空闲时降到 6s。
 export function startPolling() {
+  if (!clockTimer) {
+    clockTimer = setInterval(() => {
+      const state = useStore.getState();
+      const s = computeSummary(state.batches, state.taskCenter);
+      if (s.running > 0) {
+        useStore.setState({ nowMs: Date.now() });
+      }
+    }, 1000);
+  }
+  let stopped = false;
   const tick = async () => {
+    if (stopped) return;
     await useStore.getState().refresh();
+    if (stopped) return;
     const state = useStore.getState();
     const s = computeSummary(state.batches, state.taskCenter);
     const interval = s.running > 0 ? 2000 : 6000;
     timer = setTimeout(tick, interval);
   };
   let timer = setTimeout(tick, 0);
-  return () => clearTimeout(timer);
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+    if (clockTimer) {
+      clearInterval(clockTimer);
+      clockTimer = null;
+    }
+  };
 }

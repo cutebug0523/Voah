@@ -9,6 +9,7 @@ import { SecretService } from "../../../cli/src/services/secretService.js";
 import { FALLBACK_TTS_VOICES, FONT_OPTIONS, VOICE_NAME_ZH } from "../src/lib/studioOptions.js";
 import { dedupeIntakeRuns, elapsedSeconds, intakeStatusLabel, normalizeIntakeStatus, summarizeIntakeRuns } from "./intakeStatus.js";
 import { isTaskAcknowledged, withTaskAcknowledgement } from "./taskAcknowledgements.js";
+import { failedStageFromRun, listTaskRuns } from "./taskRuns.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,6 +22,7 @@ const BATCHES_DIR = path.join(WORKSPACE, "cache", "voah_batches");
 const TASKS_DIR = path.join(WORKSPACE, "cache", "voah_tasks");
 const INTAKE_DIR = path.join(WORKSPACE, "cache", "voah_video_intake");
 const STUDIO_DIR = path.join(os.homedir(), ".voah");
+const STUDIO_FONTS_DIR = path.join(STUDIO_DIR, "fonts");
 const STUDIO_SETTINGS_PATH = path.join(STUDIO_DIR, "studio_settings.json");
 const STUDIO_REVIEW_PATH = path.join(STUDIO_DIR, "studio_reviews.json");
 const STUDIO_TASK_ACK_PATH = path.join(STUDIO_DIR, "studio_task_acknowledgements.json");
@@ -40,6 +42,7 @@ export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:listProducts", () => listProducts());
   ipcMain.handle("voah:listTaskCenter", () => listTaskCenter());
   ipcMain.handle("voah:acknowledgeTask", (_e, task) => acknowledgeTask(task));
+  ipcMain.handle("voah:continueIntakeTask", (_e, task) => continueIntakeTask(task));
   ipcMain.handle("voah:inspectProduct", (_e, slug) => inspectProduct(slug));
   ipcMain.handle("voah:createProduct", (_e, params) => createProduct(params));
   ipcMain.handle("voah:saveProductDetail", (_e, params) => saveProductDetail(params));
@@ -51,6 +54,7 @@ export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:taskDetail", (_e, taskDir) => taskDetail(taskDir));
   ipcMain.handle("voah:createBatch", (_e, params) => createBatch(params));
   ipcMain.handle("voah:retryTask", (_e, params) => retryTask(params));
+  ipcMain.handle("voah:continueTask", (_e, params) => continueTask(params));
   ipcMain.handle("voah:pauseBatch", (_e, batchDir) => pauseBatch(batchDir));
   ipcMain.handle("voah:resumeBatch", (_e, batchDir) => resumeBatch(batchDir));
   ipcMain.handle("voah:readTaskLog", (_e, params) => readTaskLog(params));
@@ -256,6 +260,8 @@ async function intakeRunsForSlug(slug) {
       current_stage: statusPayload?.current_stage || "",
       stage_label: statusPayload?.stage_label || intakeStatusLabel(status),
       progress: statusPayload?.progress || {},
+      started_at: statusPayload?.started_at || result?.created_at || manifest.created_at || manifest.started_at || "",
+      inputs: result?.inputs || statusPayload?.inputs || {},
       incremental: result?.incremental || statusPayload?.incremental || {},
       error: result?.error || statusPayload?.error || manifest.error || null,
       logs: statusPayload?.logs || result?.logs || manifest.logs || {},
@@ -294,6 +300,8 @@ async function intakeJobsForSlug(slug, jobsDir) {
       current_stage: statusPayload?.current_stage || "",
       stage_label: statusPayload?.stage_label || intakeStatusLabel(status),
       progress: statusPayload?.progress || {},
+      started_at: statusPayload?.started_at || result?.created_at || "",
+      inputs: result?.inputs || statusPayload?.inputs || {},
       incremental: result?.incremental || statusPayload?.incremental || {},
       error: result?.error || statusPayload?.error || null,
       logs: statusPayload?.logs || result?.logs || {},
@@ -421,7 +429,8 @@ async function hydrateBatch(batchDir, manifest) {
   for (const t of manifest.tasks || []) {
     const taskDir = t.task_dir || (t.task_slug ? path.join(batchDir, t.task_slug) : null);
     const taskManifest = taskDir ? await readJsonSafe(path.join(taskDir, "task_manifest.json")) : null;
-    tasks.push(summarizeTask(t, taskManifest, taskDir));
+    const runs = taskDir ? await listTaskRuns(taskDir, { limit: 5, stageLabel: taskStageLabel }) : [];
+    tasks.push(summarizeTask(t, taskManifest, taskDir, runs));
   }
   const counts = tallyTasks(tasks);
   return {
@@ -441,22 +450,35 @@ async function hydrateBatch(batchDir, manifest) {
   };
 }
 
-function summarizeTask(taskEntry, manifest, taskDir) {
+function summarizeTask(taskEntry, manifest, taskDir, runs = []) {
   const stages = (manifest && manifest.stages) || {};
   const segments = STAGE_ORDER.map((stage) => ({
     stage,
     status: stages[stage]?.status || "pending"
   }));
+  const latestRun = runs[0] || null;
+  const effectiveStatus = runAwareTaskStatus(manifest?.status || taskEntry.status || "queued", latestRun);
+  const current = latestRun?.current_stage || currentStage(segments);
+  const failed = latestRun?.failed_stage || failedStage(segments);
   return {
     task_dir: taskDir,
     task_id: manifest?.task_id || taskEntry.task_id || path.basename(taskDir || ""),
     index: taskEntry.index ?? null,
-    status: manifest?.status || taskEntry.status || "queued",
+    status: effectiveStatus,
     qa_status: manifest?.qa?.status || "pending",
-    current_stage: currentStage(segments),
-    failed_stage: failedStage(segments),
-    segments
+    current_stage: current,
+    failed_stage: failed,
+    stage_label: taskStageLabel(current || failed),
+    segments,
+    latest_run: latestRun,
+    failed_runs: runs.filter((run) => run.status === "failed")
   };
+}
+
+function runAwareTaskStatus(status, latestRun) {
+  if (latestRun?.status === "running") return "running";
+  if (latestRun?.status === "failed") return "failed";
+  return status;
 }
 
 function currentStage(segments) {
@@ -478,6 +500,7 @@ async function taskDetail(taskDir) {
   const ttsAudio = await readJsonSafe(path.join(taskDir, "tts_audio.json"));
   const stages = (manifest && manifest.stages) || {};
   const segments = STAGE_ORDER.map((stage) => ({ stage, status: stages[stage]?.status || "pending" }));
+  const runs = await listTaskRuns(taskDir, { limit: 12, stageLabel: taskStageLabel });
 
   const finalVideoRel = manifest?.active_artifacts?.final_subtitled || "hyperframes_subtitle_burn/final_subtitled.mp4";
   const finalVideo = path.join(taskDir, finalVideoRel);
@@ -495,6 +518,9 @@ async function taskDetail(taskDir) {
     product_name: manifest?.product_name || manifest?.product_slug || "",
     segments,
     failed_stage: failedStage(segments),
+    latest_run: runs[0] || null,
+    runs,
+    failed_runs: runs.filter((run) => run.status === "failed"),
     final_video: existsSync(finalVideo) ? finalVideo : null,
     preview_no_subtitles: existsSync(previewNoSub) ? previewNoSub : null,
     voice_wav: existsSync(voiceWav) ? voiceWav : null,
@@ -520,7 +546,7 @@ function tallyTasks(tasks) {
   return c;
 }
 
-function createBatch({ product, count, targetDuration, intakeRun, concurrency = 3, extraArgs = [] }) {
+function createBatch({ product, count, targetDuration, intakeRun, concurrency = 1, extraArgs = [] }) {
   const args = [
     "batch",
     "run",
@@ -546,6 +572,19 @@ function retryTask({ taskDir, fromStage }) {
   return runVoah(args);
 }
 
+async function continueTask({ taskDir, runId, fromStage }) {
+  const args = ["task", "run", "--workspace", WORKSPACE, taskDir];
+  const stage = fromStage || await inferContinueStageFromRunId(taskDir, runId) || "copy";
+  args.push("--from", stage);
+  return runVoah(args);
+}
+
+async function inferContinueStageFromRunId(taskDir, runId) {
+  const runDir = runId ? path.join(taskDir, ".runs", runId) : "";
+  const manifest = runDir ? await readJsonSafe(path.join(runDir, "run_manifest.json")) : null;
+  return manifest ? failedStageFromRun(manifest) || manifest.from_stage || manifest.stage || "" : "";
+}
+
 function pauseBatch(batchDir) {
   return runVoah(["batch", "pause", "--workspace", WORKSPACE, batchDir]);
 }
@@ -554,10 +593,14 @@ function resumeBatch(batchDir) {
   return runVoah(["batch", "resume", "--workspace", WORKSPACE, batchDir]);
 }
 
-async function readTaskLog({ taskDir, stage, maxBytes = 60000 }) {
+async function readTaskLog({ taskDir, stage, runId, maxBytes = 60000 }) {
   if (!taskDir || !existsSync(taskDir)) return { ok: false, error: "任务目录不存在" };
-  const logsDir = path.join(taskDir, "logs");
-  const candidates = logCandidates(logsDir, stage);
+  const logsDirs = [];
+  if (runId) logsDirs.push(path.join(taskDir, ".runs", runId, "logs"));
+  const latestRun = !runId ? (await listTaskRuns(taskDir, { limit: 1, stageLabel: taskStageLabel }))[0] : null;
+  if (latestRun?.run_id) logsDirs.push(path.join(taskDir, ".runs", latestRun.run_id, "logs"));
+  logsDirs.push(path.join(taskDir, "logs"));
+  const candidates = logsDirs.flatMap((logsDir) => logCandidates(logsDir, stage));
   const files = [];
   for (const file of candidates) {
     if (!existsSync(file)) continue;
@@ -567,7 +610,7 @@ async function readTaskLog({ taskDir, stage, maxBytes = 60000 }) {
       text: await readTail(file, maxBytes)
     });
   }
-  return { ok: true, task_dir: taskDir, stage: stage || "", files };
+  return { ok: true, task_dir: taskDir, stage: stage || "", run_id: runId || latestRun?.run_id || "", files };
 }
 
 function logCandidates(logsDir, stage) {
@@ -677,11 +720,18 @@ async function listTaskCenter() {
         product_name: product.name,
         title: product.name,
         status: run.status,
+        current_stage: run.current_stage || "",
         stage_label: run.stage_label || intakeStatusLabel(run.status),
         progress: normalizeProgress(run.progress),
+        started_at: run.started_at || run.created_at || "",
         elapsed_s: run.elapsed_s,
         updated_at: run.updated_at,
         target_path: run.run_dir,
+        run_dir: run.run_dir,
+        job_dir: run.job_dir || "",
+        job_id: run.job_id || "",
+        source_dir: run.inputs?.source_dir || "",
+        max_videos: run.inputs?.max_videos ?? 0,
         error: run.error?.message || ""
       });
     }
@@ -707,11 +757,16 @@ async function listTaskCenter() {
         title: `${batch.product_name || batch.product_slug} #${task.index || ""}`.trim(),
         status: task.status,
         stage_label: taskStageLabel(task.current_stage || task.failed_stage),
+        current_stage: task.current_stage || "",
+        failed_stage: task.failed_stage || "",
         progress: batchProgress(batch, task),
         elapsed_s: null,
         updated_at: batch.updated_at || batch.created_at || "",
         target_path: task.task_dir,
-        error: task.failed_stage ? taskStageLabel(task.failed_stage) : ""
+        latest_run: task.latest_run || null,
+        run_id: task.latest_run?.run_id || "",
+        can_continue: ["failed", "needs_review"].includes(task.status),
+        error: task.latest_run?.error_summary || (task.failed_stage ? taskStageLabel(task.failed_stage) : "")
       };
       if (task.status === "running" || task.status === "queued") running.push(item);
       if (task.status === "failed" || task.status === "needs_review") needsAttention.push(item);
@@ -753,6 +808,56 @@ async function acknowledgeTask(task) {
   const updated = withTaskAcknowledgement(current, task || {});
   await writeJson(STUDIO_TASK_ACK_PATH, updated);
   return { ok: true, acknowledged_at: updated.updated_at };
+}
+
+async function continueIntakeTask(task) {
+  if (!task || task.kind !== "intake") return { ok: false, error: "只能继续入库任务" };
+  const context = await resolveIntakeRetryContext(task);
+  if (!context.ok) return context;
+  return startIntake({
+    product: context.product_slug,
+    productName: context.product_name,
+    sourceDir: context.source_dir,
+    limit: context.max_videos,
+    label: context.label,
+    extraArgs: ["--include-existing-failed"]
+  });
+}
+
+async function resolveIntakeRetryContext(task) {
+  const productSlug = String(task.product_slug || "").trim();
+  const productName = String(task.product_name || productSlug).trim();
+  if (!productSlug) return { ok: false, error: "缺少产品信息" };
+
+  const payloads = [];
+  for (const base of [task.job_dir, task.run_dir, task.target_path]) {
+    if (!base) continue;
+    payloads.push(await readJsonSafe(path.join(base, "desktop_intake_status.json")));
+    payloads.push(await readJsonSafe(path.join(base, "desktop_intake_result.json")));
+    payloads.push(await readJsonSafe(path.join(base, "logs", task.job_id || "", "job_input.json")));
+  }
+  const sourceDir = firstNonEmpty([
+    task.source_dir,
+    ...payloads.map((item) => item?.inputs?.source_dir),
+    ...payloads.map((item) => item?.inputs?.selected_source_dir)
+  ]);
+  if (!sourceDir) return { ok: false, error: "找不到原素材目录" };
+  if (!existsSync(sourceDir)) return { ok: false, error: `原素材目录不存在：${sourceDir}` };
+
+  const maxVideos = firstNumber([
+    task.max_videos,
+    ...payloads.map((item) => item?.inputs?.max_videos),
+    ...payloads.map((item) => item?.options?.max_videos)
+  ]);
+  const label = `studio_intake_${Date.now()}_resume`;
+  return {
+    ok: true,
+    product_slug: productSlug,
+    product_name: productName || productSlug,
+    source_dir: sourceDir,
+    max_videos: maxVideos,
+    label
+  };
 }
 
 function intakeAckKey(productSlug, run) {
@@ -816,6 +921,22 @@ function taskStageLabel(stage) {
     render: "渲染",
     qa: "质检"
   }[stage] || "处理中";
+}
+
+function firstNonEmpty(values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function firstNumber(values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return 0;
 }
 
 // ---- 设置 ----
@@ -883,51 +1004,43 @@ async function listTtsVoices() {
 }
 
 async function listSubtitleFonts() {
-  return {
-    ok: true,
-    fonts: FONT_OPTIONS.map((font) => {
+  await ensureBundledFonts();
+  const fonts = await Promise.all(
+    FONT_OPTIONS.map(async (font) => {
       const installed_path = installedFontPath(font);
       return {
         ...font,
         installed: Boolean(installed_path),
-        installed_path
+        installed_path,
+        font_source: installed_path,
+        font_url: await fontPreviewUrl(installed_path, font)
       };
     })
+  );
+  return {
+    ok: true,
+    fonts
   };
 }
 
 async function installSubtitleFont(fontId) {
   const font = FONT_OPTIONS.find((item) => item.id === fontId);
   if (!font) return { ok: false, error: "未知字体" };
-  const existing = installedFontPath(font);
-  if (existing) return { ok: true, installed_path: existing, already_installed: true };
-  if (!font.install?.urls?.length) return { ok: false, error: "该字体没有可用安装源" };
-
-  const fontsDir = path.join(os.homedir(), "Library", "Fonts");
-  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), `voah-font-${font.id}-`));
-  await fs.mkdir(fontsDir, { recursive: true });
-  try {
-    const downloaded = await downloadFirst(font.install.urls, tmpRoot, font.install.type === "zip" ? "font.zip" : font.install.file_name);
-    let source = downloaded;
-    if (font.install.type === "zip") {
-      source = await extractFontFromZip(downloaded, tmpRoot, font.install.archive_match);
-    }
-    const output = path.join(fontsDir, font.install.file_name || path.basename(source));
-    await fs.copyFile(source, output);
-    return { ok: true, installed_path: output };
-  } catch (error) {
-    return { ok: false, error: String(error?.message || error) };
-  } finally {
-    await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-  }
+  await ensureBundledFont(font);
+  const installed_path = installedFontPath(font);
+  return installed_path
+    ? { ok: true, installed_path, font_url: toFileUrl(installed_path), bundled: Boolean(font.bundled_file) }
+    : { ok: false, error: "字体文件不可用" };
 }
 
 async function getStudioSettings() {
+  await ensureBundledFonts();
   const settings = await readJsonSafe(STUDIO_SETTINGS_PATH);
   return mergeStudioSettings(settings);
 }
 
 async function saveStudioSettings(settings) {
+  await ensureBundledFonts();
   const payload = mergeStudioSettings(settings);
   payload.schema_version = "voah.studio_settings.v1";
   payload.updated_at = new Date().toISOString();
@@ -960,9 +1073,9 @@ function defaultStudioSettings() {
     },
     subtitle: {
       preset: "songti_white_gold_lower",
-      font: "",
-      font_source: "/System/Library/Fonts/Supplemental/Songti.ttc",
-      font_label: "系统宋体"
+      font: "smiley-sans",
+      font_source: path.join(STUDIO_FONTS_DIR, "SmileySans-Oblique.otf"),
+      font_label: "得意黑"
     }
   };
 }
@@ -984,8 +1097,35 @@ function mergeStudioSettings(settings) {
     subtitle: {
       ...defaults.subtitle,
       ...(source.subtitle || {}),
+      ...resolveSubtitleFontSettings(source.subtitle),
       preset: source.subtitle?.preset === "方案1" ? "songti_white_gold_lower" : source.subtitle?.preset || defaults.subtitle.preset
     }
+  };
+}
+
+function resolveSubtitleFontSettings(subtitle = {}) {
+  const requested = FONT_OPTIONS.find((font) => font.id === subtitle.font);
+  const sourcePath = expandHome(subtitle.font_source || "");
+  if (requested && installedFontPath(requested)) {
+    return {
+      font: requested.id,
+      font_label: requested.label,
+      font_source: installedFontPath(requested)
+    };
+  }
+  if (sourcePath && existsSync(sourcePath)) {
+    const byPath = FONT_OPTIONS.find((font) => installedFontPath(font) === sourcePath);
+    return {
+      font: byPath?.id || subtitle.font || "",
+      font_label: byPath?.label || subtitle.font_label || "自定义字体",
+      font_source: sourcePath
+    };
+  }
+  const fallback = FONT_OPTIONS.find((font) => installedFontPath(font)) || FONT_OPTIONS[0];
+  return {
+    font: fallback?.id || "",
+    font_label: fallback?.label || "",
+    font_source: fallback ? installedFontPath(fallback) : ""
   };
 }
 
@@ -1163,6 +1303,17 @@ async function audioPreviewUrl(target) {
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }
 
+async function fontPreviewUrl(target, font) {
+  if (!target || !existsSync(target)) return "";
+  if (!font?.bundled_file) return toFileUrl(target);
+  const stat = await fs.stat(target).catch(() => null);
+  if (!stat?.size || stat.size > 12 * 1024 * 1024) return toFileUrl(target);
+  const ext = path.extname(target).toLowerCase();
+  const mime = ext === ".otf" ? "font/otf" : ext === ".woff2" ? "font/woff2" : "font/ttf";
+  const buffer = await fs.readFile(target);
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
 function expandHome(target) {
   const text = String(target || "");
   if (text === "~") return os.homedir();
@@ -1178,53 +1329,33 @@ function installedFontPath(font) {
   return "";
 }
 
-async function downloadFirst(urls, dir, fileName) {
-  let lastError = null;
-  for (const url of urls) {
-    const output = path.join(dir, fileName || path.basename(new URL(url).pathname));
-    const result = await runCommand("curl", ["-L", "--fail", "--retry", "2", "--connect-timeout", "20", "--max-time", "240", "-o", output, url]);
-    if (result.ok && existsSync(output)) {
-      const stat = await fs.stat(output).catch(() => null);
-      if (stat?.size) return output;
-    }
-    lastError = result.stderr || result.stdout || `下载失败：${url}`;
-  }
-  throw new Error(lastError || "下载失败");
+async function ensureBundledFonts() {
+  await fs.mkdir(STUDIO_FONTS_DIR, { recursive: true });
+  await Promise.all(FONT_OPTIONS.map((font) => ensureBundledFont(font)));
 }
 
-async function extractFontFromZip(zipPath, dir, matchPattern) {
-  const result = await runCommand("unzip", ["-q", zipPath, "-d", dir]);
-  if (!result.ok) throw new Error(result.stderr || result.stdout || "字体压缩包解压失败");
-  const regex = new RegExp(matchPattern || "\\.(otf|ttf)$", "i");
-  const files = await collectFiles(dir);
-  const found = files.find((file) => regex.test(path.basename(file)) || regex.test(file));
-  if (!found) throw new Error("压缩包里没有找到目标字体文件");
-  return found;
+async function ensureBundledFont(font) {
+  if (!font?.bundled_file) return;
+  const source = bundledFontPath(font.bundled_file);
+  if (!source) return;
+  const output = path.join(STUDIO_FONTS_DIR, font.bundled_file);
+  const [sourceStat, outputStat] = await Promise.all([
+    fs.stat(source).catch(() => null),
+    fs.stat(output).catch(() => null)
+  ]);
+  if (!sourceStat?.size) return;
+  if (outputStat?.size === sourceStat.size) return;
+  await fs.mkdir(STUDIO_FONTS_DIR, { recursive: true });
+  await fs.copyFile(source, output);
 }
 
-async function collectFiles(root) {
-  const output = [];
-  async function walk(dir) {
-    for (const item of await fs.readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, item.name);
-      if (item.isDirectory()) await walk(full);
-      else output.push(full);
-    }
-  }
-  await walk(root);
-  return output;
-}
-
-function runCommand(command, args) {
-  return new Promise((resolve) => {
-    const proc = spawn(command, args, { cwd: WORKSPACE });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d.toString()));
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("error", (err) => resolve({ ok: false, error: String(err.message || err), stdout, stderr }));
-    proc.on("close", (code) => resolve({ ok: code === 0, code, stdout: stdout.trim(), stderr: stderr.trim() }));
-  });
+function bundledFontPath(fileName) {
+  const candidates = [
+    path.join(__dirname, "..", "resources", "fonts", fileName),
+    path.join(process.resourcesPath || "", "fonts", fileName),
+    path.join(process.resourcesPath || "", "resources", "fonts", fileName)
+  ];
+  return candidates.find((candidate) => candidate && existsSync(candidate)) || "";
 }
 
 function voiceLanguage(voiceId) {

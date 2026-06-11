@@ -2,6 +2,7 @@ import { useStore } from "../hooks/useStore.js";
 import { StageBar } from "../components/StageBar.jsx";
 import { StatusTag } from "../components/StatusTag.jsx";
 import { EmptyHint } from "../components/EmptyHint.jsx";
+import { useState } from "react";
 
 export function QueuePage({ onOpenTask }) {
   const batches = useStore((s) => s.batches);
@@ -31,6 +32,7 @@ function BatchCard({ batch, onOpenTask }) {
   const retryTask = useStore((s) => s.retryTask);
   const pauseBatch = useStore((s) => s.pauseBatch);
   const resumeBatch = useStore((s) => s.resumeBatch);
+  const [pendingTasks, setPendingTasks] = useState(() => new Set());
   const done = batch.counts.succeeded;
   const pct = batch.total ? Math.round((done / batch.total) * 100) : 0;
   const allDone = batch.total > 0 && done === batch.total;
@@ -92,7 +94,20 @@ function BatchCard({ batch, onOpenTask }) {
           <TaskRow
             key={t.task_dir || t.task_id}
             task={t}
-            onRetry={() => retryTask(t.task_dir, t.failed_stage)}
+            retrying={pendingTasks.has(t.task_dir)}
+            onRetry={async () => {
+              if (!t.task_dir || pendingTasks.has(t.task_dir)) return;
+              setPendingTasks((prev) => new Set([...prev, t.task_dir]));
+              try {
+                await retryTask(t.task_dir, t.failed_stage);
+              } finally {
+                setPendingTasks((prev) => {
+                  const next = new Set(prev);
+                  next.delete(t.task_dir);
+                  return next;
+                });
+              }
+            }}
             onOpen={() => onOpenTask?.(t.task_dir)}
           />
         ))}
@@ -101,7 +116,7 @@ function BatchCard({ batch, onOpenTask }) {
   );
 }
 
-function TaskRow({ task, onRetry, onOpen }) {
+function TaskRow({ task, onRetry, onOpen, retrying }) {
   const idx = task.index != null ? String(task.index).padStart(2, "0") : task.task_id?.slice(-2);
   return (
     <div className="row-hover px-4 py-2.5 flex items-center gap-4 cursor-pointer" onClick={onOpen}>
@@ -112,13 +127,14 @@ function TaskRow({ task, onRetry, onOpen }) {
       </span>
       {task.status === "failed" ? (
         <button
+          disabled={retrying}
           onClick={(e) => {
             e.stopPropagation();
             onRetry();
           }}
-          className="w-16 text-xs px-2 py-1 rounded-md bg-err/10 text-err hover:bg-err/20 font-medium"
+          className="w-16 text-xs px-2 py-1 rounded-md bg-err/10 text-err hover:bg-err/20 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
         >
-          重试
+          {retrying ? "启动" : "重试"}
         </button>
       ) : (
         <button

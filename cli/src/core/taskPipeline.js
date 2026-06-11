@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { optionalInt, optionalNumber } from "./args.js";
@@ -7,6 +7,7 @@ import { UserError } from "./errors.js";
 import { readJson, writeJson } from "./json.js";
 import { markDownstreamStale, markStage, refreshActiveArtifacts, recordStageOutputHashes, detectUpstreamChange, STAGE_ORDER, writeTaskManifest, loadTaskManifest } from "./manifest.js";
 import { compactId } from "./paths.js";
+import { createTaskRun, isRunSupersededError, markRunStage, promoteStageOutputs, updateTaskRun } from "./taskRun.js";
 import { SecretService } from "../services/secretService.js";
 import { WorkerRunner } from "../services/workerRunner.js";
 import { ResourceService } from "../services/resourceService.js";
@@ -21,11 +22,12 @@ import {
 } from "../services/hyperframesService.js";
 
 const DEFAULT_VOICE_ID = "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d";
+const DEFAULT_COPY_REQUEST_TIMEOUT_S = 240;
 
 // 各阶段默认超时（毫秒）。worker 挂死时由 WorkerRunner SIGTERM 中断，退出码 124。
 // 可被 options[`${stage}-timeout-ms`] 覆盖。
 const STAGE_TIMEOUTS_MS = {
-  copy: 300000,
+  copy: 1200000,
   tts: 600000,
   retrieve: 300000,
   subtitle: 180000,
@@ -38,6 +40,7 @@ function stageTimeout(stage, options = {}) {
 }
 
 export async function runPipeline({ workspace, taskDir, from = "copy", options = {} }) {
+  const runContext = options.runContext || await createTaskRun({ taskDir, from, scope: "pipeline" });
   const startIndex = STAGE_ORDER.indexOf(from);
   if (startIndex < 0) {
     throw new UserError(`未知起始阶段：${from}`);
@@ -53,8 +56,22 @@ export async function runPipeline({ workspace, taskDir, from = "copy", options =
     }
   }
   await markDownstreamStale(taskDir, from);
-  for (const stage of STAGE_ORDER.slice(startIndex)) {
-    await runStageByName(stage, { workspace, taskDir, options });
+  try {
+    for (const stage of STAGE_ORDER.slice(startIndex)) {
+      await runStageByName(stage, { workspace, taskDir, options: { ...options, runContext } });
+    }
+    await updateTaskRun(runContext, { status: "succeeded", finished_at: new Date().toISOString() });
+  } catch (error) {
+    if (isRunSupersededError(error)) {
+      await updateTaskRun(runContext, { status: "superseded", finished_at: new Date().toISOString() });
+      return;
+    }
+    await updateTaskRun(runContext, {
+      status: "failed",
+      finished_at: new Date().toISOString(),
+      error: { message: error.message || String(error) }
+    });
+    throw error;
   }
   const manifest = await loadTaskManifest(taskDir);
   if (manifest) {
@@ -65,6 +82,12 @@ export async function runPipeline({ workspace, taskDir, from = "copy", options =
 }
 
 export async function runStageByName(stage, context) {
+  let runContext = context.options?.runContext;
+  let ownRun = false;
+  if (!runContext) {
+    runContext = await createTaskRun({ taskDir: context.taskDir, stage, scope: "stage" });
+    ownRun = true;
+  }
   const handlers = {
     copy: runCopyStage,
     tts: runTtsStage,
@@ -75,16 +98,42 @@ export async function runStageByName(stage, context) {
   };
   const handler = handlers[stage];
   if (!handler) throw new UserError(`未知阶段：${stage}`);
-  const result = await handler(context);
-  // 阶段成功后记录产物 hash，作为下游 stale 判断基线。
-  await recordStageOutputHashes(context.taskDir, stage);
-  return result;
+  try {
+    const result = await handler({ ...context, runContext });
+    // 阶段成功后记录产物 hash，作为下游 stale 判断基线。
+    await recordStageOutputHashes(context.taskDir, stage);
+    if (ownRun) {
+      await updateTaskRun(runContext, { status: "succeeded", finished_at: new Date().toISOString() });
+    }
+    return result;
+  } catch (error) {
+    if (isRunSupersededError(error)) {
+      if (ownRun) {
+        await updateTaskRun(runContext, { status: "superseded", finished_at: new Date().toISOString() });
+      }
+      throw error;
+    }
+    await markRunStage(runContext, stage, {
+      status: "failed",
+      finished_at: new Date().toISOString(),
+      error_message: error.message || String(error)
+    });
+    if (ownRun) {
+      await updateTaskRun(runContext, {
+        status: "failed",
+        finished_at: new Date().toISOString(),
+        error: { message: error.message || String(error) }
+      });
+    }
+    throw error;
+  }
 }
 
-export async function runCopyStage({ workspace, taskDir, options = {} }) {
+export async function runCopyStage({ workspace, taskDir, runContext, options = {} }) {
   const manifest = await requireTaskManifest(taskDir);
   const taskBrief = path.join(taskDir, "task_brief.json");
   const shotIndex = path.join(resolveIntakeRun(workspace, manifest), "shot_index.json");
+  const outputDir = runContext?.outputDir || taskDir;
   requireFile(taskBrief, "task_brief.json");
   requireFile(shotIndex, "shot_index.json");
   const runner = createRunner(workspace);
@@ -95,32 +144,38 @@ export async function runCopyStage({ workspace, taskDir, options = {} }) {
       "--task-brief",
       taskBrief,
       "--task-dir",
-      taskDir,
+      outputDir,
       "--shot-index",
       shotIndex,
       "--target-duration-s",
       String(optionalNumber(options["target-duration"] ?? options["target-duration-s"], manifest.target_duration_s || 45)),
+      "--timeout-s",
+      String(optionalInt(options["copy-request-timeout-s"], DEFAULT_COPY_REQUEST_TIMEOUT_S)),
       "--variant",
       manifest.task_id || "cli"
     ],
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "copy",
     cwd: workspace,
     moduleIds: ["copy_generation"],
     timeoutMs: stageTimeout("copy", options)
   });
-  requireStageOutputs(taskDir, "copy");
+  requireStageOutputs(outputDir, "copy");
+  if (runContext) await promoteStageOutputs({ taskDir, runContext, stage: "copy" });
   await refreshActiveArtifacts(taskDir, "copy");
   return path.join(taskDir, "voice_script.json");
 }
 
-export async function runTtsStage({ workspace, taskDir, options = {} }) {
+export async function runTtsStage({ workspace, taskDir, runContext, options = {} }) {
   const manifest = await requireTaskManifest(taskDir);
   const voiceScript = path.join(taskDir, "voice_script.json");
+  const outputDir = runContext?.outputDir || taskDir;
   requireFile(voiceScript, "voice_script.json");
   const provider = options.provider || manifest.tts?.provider || (await readTtsProvider()) || "minimax-official";
   if (provider === "gpt-sovits") {
-    await runGptSovitsTts({ workspace, taskDir, manifest, options });
+    await runGptSovitsTts({ workspace, taskDir, outputDir, runContext, manifest, options });
   } else {
     const runner = createRunner(workspace);
     const voiceModify = manifest.tts?.voice_modify || {};
@@ -129,7 +184,7 @@ export async function runTtsStage({ workspace, taskDir, options = {} }) {
       "--voice-script",
       voiceScript,
       "--task-dir",
-      taskDir,
+      outputDir,
       "--provider",
       provider,
       "--model",
@@ -160,22 +215,26 @@ export async function runTtsStage({ workspace, taskDir, options = {} }) {
       command: "python3",
       args,
       taskDir,
+      logsDir: runContext?.logsDir,
+      runContext,
       stage: "tts",
       cwd: workspace,
       moduleIds: provider === "vectorengine-minimax" ? ["tts_fallback"] : ["tts_primary"],
       timeoutMs: stageTimeout("tts", options)
     });
   }
-  requireStageOutputs(taskDir, "tts");
+  requireStageOutputs(outputDir, "tts");
+  if (runContext) await promoteStageOutputs({ taskDir, runContext, stage: "tts" });
   await refreshActiveArtifacts(taskDir, "tts");
   return path.join(taskDir, "audio_sections.json");
 }
 
-export async function runRetrieveStage({ workspace, taskDir, options = {} }) {
+export async function runRetrieveStage({ workspace, taskDir, runContext, options = {} }) {
   const manifest = await requireTaskManifest(taskDir);
   const audioSections = path.join(taskDir, "audio_sections.json");
   const voiceWav = path.join(taskDir, "voice.wav");
   const shotIndex = path.join(resolveIntakeRun(workspace, manifest), "shot_index.json");
+  const outputDir = runContext?.outputDir || taskDir;
   requireFile(audioSections, "audio_sections.json");
   requireFile(voiceWav, "voice.wav");
   requireFile(shotIndex, "shot_index.json");
@@ -191,7 +250,7 @@ export async function runRetrieveStage({ workspace, taskDir, options = {} }) {
       "--voice-wav",
       voiceWav,
       "--task-dir",
-      taskDir,
+      outputDir,
       "--product",
       manifest.product_name || manifest.product_slug,
       "--top-k",
@@ -212,21 +271,25 @@ export async function runRetrieveStage({ workspace, taskDir, options = {} }) {
       options.preset || "veryfast"
     ],
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "retrieve",
     cwd: workspace,
     moduleIds: ["material_retrieval", "selection_planner"],
     timeoutMs: stageTimeout("retrieve", options)
   });
-  requireStageOutputs(taskDir, "retrieve");
+  requireStageOutputs(outputDir, "retrieve");
+  if (runContext) await promoteStageOutputs({ taskDir, runContext, stage: "retrieve" });
   await refreshActiveArtifacts(taskDir, "retrieve");
   return path.join(taskDir, "timeline_fill.json");
 }
 
-export async function runSubtitleStage({ workspace, taskDir, options = {} }) {
+export async function runSubtitleStage({ workspace, taskDir, runContext, options = {} }) {
   const manifest = await requireTaskManifest(taskDir);
   const audioSections = path.join(taskDir, "audio_sections.json");
   const preview = path.join(taskDir, "preview_no_subtitles.mp4");
   const voiceWav = path.join(taskDir, "voice.wav");
+  const outputDir = runContext?.outputDir || taskDir;
   requireFile(audioSections, "audio_sections.json");
   requireFile(preview, "preview_no_subtitles.mp4");
   requireFile(voiceWav, "voice.wav");
@@ -238,13 +301,15 @@ export async function runSubtitleStage({ workspace, taskDir, options = {} }) {
       "--audio-sections",
       audioSections,
       "--task-dir",
-      taskDir,
+      outputDir,
       "--preset",
       options["subtitle-preset"] || options.preset || manifest.subtitle?.preset || "songti_white_gold_lower",
       ...(options["font-source"] || manifest.subtitle?.font_source ? ["--font-source", options["font-source"] || manifest.subtitle?.font_source] : []),
       options["no-split-punctuation"] ? "--no-split-punctuation" : "--split-punctuation"
     ],
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "subtitle",
     cwd: workspace,
     timeoutMs: stageTimeout("subtitle", options)
@@ -254,30 +319,40 @@ export async function runSubtitleStage({ workspace, taskDir, options = {} }) {
     args: [
       path.join(workspace, "scripts", "voah_create_hyperframes_subtitle_project.py"),
       "--caption-plan",
-      path.join(taskDir, "caption_plan.json"),
+      path.join(outputDir, "caption_plan.json"),
       "--base-video",
       preview,
       "--voice-wav",
       voiceWav,
       "--project-dir",
-      path.join(taskDir, "hyperframes_subtitle_burn")
+      path.join(outputDir, "hyperframes_subtitle_burn")
     ],
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "subtitle",
     cwd: workspace,
     timeoutMs: stageTimeout("subtitle", options)
   });
-  requireStageOutputs(taskDir, "subtitle");
+  requireStageOutputs(outputDir, "subtitle");
+  if (runContext) await promoteStageOutputs({ taskDir, runContext, stage: "subtitle" });
   await refreshActiveArtifacts(taskDir, "subtitle");
   return path.join(taskDir, "caption_plan.json");
 }
 
-export async function runRenderStage({ workspace, taskDir, options = {} }) {
-  const projectDir = path.join(taskDir, "hyperframes_subtitle_burn");
+export async function runRenderStage({ workspace, taskDir, runContext, options = {} }) {
+  const outputDir = runContext?.outputDir || taskDir;
+  const projectDir = path.join(outputDir, "hyperframes_subtitle_burn");
   const finalVideo = path.join(projectDir, "final_subtitled.mp4");
-  requireFile(path.join(projectDir, "index.html"), "hyperframes_subtitle_burn/index.html");
+  const stableProjectDir = path.join(taskDir, "hyperframes_subtitle_burn");
+  requireFile(path.join(stableProjectDir, "index.html"), "hyperframes_subtitle_burn/index.html");
+  if (runContext) {
+    await rm(projectDir, { recursive: true, force: true });
+    await mkdir(path.dirname(projectDir), { recursive: true });
+    await cp(stableProjectDir, projectDir, { recursive: true, force: true });
+  }
   const runner = createRunner(workspace);
-  await reencodeHyperframesBaseVideo({ runner, taskDir, projectDir });
+  await reencodeHyperframesBaseVideo({ runner, taskDir, projectDir, logsDir: runContext?.logsDir, runContext });
   const hyperframes = resolveHyperframesCommand(workspace, { cwd: projectDir });
   const diagnostics = await collectHyperframesDiagnostics(workspace, hyperframes, { cwd: projectDir });
   const renderEnv = hyperframesRenderEnv();
@@ -285,6 +360,8 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
     ...withHyperframesArgs(hyperframes, ["lint", "."]),
     cwd: projectDir,
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "render",
     timeoutMs: stageTimeout("render", options)
   });
@@ -292,6 +369,8 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
     ...withHyperframesArgs(hyperframes, ["inspect", ".", "--samples", "12", "--json"]),
     cwd: projectDir,
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "render",
     env: renderEnv,
     allowFailure: Boolean(options["allow-inspect-warning"]),
@@ -309,6 +388,8 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
       ...withHyperframesArgs(hyperframes, [...baseRenderArgs, "--no-low-memory-mode"]),
       cwd: projectDir,
       taskDir,
+      logsDir: runContext?.logsDir,
+      runContext,
       stage: "render",
       env: renderEnv,
       timeoutMs: renderTimeoutMs
@@ -321,6 +402,8 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
         ...withHyperframesArgs(hyperframes, [...baseRenderArgs, "--low-memory-mode"]),
         cwd: projectDir,
         taskDir,
+        logsDir: runContext?.logsDir,
+        runContext,
         stage: "render",
         env: hyperframesRenderEnv({ lowMemoryMode: true }),
         timeoutMs: renderTimeoutMs
@@ -331,7 +414,17 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
       renderAttempts.push(renderAttemptFailure("low-memory", retryError));
       fallbackUsed = true;
       fallbackReason = retryError.message || error.message || String(retryError);
-      await burnOverlayFallback({ runner, workspace, taskDir, projectDir, finalVideo, reason: fallbackReason });
+      await burnOverlayFallback({
+        runner,
+        workspace,
+        taskDir,
+        projectDir,
+        outputDir,
+        runContext,
+        finalVideo,
+        reason: fallbackReason,
+        options
+      });
     }
   }
   const manifestPath = path.join(projectDir, "hyperframes_subtitle_burn_manifest.json");
@@ -354,18 +447,31 @@ export async function runRenderStage({ workspace, taskDir, options = {} }) {
     warnings: existsSync(finalVideo) ? [] : ["final_subtitled.mp4 missing after render"]
   };
   await writeJson(manifestPath, payload);
-  requireStageOutputs(taskDir, "render");
+  requireStageOutputs(outputDir, "render");
+  if (runContext) {
+    await promoteStageOutputs({
+      taskDir,
+      runContext,
+      stage: "render",
+      paths: ["hyperframes_subtitle_burn/final_subtitled.mp4", "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json"]
+    });
+  }
   await refreshActiveArtifacts(taskDir, "render");
   return finalVideo;
 }
 
 export async function runQaStage({ workspace, taskDir, options = {} }) {
+  const runContext = options.runContext;
+  const outputDir = runContext?.outputDir || taskDir;
   const finalVideo = path.join(taskDir, "hyperframes_subtitle_burn", "final_subtitled.mp4");
   const audioSections = path.join(taskDir, "audio_sections.json");
   const timelineFill = path.join(taskDir, "timeline_fill.json");
   requireFile(finalVideo, "hyperframes_subtitle_burn/final_subtitled.mp4");
   requireFile(audioSections, "audio_sections.json");
   requireFile(timelineFill, "timeline_fill.json");
+  if (runContext) {
+    await prepareQaWorkspace(taskDir, outputDir);
+  }
   const runner = createRunner(workspace);
   if (!options["skip-omni"]) {
     await runner.run({
@@ -381,10 +487,12 @@ export async function runQaStage({ workspace, taskDir, options = {} }) {
         "--timeline-fill",
         timelineFill,
         "--output-dir",
-        path.join(taskDir, "qa_omni_alignment_final"),
+        path.join(outputDir, "qa_omni_alignment_final"),
         ...(options["max-sections"] ? ["--max-sections", String(optionalInt(options["max-sections"], 0))] : [])
       ],
       taskDir,
+      logsDir: runContext?.logsDir,
+      runContext,
       stage: "qa",
       cwd: workspace,
       moduleIds: ["material_understanding"],
@@ -394,29 +502,58 @@ export async function runQaStage({ workspace, taskDir, options = {} }) {
   }
   await runner.run({
     command: "python3",
-    args: [path.join(workspace, "scripts", "voah_write_full_pipeline_manifest.py"), "--task-dir", taskDir],
+    args: [path.join(workspace, "scripts", "voah_write_full_pipeline_manifest.py"), "--task-dir", outputDir],
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "qa",
     cwd: workspace,
     timeoutMs: stageTimeout("qa", options)
   });
   await runner.run({
     command: "python3",
-    args: [path.join(workspace, "scripts", "voah_build_desktop_quality_report.py"), "--task-dir", taskDir],
+    args: [path.join(workspace, "scripts", "voah_build_desktop_quality_report.py"), "--task-dir", outputDir],
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "qa",
     cwd: workspace,
     allowFailure: true,
     timeoutMs: stageTimeout("qa", options)
   });
+  requireStageOutputs(outputDir, "qa");
+  if (runContext) await promoteStageOutputs({ taskDir, runContext, stage: "qa" });
   await updateQaFromManifest(taskDir);
-  requireStageOutputs(taskDir, "qa");
   await refreshActiveArtifacts(taskDir, "qa");
   await importQaResources({ workspace, taskDir });
   return path.join(taskDir, "full_pipeline_manifest.json");
 }
 
-async function runGptSovitsTts({ workspace, taskDir, manifest, options }) {
+async function prepareQaWorkspace(taskDir, outputDir) {
+  const relPaths = [
+    "copy_brief.json",
+    "voice_script.json",
+    "tts_audio.json",
+    "voice.wav",
+    "audio_sections.json",
+    "candidate_sections.json",
+    "timeline_selection.json",
+    "timeline_fill.json",
+    "caption_plan.json",
+    "preview_no_subtitles.mp4",
+    "hyperframes_subtitle_burn"
+  ];
+  for (const relPath of relPaths) {
+    const source = path.join(taskDir, relPath);
+    if (!existsSync(source)) continue;
+    const target = path.join(outputDir, relPath);
+    await rm(target, { recursive: true, force: true });
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(source, target, { recursive: true, force: true });
+  }
+}
+
+async function runGptSovitsTts({ workspace, taskDir, outputDir, runContext, manifest, options }) {
   const gptRoot = options["gpt-sovits-root"] || process.env.GPT_SOVITS_ROOT || path.join(workspace, "GPT-SoVITS");
   const scriptPath = path.join(gptRoot, "scripts", "gpt_sovits_tts.py");
   const pythonPath = options["gpt-sovits-python"] || process.env.GPT_SOVITS_PYTHON || path.join(gptRoot, ".venv", "bin", "python");
@@ -437,7 +574,7 @@ async function runGptSovitsTts({ workspace, taskDir, manifest, options }) {
     options["prompt-text"] ||
     process.env.GPT_SOVITS_PROMPT_TEXT ||
     "出门别人都以为你本来就长这个样子。出门别人都以为你本来就长这个样子。";
-  const out = path.join(taskDir, "voice.wav");
+  const out = path.join(outputDir, "voice.wav");
   const runner = createRunner(workspace);
   await runner.run({
     command: pythonPath,
@@ -462,11 +599,13 @@ async function runGptSovitsTts({ workspace, taskDir, manifest, options }) {
     ],
     cwd: gptRoot,
     taskDir,
+    logsDir: runContext?.logsDir,
+    runContext,
     stage: "tts",
     timeoutMs: stageTimeout("tts", options)
   });
   const duration = await probeDuration(out);
-  await writeFile(path.join(taskDir, "pronounce_text.txt"), `${text}\n`, "utf8");
+  await writeFile(path.join(outputDir, "pronounce_text.txt"), `${text}\n`, "utf8");
   const sections = buildAudioSectionsFromVoiceScript(voiceScript, duration);
   const ttsAudio = {
     schema_version: "1.0.0",
@@ -483,8 +622,8 @@ async function runGptSovitsTts({ workspace, taskDir, manifest, options }) {
     },
     outputs: {
       voice_wav: out,
-      audio_sections: path.join(taskDir, "audio_sections.json"),
-      next_artifact: path.join(taskDir, "candidate_sections.json")
+      audio_sections: path.join(outputDir, "audio_sections.json"),
+      next_artifact: path.join(outputDir, "candidate_sections.json")
     },
     timing: {
       actual_audio_duration_s: duration
@@ -495,8 +634,8 @@ async function runGptSovitsTts({ workspace, taskDir, manifest, options }) {
     },
     next_consumers: ["voah-shot-retrieval"]
   };
-  await writeJson(path.join(taskDir, "tts_audio.json"), ttsAudio);
-  await writeJson(path.join(taskDir, "audio_sections.json"), {
+  await writeJson(path.join(outputDir, "tts_audio.json"), ttsAudio);
+  await writeJson(path.join(outputDir, "audio_sections.json"), {
     schema_version: "1.0.0",
     stage: "voah_audio_sections",
     created_at: new Date().toISOString(),
@@ -576,11 +715,16 @@ function round3(value) {
   return Math.round(Number(value || 0) * 1000) / 1000;
 }
 
-async function reencodeHyperframesBaseVideo({ runner, taskDir, projectDir }) {
+async function reencodeHyperframesBaseVideo({ runner, taskDir, projectDir, logsDir, runContext }) {
   const baseVideo = path.join(projectDir, "media", "base_video.mp4");
-  const encodedVideo = path.join(projectDir, "media", "base_video_gop30.mp4");
+  const sourcePreview = path.join(taskDir, "preview_no_subtitles.mp4");
+  const encodedVideo = path.join(projectDir, "media", `base_video_gop30.${process.pid}.${Date.now()}.tmp.mp4`);
+  await mkdir(path.dirname(baseVideo), { recursive: true });
+  if (existsSync(sourcePreview)) {
+    await copyFile(sourcePreview, baseVideo);
+  }
   if (!existsSync(baseVideo)) return;
-  await runner.run({
+  const result = await runner.run({
     command: "ffmpeg",
     args: [
       "-y",
@@ -606,21 +750,24 @@ async function reencodeHyperframesBaseVideo({ runner, taskDir, projectDir }) {
     ],
     cwd: projectDir,
     taskDir,
+    logsDir,
+    runContext,
     stage: "render",
     allowFailure: true
   });
-  if (existsSync(encodedVideo)) {
+  if (result.code === 0 && existsSync(encodedVideo)) {
     await rename(encodedVideo, baseVideo);
   }
+  await rm(encodedVideo, { force: true });
 }
 
-async function burnOverlayFallback({ runner, workspace, taskDir, projectDir, finalVideo, reason }) {
+async function burnOverlayFallback({ runner, workspace, taskDir, projectDir, outputDir, runContext, finalVideo, reason, options = {} }) {
   await runner.run({
     command: "python3",
     args: [
       path.join(workspace, "scripts", "voah_burn_subtitles_overlay.py"),
       "--caption-plan",
-      path.join(taskDir, "caption_plan.json"),
+      path.join(outputDir || taskDir, "caption_plan.json"),
       "--base-video",
       path.join(projectDir, "media", "base_video.mp4"),
       "--voice-wav",
@@ -636,7 +783,10 @@ async function burnOverlayFallback({ runner, workspace, taskDir, projectDir, fin
     ],
     cwd: workspace,
     taskDir,
-    stage: "render"
+    logsDir: runContext?.logsDir,
+    runContext,
+    stage: "render",
+    timeoutMs: stageTimeout("render", options)
   });
 }
 
@@ -670,8 +820,8 @@ function requireStageOutputs(taskDir, stage) {
     copy: ["copy_brief.json", "voice_script.json"],
     tts: ["tts_audio.json", "voice.wav", "audio_sections.json"],
     retrieve: ["candidate_sections.json", "timeline_selection.json", "timeline_fill.json", "preview_no_subtitles.mp4"],
-    subtitle: ["caption_plan.json", "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json"],
-    render: ["hyperframes_subtitle_burn/final_subtitled.mp4"],
+    subtitle: ["caption_plan.json", "hyperframes_subtitle_burn/index.html", "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json"],
+    render: ["hyperframes_subtitle_burn/final_subtitled.mp4", "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json"],
     qa: ["full_pipeline_manifest.json"]
   }[stage] || [];
   for (const output of outputs) {

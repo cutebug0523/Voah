@@ -773,7 +773,7 @@ def main() -> int:
     parser.add_argument("--task-dir", default=None)
     parser.add_argument("--target-duration-s", type=float, default=45)
     parser.add_argument("--variant", default="v1")
-    parser.add_argument("--timeout-s", type=int, default=120)
+    parser.add_argument("--timeout-s", type=int, default=240)
     parser.add_argument("--copy-brief-output", default="copy_brief.json")
     parser.add_argument("--voice-script-output", default="voice_script.json")
     parser.add_argument("--shot-index", default="")

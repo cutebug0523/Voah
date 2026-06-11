@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { StageLogger } from "../core/logger.js";
 import { markStage } from "../core/manifest.js";
+import { markRunStage } from "../core/taskRun.js";
 import { compactId } from "../core/paths.js";
 import { redactText } from "../core/redact.js";
 
@@ -19,20 +21,33 @@ export class WorkerRunner {
     stage,
     timeoutMs = 0,
     allowFailure = false,
-    moduleIds = []
+    moduleIds = [],
+    logsDir: explicitLogsDir = null,
+    runContext = null
   }) {
     const runId = compactId(stage || "run");
-    const logsDir = taskDir ? `${taskDir}/logs` : `${this.workspace}/cache/voah_system/logs`;
+    const logsDir = explicitLogsDir || (taskDir ? `${taskDir}/logs` : `${this.workspace}/cache/voah_system/logs`);
     const logger = new StageLogger({ logsDir, stage: stage || "command", runId });
+    const logPaths = {
+      log: displayLogPath(logsDir, `${stage}.jsonl`, taskDir),
+      stdout_log: displayLogPath(logsDir, `${stage}.stdout.log`, taskDir),
+      stderr_log: displayLogPath(logsDir, `${stage}.stderr.log`, taskDir)
+    };
     await logger.event("info", "process_start", { command, args, cwd });
+    if (runContext && stage) {
+      await markRunStage(runContext, stage, {
+        status: "running",
+        started_at: new Date().toISOString(),
+        ...logPaths
+      });
+    }
     if (taskDir && stage) {
       await markStage(taskDir, stage, {
         status: "running",
         attempt: ((await safeStageAttempt(taskDir, stage)) || 0) + 1,
         started_at: new Date().toISOString(),
-        log: `logs/${stage}.jsonl`,
-        stdout_log: `logs/${stage}.stdout.log`,
-        stderr_log: `logs/${stage}.stderr.log`
+        ...logPaths,
+        run_id: runContext?.runId || ""
       });
     }
     const modelEnv = moduleIds.length ? await this.secretService.envForModules(moduleIds) : {};
@@ -51,6 +66,14 @@ export class WorkerRunner {
           error_message: message
         });
       }
+      if (runContext && stage) {
+        await markRunStage(runContext, stage, {
+          status: "failed",
+          finished_at: new Date().toISOString(),
+          exit_code: -1,
+          error_message: message
+        });
+      }
       if (allowFailure) {
         return { code: -1, signal: null, stdout: "", stderr: message };
       }
@@ -60,8 +83,16 @@ export class WorkerRunner {
       code: result.code,
       signal: result.signal
     });
-    if (taskDir && stage) {
+    if (taskDir && stage && (result.code !== 0 || !runContext)) {
       await markStage(taskDir, stage, {
+        status: result.code === 0 ? "succeeded" : "failed",
+        finished_at: new Date().toISOString(),
+        exit_code: result.code,
+        error_message: result.code === 0 ? "" : summarizeError(result.stderr || result.stdout)
+      });
+    }
+    if (runContext && stage) {
+      await markRunStage(runContext, stage, {
         status: result.code === 0 ? "succeeded" : "failed",
         finished_at: new Date().toISOString(),
         exit_code: result.code,
@@ -76,6 +107,14 @@ export class WorkerRunner {
     }
     return result;
   }
+}
+
+function displayLogPath(logsDir, name, taskDir) {
+  const file = path.join(logsDir, name);
+  if (taskDir && file.startsWith(`${taskDir}${path.sep}`)) {
+    return path.relative(taskDir, file);
+  }
+  return file;
 }
 
 async function safeStageAttempt(taskDir, stage) {

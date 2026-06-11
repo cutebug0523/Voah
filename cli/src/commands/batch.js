@@ -201,20 +201,26 @@ async function resumeBatch(argv) {
   const manifest = await readJson(manifestPath);
   const tasks = (manifest.tasks || []).map((task) => ({ ...task }));
   const concurrency = Math.max(1, optionalInt(options.concurrency ?? manifest.concurrency, 2));
-  const queued = tasks.filter((task) => task.status === "queued");
+  const runnable = tasks.filter((task) => isRunnableOnResume(task));
   const running = tasks.filter((task) => task.status === "running");
+  for (const task of runnable) {
+    task.status = "queued";
+    if (!options.from) {
+      task.resume_from = task.failed_stage || task.current_stage || task.resume_from || "";
+    }
+  }
   manifest.control = {
     ...(manifest.control || {}),
     paused: false,
     resumed_at: new Date().toISOString()
   };
-  manifest.status = queued.length ? "running" : finalBatchStatus(tasks);
+  manifest.status = runnable.length ? "running" : finalBatchStatus(tasks);
   manifest.tasks = tasks;
   manifest.concurrency = concurrency;
   await writeBatchFiles(batchDir, manifest);
   if (running.length) {
     await updateBatch(batchDir, tasks, "running", { paused: false });
-  } else if (queued.length) {
+  } else if (runnable.length) {
     await runQueue({ workspace, batchDir, tasks, concurrency, options });
   } else {
     await updateBatch(batchDir, tasks, manifest.status, { paused: false });
@@ -222,8 +228,14 @@ async function resumeBatch(argv) {
   }
   console.log(`batch_dir=${batchDir}`);
   console.log("paused=false");
-  console.log(`queued=${queued.length}`);
+  console.log(`queued=${runnable.length}`);
   console.log(`running=${running.length}`);
+}
+
+function isRunnableOnResume(task) {
+  if (!task) return false;
+  if (["running", "succeeded", "completed"].includes(task.status)) return false;
+  return ["queued", "failed", "needs_review", "stale"].includes(task.status);
 }
 
 function batchPauseControlPath(batchDir) {
@@ -243,7 +255,7 @@ async function runSingleTask({ workspace, task, options }) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      await runPipeline({ workspace, taskDir: task.task_dir, from: options.from || "copy", options });
+      await runPipeline({ workspace, taskDir: task.task_dir, from: options.from || task.resume_from || task.failed_stage || "copy", options });
       const manifest = await readJson(path.join(task.task_dir, "task_manifest.json"));
       const finalVideo = manifest.active_artifacts?.final_subtitled
         ? path.join(task.task_dir, "hyperframes_subtitle_burn", "final_subtitled.mp4")
@@ -256,9 +268,21 @@ async function runSingleTask({ workspace, task, options }) {
       };
     } catch (error) {
       lastError = error;
+      task.failed_stage = await inferFailedStage(task.task_dir);
+      task.error_message = error.message || String(error);
     }
   }
   throw lastError;
+}
+
+async function inferFailedStage(taskDir) {
+  try {
+    const manifest = await readJson(path.join(taskDir, "task_manifest.json"));
+    const failed = Object.entries(manifest.stages || {}).find(([, info]) => info?.status === "failed");
+    return failed?.[0] || "";
+  } catch {
+    return "";
+  }
 }
 
 async function writeBatchFiles(batchDir, manifest) {

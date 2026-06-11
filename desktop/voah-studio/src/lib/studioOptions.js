@@ -117,99 +117,19 @@ export const SUBTITLE_PRESETS = [
 
 export const FONT_OPTIONS = [
   {
-    id: "songti-sc",
-    label: "系统宋体",
-    family: "Songti SC",
-    style: "宋体 / 稳重美妆",
-    license: "macOS 系统字体，随本机系统授权使用",
-    license_url: "https://www.apple.com/legal/sla/",
-    candidate_paths: ["/System/Library/Fonts/Supplemental/Songti.ttc"]
-  },
-  {
-    id: "source-han-sans",
-    label: "思源黑体",
-    family: "Source Han Sans SC",
-    style: "黑体 / 干净清晰",
-    license: "SIL Open Font License 1.1，可商用",
-    license_url: "https://github.com/adobe-fonts/source-han-sans/blob/release/LICENSE.txt",
-    install: {
-      type: "file",
-      file_name: "SourceHanSansSC-Regular.otf",
-      urls: [
-        "https://cdn.jsdelivr.net/gh/adobe-fonts/source-han-sans@release/OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf",
-        "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf"
-      ]
-    },
-    candidate_paths: [
-      "~/Library/Fonts/SourceHanSansSC-Regular.otf",
-      "/Library/Fonts/SourceHanSansSC-Regular.otf",
-      "/Library/Fonts/Source Han Sans SC Regular.otf",
-      "/System/Library/Fonts/Supplemental/SourceHanSansSC-Regular.otf"
-    ]
-  },
-  {
-    id: "source-han-serif",
-    label: "思源宋体",
-    family: "Source Han Serif SC",
-    style: "宋体 / 高级标题感",
-    license: "SIL Open Font License 1.1，可商用",
-    license_url: "https://github.com/adobe-fonts/source-han-serif/blob/release/LICENSE.txt",
-    install: {
-      type: "file",
-      file_name: "SourceHanSerifSC-Regular.otf",
-      urls: [
-        "https://cdn.jsdelivr.net/gh/adobe-fonts/source-han-serif@release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf",
-        "https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf"
-      ]
-    },
-    candidate_paths: [
-      "~/Library/Fonts/SourceHanSerifSC-Regular.otf",
-      "/Library/Fonts/SourceHanSerifSC-Regular.otf",
-      "/Library/Fonts/Source Han Serif SC Regular.otf",
-      "/System/Library/Fonts/Supplemental/SourceHanSerifSC-Regular.otf"
-    ]
-  },
-  {
     id: "smiley-sans",
     label: "得意黑",
     family: "Smiley Sans",
     style: "标题体 / 俏皮醒目",
     license: "SIL Open Font License 1.1，可商用",
     license_url: "https://github.com/atelier-anchor/smiley-sans/blob/main/LICENSE",
-    install: {
-      type: "zip",
-      file_name: "SmileySans-Oblique.otf",
-      archive_match: "SmileySans.*\\.(otf|ttf)$",
-      urls: ["https://github.com/atelier-anchor/smiley-sans/releases/download/v2.0.1/smiley-sans-v2.0.1.zip"]
-    },
+    bundled_file: "SmileySans-Oblique.otf",
+    font_format: "opentype",
     candidate_paths: [
-      "~/Library/Fonts/SmileySans-Oblique.otf",
+      "~/.voah/fonts/SmileySans-Oblique.otf",
       "/Library/Fonts/SmileySans-Oblique.ttf",
       "/Library/Fonts/SmileySans-Oblique.otf",
       "/Library/Fonts/得意黑.ttf"
-    ]
-  },
-  {
-    id: "lxgw-wenkai",
-    label: "霞鹜文楷 Lite",
-    family: "LXGW WenKai",
-    style: "手写楷体 / 亲和自然",
-    license: "SIL Open Font License 1.1，可商用",
-    license_url: "https://github.com/lxgw/LxgwWenKai-Lite/blob/main/OFL.txt",
-    install: {
-      type: "file",
-      file_name: "LXGWWenKaiLite-Medium.ttf",
-      urls: [
-        "https://cdn.jsdelivr.net/gh/lxgw/LxgwWenKai-Lite@main/fonts/TTF/LXGWWenKaiLite-Medium.ttf",
-        "https://raw.githubusercontent.com/lxgw/LxgwWenKai-Lite/main/fonts/TTF/LXGWWenKaiLite-Medium.ttf"
-      ]
-    },
-    candidate_paths: [
-      "~/Library/Fonts/LXGWWenKaiLite-Medium.ttf",
-      "/Library/Fonts/LXGWWenKaiLite-Medium.ttf",
-      "/Library/Fonts/LXGWWenKai-Regular.ttf",
-      "/Library/Fonts/LXGW WenKai.ttf",
-      "/Library/Fonts/LXGWWenKai-Regular.otf"
     ]
   },
   {
@@ -219,16 +139,10 @@ export const FONT_OPTIONS = [
     style: "促销体 / 活泼醒目",
     license: "SIL Open Font License 1.1，可商用",
     license_url: "https://github.com/googlefonts/zcool-kuaile/blob/main/OFL.txt",
-    install: {
-      type: "file",
-      file_name: "ZCOOLKuaiLe-Regular.ttf",
-      urls: [
-        "https://cdn.jsdelivr.net/gh/googlefonts/zcool-kuaile@main/fonts/ttf/ZCOOLKuaiLe-Regular.ttf",
-        "https://raw.githubusercontent.com/googlefonts/zcool-kuaile/main/fonts/ttf/ZCOOLKuaiLe-Regular.ttf"
-      ]
-    },
+    bundled_file: "ZCOOLKuaiLe-Regular.ttf",
+    font_format: "truetype",
     candidate_paths: [
-      "~/Library/Fonts/ZCOOLKuaiLe-Regular.ttf",
+      "~/.voah/fonts/ZCOOLKuaiLe-Regular.ttf",
       "/Library/Fonts/ZCOOLKuaiLe-Regular.ttf",
       "/Library/Fonts/ZCOOL KuaiLe Regular.ttf"
     ]
@@ -240,19 +154,22 @@ export const FONT_OPTIONS = [
     style: "标题体 / 年轻利落",
     license: "SIL Open Font License 1.1，可商用",
     license_url: "https://github.com/googlefonts/zcool-qingke-huangyou/blob/main/OFL.txt",
-    install: {
-      type: "file",
-      file_name: "ZCOOLQingKeHuangYou-Regular.ttf",
-      urls: [
-        "https://cdn.jsdelivr.net/gh/googlefonts/zcool-qingke-huangyou@main/fonts/ZCOOLQingKeHuangYou-Regular.ttf",
-        "https://raw.githubusercontent.com/googlefonts/zcool-qingke-huangyou/main/fonts/ZCOOLQingKeHuangYou-Regular.ttf"
-      ]
-    },
+    bundled_file: "ZCOOLQingKeHuangYou-Regular.ttf",
+    font_format: "truetype",
     candidate_paths: [
-      "~/Library/Fonts/ZCOOLQingKeHuangYou-Regular.ttf",
+      "~/.voah/fonts/ZCOOLQingKeHuangYou-Regular.ttf",
       "/Library/Fonts/ZCOOLQingKeHuangYou-Regular.ttf",
       "/Library/Fonts/ZCOOL QingKe HuangYou Regular.ttf"
     ]
+  },
+  {
+    id: "songti-sc",
+    label: "系统宋体",
+    family: "Songti SC",
+    style: "宋体 / 稳重美妆",
+    license: "macOS 系统字体，随本机系统授权使用",
+    license_url: "https://www.apple.com/legal/sla/",
+    candidate_paths: ["/System/Library/Fonts/Supplemental/Songti.ttc"]
   }
 ];
 

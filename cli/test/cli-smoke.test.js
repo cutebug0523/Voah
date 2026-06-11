@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { acquireTaskRunLock, releaseTaskRunLock } from "../src/core/taskLock.js";
 
 const CLI = fileURLToPath(new URL("../src/bin/voah.js", import.meta.url));
 
@@ -125,6 +126,21 @@ test("batch run --create-only writes batch and task manifests", async () => {
     assert.ok(existsSync(path.join(task.task_dir, "task_manifest.json")));
     assert.ok(existsSync(path.join(task.task_dir, "task_brief.json")));
   }
+});
+
+test("task run lock rejects duplicate runners for same task dir", async () => {
+  const taskDir = await mkdtemp(path.join(os.tmpdir(), "voah-task-lock-test-"));
+  const lock = await acquireTaskRunLock(taskDir, { stage: "render", scope: "test" });
+  try {
+    await assert.rejects(
+      () => acquireTaskRunLock(taskDir, { stage: "render", scope: "test" }),
+      /任务正在运行/
+    );
+  } finally {
+    await releaseTaskRunLock(lock);
+  }
+  const nextLock = await acquireTaskRunLock(taskDir, { stage: "render", scope: "test" });
+  await releaseTaskRunLock(nextLock);
 });
 
 test("intake merge builds product-level merged shot index", async () => {
@@ -351,6 +367,149 @@ exit 0
   assert.equal(passed.passed_count, 0);
   const review = JSON.parse(await readFile(path.join(batchDir, "needs_review_videos.json"), "utf8"));
   assert.equal(review.needs_review_count, 2);
+});
+
+test("pipeline writes stage outputs under run workspace before promoting stable artifacts", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-worktree-pipeline-"));
+  const intakeRun = path.join(workspace, "cache", "voah_video_intake", "demo", "run");
+  const binDir = path.join(workspace, "bin");
+  await mkdir(intakeRun, { recursive: true });
+  await mkdir(binDir, { recursive: true });
+  await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
+  await writeFile(
+    path.join(binDir, "python3"),
+    `#!/bin/sh
+case "$1" in
+  *voah_generate_copy_with_m3.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    echo '{"full_voice_text":"demo","script_sections":[{"voice_text":"demo"}]}' > "$TASK/voice_script.json"
+    echo '{}' > "$TASK/copy_brief.json"
+    ;;
+  *voah_run_oneshot_minimax_tts.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    touch "$TASK/voice.wav"
+    echo '{}' > "$TASK/tts_audio.json"
+    echo '{"sections":[]}' > "$TASK/audio_sections.json"
+    ;;
+  *voah_retrieve_fill_from_audio_sections.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    echo '{}' > "$TASK/candidate_sections.json"
+    echo '{}' > "$TASK/timeline_selection.json"
+    echo '{}' > "$TASK/timeline_fill.json"
+    touch "$TASK/preview_no_subtitles.mp4"
+    ;;
+  *voah_build_caption_plan.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    echo '{"captions":[],"summary":{"total_duration_s":0},"style":{}}' > "$TASK/caption_plan.json"
+    ;;
+  *voah_create_hyperframes_subtitle_project.py)
+    PROJECT=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--project-dir" ]; then shift; PROJECT="$1"; fi
+      shift
+    done
+    mkdir -p "$PROJECT/media"
+    echo '<html></html>' > "$PROJECT/index.html"
+    echo '{}' > "$PROJECT/hyperframes_subtitle_burn_manifest.json"
+    touch "$PROJECT/media/base_video.mp4"
+    touch "$PROJECT/media/voice.wav"
+    ;;
+  *voah_write_full_pipeline_manifest.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    echo '{"qa":{"status":"needs_review"}}' > "$TASK/full_pipeline_manifest.json"
+    ;;
+  *voah_build_desktop_quality_report.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    echo '{}' > "$TASK/desktop_quality_report.json"
+    echo '# report' > "$TASK/desktop_quality_report.md"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`,
+    { mode: 0o755 }
+  );
+  await writeFile(
+    path.join(binDir, "ffmpeg"),
+    `#!/bin/sh
+OUT=""
+for arg in "$@"; do OUT="$arg"; done
+touch "$OUT"
+`,
+    { mode: 0o755 }
+  );
+  await writeFile(
+    path.join(binDir, "npx"),
+    `#!/bin/sh
+IS_RENDER=0
+for arg in "$@"; do
+  if [ "$arg" = "render" ]; then IS_RENDER=1; fi
+done
+if [ "$IS_RENDER" = "1" ]; then
+  OUT=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then shift; OUT="$1"; fi
+    shift
+  done
+  touch "$OUT"
+fi
+exit 0
+`,
+    { mode: 0o755 }
+  );
+  const created = await run([
+    "task",
+    "create",
+    "--workspace",
+    workspace,
+    "--product",
+    "demo",
+    "--intake-run",
+    intakeRun
+  ]);
+  assert.equal(created.code, 0, created.stderr);
+  const taskDir = created.stdout.match(/task_dir=(.*)/)?.[1].trim();
+  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}` };
+  const result = await run(["task", "run", "--workspace", workspace, taskDir, "--skip-omni", "--render-timeout-ms", "1000"], { env });
+  assert.equal(result.code, 0, result.stderr);
+  const runsDir = path.join(taskDir, ".runs");
+  assert.equal(existsSync(runsDir), true);
+  const runNames = (await import("node:fs/promises")).readdir(runsDir);
+  const names = await runNames;
+  assert.equal(names.length, 1);
+  const runDir = path.join(runsDir, names[0]);
+  assert.equal(existsSync(path.join(runDir, "outputs", "voice_script.json")), true);
+  assert.equal(existsSync(path.join(runDir, "outputs", "hyperframes_subtitle_burn", "final_subtitled.mp4")), true);
+  assert.equal(existsSync(path.join(taskDir, "hyperframes_subtitle_burn", "final_subtitled.mp4")), true);
+  const manifest = JSON.parse(await readFile(path.join(taskDir, "task_manifest.json"), "utf8"));
+  assert.equal(manifest.runs.latest, names[0]);
+  assert.equal(manifest.stages.render.promoted_run_id, names[0]);
+  assert.equal(manifest.active_artifacts.final_subtitled, "hyperframes_subtitle_burn/final_subtitled.mp4");
 });
 
 test("tts preview dry-run writes manifest without secrets", async () => {

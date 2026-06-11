@@ -59,6 +59,7 @@ export function dedupeIntakeRuns(runs) {
   const items = Array.isArray(runs) ? runs : [];
   const realByJobId = new Map();
   const realByRunDir = new Map();
+  const runsWithRealRunDir = new Set();
 
   for (const run of items) {
     if (isIntakeJobRun(run)) continue;
@@ -66,15 +67,16 @@ export function dedupeIntakeRuns(runs) {
     const runDir = normalizeRunDir(run?.run_dir);
     if (jobId && !realByJobId.has(jobId)) realByJobId.set(jobId, run);
     if (runDir && !realByRunDir.has(runDir)) realByRunDir.set(runDir, run);
+    if (runDir) runsWithRealRunDir.add(runDir);
   }
 
   const hiddenJobs = new Set();
   for (const run of items) {
     if (!isIntakeJobRun(run)) continue;
     const jobId = normalizeToken(run?.job_id || run?.name);
-    const pointedRunDir = hasRealRunDir(run) ? normalizeRunDir(run?.run_dir) : "";
+    const pointedRunDir = normalizeRunDir(run?.run_dir);
     const preferred = (jobId && realByJobId.get(jobId)) || (pointedRunDir && realByRunDir.get(pointedRunDir));
-    if (preferred) hiddenJobs.add(run);
+    if (preferred || (pointedRunDir && runsWithRealRunDir.has(pointedRunDir))) hiddenJobs.add(run);
   }
 
   return items.filter((run) => !hiddenJobs.has(run));
@@ -82,12 +84,6 @@ export function dedupeIntakeRuns(runs) {
 
 function isIntakeJobRun(run) {
   return run?.source === "job" || Boolean(run?.job_dir);
-}
-
-function hasRealRunDir(run) {
-  const runDir = normalizeRunDir(run?.run_dir);
-  const jobDir = normalizeRunDir(run?.job_dir);
-  return Boolean(runDir && (!jobDir || runDir !== jobDir));
 }
 
 function normalizeRunDir(value) {

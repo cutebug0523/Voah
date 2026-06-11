@@ -25,7 +25,6 @@ export function SettingsPage() {
   const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState("");
-  const [installingFont, setInstallingFont] = useState("");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -62,21 +61,32 @@ export function SettingsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    injectFontFaces(fonts);
+  }, [fonts]);
+
   const modules = config?.modules || [];
   const selectedVoice = useMemo(
     () => voices.find((item) => item.voice_id === form?.tts?.voice_id) || voices[0],
     [voices, form?.tts?.voice_id]
   );
+  const availableFonts = useMemo(
+    () => fonts.filter((item) => !fontsReady || item.installed),
+    [fonts, fontsReady]
+  );
   const selectedFont = useMemo(
-    () => fonts.find((item) => item.id === form?.subtitle?.font) || fonts.find((item) => item.installed_path === form?.subtitle?.font_source) || fonts[0],
-    [fonts, form?.subtitle?.font, form?.subtitle?.font_source]
+    () => {
+      const candidates = availableFonts.length ? availableFonts : fonts;
+      return candidates.find((item) => item.id === form?.subtitle?.font) || candidates.find((item) => item.installed_path === form?.subtitle?.font_source) || candidates[0];
+    },
+    [availableFonts, fonts, form?.subtitle?.font, form?.subtitle?.font_source]
   );
   if (!form) return <EmptyHint icon="fa-spinner fa-spin" title="加载中…" />;
 
   async function saveDefaults() {
     setBusy("settings");
     setMessage("");
-    const res = await saveStudioSettings(normalizeSettings(form));
+    const res = await saveStudioSettings(normalizedForm());
     setBusy("");
     setMessage(res?.ok ? "已保存" : res?.error || "保存失败");
   }
@@ -98,7 +108,7 @@ export function SettingsPage() {
     setBusy("preview");
     setMessage("");
     setPreview(null);
-    const tts = normalizeSettings(form).tts;
+    const tts = normalizedForm().tts;
     const res = await window.voah?.ttsPreview?.({
       text: previewText,
       provider: tts.provider,
@@ -126,6 +136,10 @@ export function SettingsPage() {
   function selectFont(fontId) {
     const font = fonts.find((item) => item.id === fontId);
     if (!font) return;
+    applyFont(font);
+  }
+
+  function applyFont(font) {
     setForm((prev) => ({
       ...prev,
       subtitle: {
@@ -137,28 +151,18 @@ export function SettingsPage() {
     }));
   }
 
-  async function installFont(fontId) {
-    setInstallingFont(fontId);
-    setMessage("");
-    const res = await window.voah?.installSubtitleFont?.(fontId);
-    const fontRes = await window.voah?.listSubtitleFonts?.();
-    if (fontRes?.fonts?.length) {
-      setFonts(fontRes.fonts);
-      const installed = fontRes.fonts.find((item) => item.id === fontId);
-      if (installed?.installed) {
-        setForm((prev) => ({
-          ...prev,
-          subtitle: {
-            ...(prev.subtitle || {}),
-            font: installed.id,
-            font_label: installed.label,
-            font_source: installed.installed_path || ""
-          }
-        }));
-      }
+  function normalizedForm() {
+    const normalized = normalizeSettings(form);
+    const font = selectedFont || availableFonts[0] || fonts[0];
+    if (font) {
+      normalized.subtitle = {
+        ...(normalized.subtitle || {}),
+        font: font.id,
+        font_label: font.label,
+        font_source: font.installed_path || normalized.subtitle?.font_source || ""
+      };
     }
-    setInstallingFont("");
-    setMessage(res?.ok ? "字体已安装" : res?.error || "字体安装失败");
+    return normalized;
   }
 
   return (
@@ -277,25 +281,13 @@ export function SettingsPage() {
               </select>
             </Field>
             <Field label="字体">
-              <div className="flex gap-2">
-                <select className="input min-w-0 flex-1" value={selectedFont?.id || ""} onChange={(e) => selectFont(e.target.value)}>
-                  {fonts.map((font) => (
-                    <option key={font.id} value={font.id}>
-                      {font.label}{fontsReady ? font.installed ? " · 可用" : " · 未安装" : " · 检测中"}
-                    </option>
-                  ))}
-                </select>
-                {fontsReady && !selectedFont?.installed && selectedFont?.install && (
-                  <button
-                    onClick={() => installFont(selectedFont.id)}
-                    disabled={installingFont === selectedFont.id}
-                    className="shrink-0 px-3 rounded-lg bg-brand-600 hover:bg-brand-700 disabled:bg-ink-300 text-white text-xs font-medium"
-                  >
-                    <i className={`fa ${installingFont === selectedFont.id ? "fa-spinner fa-spin" : "fa-download"} mr-1`} />
-                    {installingFont === selectedFont.id ? "安装中" : "安装"}
-                  </button>
-                )}
-              </div>
+              <select className="input" value={selectedFont?.id || ""} onChange={(e) => selectFont(e.target.value)}>
+                {availableFonts.map((font) => (
+                  <option key={font.id} value={font.id}>
+                    {font.label}
+                  </option>
+                ))}
+              </select>
               <FontPreview font={selectedFont} ready={fontsReady} />
             </Field>
           </Block>
@@ -389,7 +381,7 @@ function Configured({ ok }) {
 
 function FontPreview({ font, ready }) {
   if (!font) return null;
-  const status = !ready ? "检测中" : font.installed ? "可用" : "未安装";
+  if (ready && !font.installed) return null;
   return (
     <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
       <div className="flex items-center justify-between gap-2">
@@ -397,15 +389,31 @@ function FontPreview({ font, ready }) {
           <div className="text-xs font-medium text-ink-800 truncate">{font.label}</div>
           <div className="text-[11px] text-ink-400 truncate">{font.style}</div>
         </div>
-        <span className={`text-[11px] shrink-0 ${font.installed ? "text-ok" : "text-ink-400"}`}>
-          {status}
-        </span>
       </div>
-      <div className="mt-2 text-xl leading-7 truncate" style={{ fontFamily: font.installed ? `"${font.family}", serif` : "serif" }}>
+      <div className="mt-2 text-xl leading-7 truncate" style={{ fontFamily: `"${font.family}", serif` }}>
         上脸服帖自然
       </div>
     </div>
   );
+}
+
+function injectFontFaces(fonts) {
+  if (typeof document === "undefined") return;
+  const id = "voah-bundled-font-faces";
+  let style = document.getElementById(id);
+  if (!style) {
+    style = document.createElement("style");
+    style.id = id;
+    document.head.appendChild(style);
+  }
+  style.textContent = (fonts || [])
+    .filter((font) => font.installed && font.font_url && font.family)
+    .map((font) => {
+      const family = String(font.family).replace(/"/g, "");
+      const format = font.font_format || (String(font.installed_path || "").toLowerCase().endsWith(".otf") ? "opentype" : "truetype");
+      return `@font-face{font-family:"${family}";src:url("${font.font_url}") format("${format}");font-display:swap;}`;
+    })
+    .join("\n");
 }
 
 function KeyModal({ module, value, busy, onChange, onClose, onSave }) {
@@ -477,9 +485,9 @@ function normalizeSettings(settings) {
     },
     subtitle: {
       preset: subtitle.preset === "方案1" ? "songti_white_gold_lower" : subtitle.preset || "songti_white_gold_lower",
-      font: subtitle.font || "songti-sc",
-      font_label: subtitle.font_label || "系统宋体",
-      font_source: subtitle.font_source || "/System/Library/Fonts/Supplemental/Songti.ttc"
+      font: subtitle.font || "smiley-sans",
+      font_label: subtitle.font_label || "得意黑",
+      font_source: subtitle.font_source || ""
     }
   };
 }
