@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { parseArgs, requireOption, optionalNumber } from "../core/args.js";
+import { parseArgs, requireOption, optionalInt, optionalNumber } from "../core/args.js";
 import { UserError } from "../core/errors.js";
 import { readJson, writeJson } from "../core/json.js";
 import { createTaskManifest, writeTaskManifest } from "../core/manifest.js";
@@ -57,12 +57,21 @@ async function createTask(argv) {
     model: options["tts-model"] || "speech-2.8-hd",
     voice_id: options["voice-id"] || "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
     speed: optionalNumber(options.speed, 1.1),
+    vol: optionalNumber(options.vol, 1),
+    pitch: optionalInt(options.pitch ?? options["voice-setting-pitch"], 0),
     emotion: options.emotion || "happy",
+    modify_pitch: optionalInt(options["modify-pitch"], 20),
+    intensity: optionalInt(options["modify-intensity"], 20),
+    timbre: optionalInt(options["modify-timbre"], 0),
     voice_modify: {
-      pitch: 20,
-      intensity: 20,
-      timbre: 0
+      pitch: optionalInt(options["modify-pitch"], 20),
+      intensity: optionalInt(options["modify-intensity"], 20),
+      timbre: optionalInt(options["modify-timbre"], 0)
     }
+  };
+  manifest.subtitle = {
+    preset: options["subtitle-preset"] || "songti_white_gold_lower",
+    font_source: options["font-source"] || ""
   };
   await writeTaskManifest(taskDir, manifest);
   await writeTaskBrief({

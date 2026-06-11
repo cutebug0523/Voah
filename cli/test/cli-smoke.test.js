@@ -43,7 +43,25 @@ test("task create writes task_manifest and task_brief without running models", a
     "--target-duration",
     "45",
     "--label",
-    "smoke"
+    "smoke",
+    "--speed",
+    "1.25",
+    "--vol",
+    "0.9",
+    "--pitch",
+    "2",
+    "--emotion",
+    "calm",
+    "--modify-pitch",
+    "18",
+    "--modify-intensity",
+    "21",
+    "--modify-timbre",
+    "-3",
+    "--subtitle-preset",
+    "live_bar_lower",
+    "--font-source",
+    "/tmp/VoahFont.ttf"
   ]);
   assert.equal(result.code, 0, result.stderr);
   const taskDir = result.stdout.match(/task_dir=(.*)/)?.[1].trim();
@@ -53,6 +71,15 @@ test("task create writes task_manifest and task_brief without running models", a
   const manifest = JSON.parse(await readFile(path.join(taskDir, "task_manifest.json"), "utf8"));
   assert.equal(manifest.product_slug, "demo");
   assert.equal(manifest.active_artifacts.task_brief, "task_brief.json");
+  assert.equal(manifest.tts.speed, 1.25);
+  assert.equal(manifest.tts.vol, 0.9);
+  assert.equal(manifest.tts.pitch, 2);
+  assert.equal(manifest.tts.emotion, "calm");
+  assert.equal(manifest.tts.modify_pitch, 18);
+  assert.equal(manifest.tts.voice_modify.intensity, 21);
+  assert.equal(manifest.tts.voice_modify.timbre, -3);
+  assert.equal(manifest.subtitle.preset, "live_bar_lower");
+  assert.equal(manifest.subtitle.font_source, "/tmp/VoahFont.ttf");
 });
 
 test("batch run --create-only writes batch and task manifests", async () => {

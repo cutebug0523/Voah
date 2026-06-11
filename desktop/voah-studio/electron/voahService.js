@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dialog, shell } from "electron";
+import { SecretService } from "../../../cli/src/services/secretService.js";
+import { FALLBACK_TTS_VOICES, FONT_OPTIONS, VOICE_NAME_ZH } from "../src/lib/studioOptions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +57,8 @@ export function registerVoahHandlers(ipcMain) {
   ipcMain.handle("voah:setConfig", (_e, params) => setConfig(params));
   ipcMain.handle("voah:getStudioSettings", () => getStudioSettings());
   ipcMain.handle("voah:saveStudioSettings", (_e, params) => saveStudioSettings(params));
+  ipcMain.handle("voah:listTtsVoices", () => listTtsVoices());
+  ipcMain.handle("voah:listSubtitleFonts", () => listSubtitleFonts());
 
   ipcMain.handle("voah:createSampleTask", (_e, params) => createSampleTask(params));
   ipcMain.handle("voah:runCopyStage", (_e, taskDir) => runCopyStage(taskDir));
@@ -502,6 +506,62 @@ function setConfig({ key, value }) {
   return runVoah(["config", "set", key, "--workspace", WORKSPACE], { stdin: String(value) });
 }
 
+async function listTtsVoices() {
+  const fallback = FALLBACK_TTS_VOICES.map(normalizeVoiceOption);
+  try {
+    const apiKey = await readSecret("minimax.api_key");
+    if (!apiKey) {
+      return {
+        ok: true,
+        source: "fallback",
+        voices: fallback,
+        warning: "MiniMax Key 未配置，使用内置音色表"
+      };
+    }
+    const response = await fetch("https://api.minimax.io/v1/get_voice", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ voice_type: "system" })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.base_resp?.status_code) {
+      return {
+        ok: true,
+        source: "fallback",
+        voices: fallback,
+        warning: payload?.base_resp?.status_msg || `MiniMax 音色接口返回 ${response.status}`
+      };
+    }
+    const remote = Array.isArray(payload.system_voice) ? payload.system_voice.map(normalizeVoiceOption) : [];
+    const merged = mergeVoices(fallback, remote);
+    return { ok: true, source: "minimax", voices: merged };
+  } catch (error) {
+    return {
+      ok: true,
+      source: "fallback",
+      voices: fallback,
+      warning: String(error?.message || error)
+    };
+  }
+}
+
+async function listSubtitleFonts() {
+  return {
+    ok: true,
+    fonts: FONT_OPTIONS.map((font) => {
+      const installed_path = font.candidate_paths.find((item) => existsSync(item)) || "";
+      return {
+        ...font,
+        installed: Boolean(installed_path),
+        installed_path
+      };
+    })
+  };
+}
+
 async function getStudioSettings() {
   const settings = await readJsonSafe(STUDIO_SETTINGS_PATH);
   return mergeStudioSettings(settings);
@@ -529,15 +589,20 @@ function defaultStudioSettings() {
       provider: "minimax-official",
       model: "speech-2.8-hd",
       voice_id: "moss_audio_aaa1346a-7ce7-11f0-8e61-2e6e3c7ee85d",
+      voice_label: "当前默认音色",
       speed: 1.1,
+      vol: 1,
       emotion: "happy",
-      pitch: 20,
+      pitch: 0,
+      modify_pitch: 20,
       intensity: 20,
       timbre: 0
     },
     subtitle: {
-      preset: "方案1",
-      font: ""
+      preset: "songti_white_gold_lower",
+      font: "",
+      font_source: "/System/Library/Fonts/Supplemental/Songti.ttc",
+      font_label: "系统宋体"
     }
   };
 }
@@ -558,7 +623,8 @@ function mergeStudioSettings(settings) {
     },
     subtitle: {
       ...defaults.subtitle,
-      ...(source.subtitle || {})
+      ...(source.subtitle || {}),
+      preset: source.subtitle?.preset === "方案1" ? "songti_white_gold_lower" : source.subtitle?.preset || defaults.subtitle.preset
     }
   };
 }
@@ -603,6 +669,7 @@ function ttsPreview({ text, voiceId, speed, emotion, pitch, intensity, timbre })
   return runVoah(args).then((result) => ({
     ...result,
     audio: result.stdout.match(/preview_audio=(.*)/)?.[1]?.trim() || null,
+    audio_url: toFileUrl(result.stdout.match(/preview_audio=(.*)/)?.[1]?.trim()),
     manifest: result.stdout.match(/manifest=(.*)/)?.[1]?.trim() || null
   }));
 }
@@ -678,6 +745,65 @@ async function openFile(target) {
 }
 
 // ---- 工具 ----
+
+function normalizeVoiceOption(item) {
+  const voiceId = item.voice_id || item.id || "";
+  const description = Array.isArray(item.description) ? item.description.join("；") : item.description || "";
+  const language = item.language || voiceLanguage(voiceId);
+  return {
+    voice_id: voiceId,
+    voice_name: VOICE_NAME_ZH[voiceId] || item.voice_name || item.name || voiceId,
+    raw_voice_name: item.voice_name || item.name || "",
+    description,
+    gender: item.gender || "",
+    language,
+    group: voiceGroup(language, voiceId)
+  };
+}
+
+function mergeVoices(primary, remote) {
+  const byId = new Map();
+  for (const item of [...primary, ...remote]) {
+    if (!item.voice_id || byId.has(item.voice_id)) continue;
+    byId.set(item.voice_id, item);
+  }
+  return [...byId.values()];
+}
+
+async function readSecret(key) {
+  const envKey = keyToEnvName(key);
+  const secrets = await new SecretService().readSecrets();
+  return secrets[envKey] || "";
+}
+
+function keyToEnvName(key) {
+  return String(key || "").trim().replace(/[^a-zA-Z0-9]+/g, "_").toUpperCase();
+}
+
+function toFileUrl(target) {
+  if (!target) return "";
+  return pathToFileURL(target).href;
+}
+
+function voiceLanguage(voiceId) {
+  const id = String(voiceId || "");
+  if (id.startsWith("Chinese (Mandarin)") || id.startsWith("moss_audio_")) return "Chinese (Mandarin)";
+  if (id.startsWith("Cantonese")) return "Cantonese";
+  if (id.startsWith("English")) return "English";
+  if (id.startsWith("Japanese")) return "Japanese";
+  if (id.startsWith("Korean")) return "Korean";
+  if (id.startsWith("Spanish")) return "Spanish";
+  if (id.startsWith("Portuguese")) return "Portuguese";
+  return "";
+}
+
+function voiceGroup(language, voiceId) {
+  if (VOICE_NAME_ZH[voiceId]) return "中文常用音色";
+  if (language === "Chinese (Mandarin)") return "普通话系统音色";
+  if (language === "Cantonese") return "粤语系统音色";
+  if (language === "English") return "英语系统音色";
+  return language ? `${language} 系统音色` : "其他音色";
+}
 
 function runVoah(args, { stdin = null } = {}) {
   return new Promise((resolve) => {

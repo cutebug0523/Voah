@@ -145,11 +145,11 @@ export async function runTtsStage({ workspace, taskDir, options = {} }) {
       "--emotion",
       options.emotion || manifest.tts?.emotion || "happy",
       "--modify-pitch",
-      String(optionalInt(options["modify-pitch"], voiceModify.pitch ?? 20)),
+      String(optionalInt(options["modify-pitch"], manifest.tts?.modify_pitch ?? voiceModify.pitch ?? 20)),
       "--modify-intensity",
-      String(optionalInt(options["modify-intensity"], voiceModify.intensity ?? 20)),
+      String(optionalInt(options["modify-intensity"], manifest.tts?.intensity ?? voiceModify.intensity ?? 20)),
       "--modify-timbre",
-      String(optionalInt(options["modify-timbre"], voiceModify.timbre ?? 0)),
+      String(optionalInt(options["modify-timbre"], manifest.tts?.timbre ?? voiceModify.timbre ?? 0)),
       "--subtitle-type",
       options["subtitle-type"] || "sentence",
       "--output-format",
@@ -223,6 +223,7 @@ export async function runRetrieveStage({ workspace, taskDir, options = {} }) {
 }
 
 export async function runSubtitleStage({ workspace, taskDir, options = {} }) {
+  const manifest = await requireTaskManifest(taskDir);
   const audioSections = path.join(taskDir, "audio_sections.json");
   const preview = path.join(taskDir, "preview_no_subtitles.mp4");
   const voiceWav = path.join(taskDir, "voice.wav");
@@ -239,8 +240,8 @@ export async function runSubtitleStage({ workspace, taskDir, options = {} }) {
       "--task-dir",
       taskDir,
       "--preset",
-      options["subtitle-preset"] || options.preset || "songti_white_gold_lower",
-      ...(options["font-source"] ? ["--font-source", options["font-source"]] : []),
+      options["subtitle-preset"] || options.preset || manifest.subtitle?.preset || "songti_white_gold_lower",
+      ...(options["font-source"] || manifest.subtitle?.font_source ? ["--font-source", options["font-source"] || manifest.subtitle?.font_source] : []),
       options["no-split-punctuation"] ? "--no-split-punctuation" : "--split-punctuation"
     ],
     taskDir,

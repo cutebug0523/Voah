@@ -29,7 +29,7 @@ export function parseArgs(argv, spec = {}) {
       continue;
     }
     const next = argv[index + 1];
-    if (next === undefined || next.startsWith("-")) {
+    if (next === undefined || (next.startsWith("-") && !isNumericLiteral(next))) {
       throw new UserError(`缺少参数值：--${rawKey}`);
     }
     options[key] = next;
@@ -41,6 +41,10 @@ export function parseArgs(argv, spec = {}) {
     ...options,
     _: positional
   };
+}
+
+function isNumericLiteral(value) {
+  return /^-?\d+(?:\.\d+)?$/.test(String(value || ""));
 }
 
 export function requireOption(options, key, label = key) {

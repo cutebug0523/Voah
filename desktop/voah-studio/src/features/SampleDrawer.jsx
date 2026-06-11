@@ -84,12 +84,12 @@ export function SampleDrawer({ taskDir, onClose }) {
       voiceId: settings.voice_id,
       speed: settings.speed,
       emotion: settings.emotion,
-      pitch: settings.pitch,
+      pitch: settings.modify_pitch ?? settings.pitch,
       intensity: settings.intensity,
       timbre: settings.timbre
     });
     setBusy("");
-    setPreview(res?.audio || null);
+    setPreview(res?.audio_url || (res?.audio ? `file://${res.audio}` : null));
     setMessage(res?.ok ? "试听已生成" : res?.stderr || res?.error || "试听失败");
   }
 
@@ -143,7 +143,7 @@ export function SampleDrawer({ taskDir, onClose }) {
                     {busy === "preview" ? "生成中…" : "试听首段"}
                   </button>
                 </div>
-                {preview && <audio controls src={`file://${preview}`} className="w-full" />}
+                {preview && <audio controls src={preview} className="w-full" />}
                 {detail.voice_wav && <audio controls src={`file://${detail.voice_wav}`} className="w-full" />}
               </div>
 
@@ -168,4 +168,3 @@ function Action({ label, icon, busy, disabled, onClick }) {
     </button>
   );
 }
-

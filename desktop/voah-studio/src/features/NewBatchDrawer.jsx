@@ -200,7 +200,14 @@ function productionArgs(settings) {
     ["--tts-model", tts.model],
     ["--voice-id", tts.voice_id],
     ["--speed", tts.speed],
-    ["--emotion", tts.emotion]
+    ["--vol", tts.vol],
+    ["--pitch", tts.pitch],
+    ["--emotion", tts.emotion],
+    ["--modify-pitch", tts.modify_pitch],
+    ["--modify-intensity", tts.intensity],
+    ["--modify-timbre", tts.timbre],
+    ["--subtitle-preset", settings?.subtitle?.preset],
+    ["--font-source", settings?.subtitle?.font_source]
   ];
   for (const [flag, value] of mapping) {
     if (value !== undefined && value !== null && String(value).trim() !== "") {
