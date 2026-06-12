@@ -114,6 +114,17 @@ def extract_json_object(text: str) -> dict[str, Any]:
     raise ValueError("LLM response is not a JSON object")
 
 
+def copy_llm_thinking_config(provider: str, model: str) -> dict[str, str] | None:
+    raw = os.environ.get("VOAH_COPY_LLM_THINKING", "").strip().lower()
+    if raw in {"enabled", "enable", "true", "1", "on"}:
+        return {"type": "enabled"}
+    if raw in {"disabled", "disable", "false", "0", "off"}:
+        return {"type": "disabled"}
+    if provider == "deepseek" and model == "deepseek-v4-pro":
+        return {"type": "disabled"}
+    return None
+
+
 def call_copy_llm(prompt_payload: dict[str, Any], timeout_s: int) -> tuple[dict[str, Any], dict[str, Any]]:
     provider = (os.environ.get("VOAH_COPY_LLM_PROVIDER") or "deepseek").strip().lower()
     if provider in {"deepseek", "deepseek-official"}:
@@ -162,6 +173,9 @@ def call_openai_compatible_llm(
         "max_tokens": int(os.environ.get("VOAH_COPY_LLM_MAX_TOKENS") or 3600),
         "stream": False,
     }
+    thinking_config = copy_llm_thinking_config(provider, model)
+    if thinking_config:
+        payload["thinking"] = thinking_config
     raw = post_json_with_bearer(url, api_key, payload, timeout_s, f"{provider} copy LLM")
     choices = raw.get("choices") or []
     if not choices:
@@ -176,6 +190,7 @@ def call_openai_compatible_llm(
         "endpoint": endpoint,
         "usage": raw.get("usage") or {},
         "finish_reason": choices[0].get("finish_reason"),
+        "thinking": thinking_config or {},
         "content_preview": content[:1200],
     }
     return plan, safe_response
