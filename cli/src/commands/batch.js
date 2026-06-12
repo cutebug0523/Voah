@@ -22,7 +22,7 @@ export async function runBatchCommand({ argv }) {
     throw new UserError("用法：voah batch run|pause|resume");
   }
   const options = parseArgs(rest, {
-    boolean: ["skip-omni", "create-only", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+    boolean: ["skip-omni", "run-omni", "create-only", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
   });
   const workspace = resolveWorkspace(options.workspace);
   const productSlug = requireOption(options, "product");
@@ -123,13 +123,19 @@ export async function runBatchCommand({ argv }) {
 async function runQueue({ workspace, batchDir, tasks, concurrency, options }) {
   let cursor = 0;
   const workerCount = Math.min(concurrency, tasks.length);
+  function nextTask() {
+    if (cursor >= tasks.length) return null;
+    const task = tasks[cursor];
+    cursor += 1;
+    return task || null;
+  }
   async function worker() {
-    while (cursor < tasks.length) {
+    while (true) {
+      const task = nextTask();
+      if (!task) return;
       if (await shouldStopForPause(batchDir, tasks)) {
         return;
       }
-      const task = tasks[cursor];
-      cursor += 1;
       if (task.status !== "queued") {
         continue;
       }
@@ -187,7 +193,7 @@ async function pauseBatch(argv) {
 
 async function resumeBatch(argv) {
   const options = parseArgs(argv, {
-    boolean: ["skip-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+    boolean: ["skip-omni", "run-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
   });
   const workspace = resolveWorkspace(options.workspace);
   const batchArg = options._[0] || options.batch || options["batch-dir"];
@@ -203,7 +209,7 @@ async function resumeBatch(argv) {
     await rm(batchPauseControlPath(batchDir), { force: true });
   }
   const manifest = await readJson(manifestPath);
-  const tasks = (manifest.tasks || []).map((task) => ({ ...task }));
+  const tasks = await refreshTasksFromDisk((manifest.tasks || []).map((task) => ({ ...task })));
   const concurrency = Math.max(1, optionalInt(options.concurrency ?? manifest.concurrency, 2));
   options.resolution ??= manifest.resolution || manifest.canvas?.preset;
   options.width ??= manifest.canvas?.width;
@@ -304,8 +310,10 @@ async function writeBatchFiles(batchDir, manifest) {
 async function updateBatch(batchDir, tasks, status, controlPatch = null) {
   const manifestPath = path.join(batchDir, "batch_manifest.json");
   const manifest = await readJson(manifestPath);
-  manifest.status = status;
-  manifest.tasks = tasks;
+  const refreshedTasks = await refreshTasksFromDisk(tasks);
+  const effectiveStatus = status === "running" || status === "paused" ? status : finalBatchStatus(refreshedTasks);
+  manifest.status = effectiveStatus;
+  manifest.tasks = refreshedTasks;
   if (controlPatch) {
     manifest.control = {
       ...(manifest.control || {}),
@@ -313,29 +321,39 @@ async function updateBatch(batchDir, tasks, status, controlPatch = null) {
     };
   }
   manifest.summary = {
-    queued: tasks.filter((item) => item.status === "queued").length,
-    running: tasks.filter((item) => item.status === "running").length,
-    succeeded: tasks.filter((item) => ["succeeded", "completed"].includes(item.status)).length,
-    needs_review: tasks.filter((item) => item.status === "needs_review").length,
-    failed: tasks.filter((item) => item.status === "failed").length
+    queued: refreshedTasks.filter((item) => item.status === "queued").length,
+    running: refreshedTasks.filter((item) => item.status === "running").length,
+    succeeded: refreshedTasks.filter((item) => ["succeeded", "completed"].includes(item.status)).length,
+    needs_review: refreshedTasks.filter((item) => item.status === "needs_review").length,
+    failed: refreshedTasks.filter((item) => item.status === "failed").length
   };
   manifest.updated_at = new Date().toISOString();
   await writeBatchFiles(batchDir, manifest);
+  tasks.splice(0, tasks.length, ...refreshedTasks);
 }
 
 function finalBatchStatus(tasks) {
   const failed = tasks.some((item) => item.status === "failed");
-  const review = tasks.some((item) => item.status === "needs_review" || item.qa_status === "needs_review");
+  const review = tasks.some((item) => item.status === "needs_review" || isReviewQaStatus(item.qa_status));
   if (failed && review) return "partial_failed_needs_review";
   if (failed) return "partial_failed";
   if (review) return "needs_review";
   return "completed";
 }
 
+function isPassingQaStatus(status) {
+  return ["ok", "pass", "succeeded", "warning"].includes(String(status || ""));
+}
+
+function isReviewQaStatus(status) {
+  return ["needs_review", "manual_review"].includes(String(status || ""));
+}
+
 async function writeBatchResultLists(batchDir, tasks) {
-  const passed = tasks.filter((item) => {
+  const refreshedTasks = await refreshTasksFromDisk(tasks);
+  const passed = refreshedTasks.filter((item) => {
     if (!["succeeded", "completed"].includes(item.status)) return false;
-    if (!["ok", "pass", "succeeded"].includes(item.qa_status || "")) return false;
+    if (!isPassingQaStatus(item.qa_status)) return false;
     return item.final_video && existsSync(item.final_video);
   });
   await writeJson(path.join(batchDir, "passed_videos.json"), {
@@ -348,7 +366,7 @@ async function writeBatchResultLists(batchDir, tasks) {
       qa_status: item.qa_status || ""
     }))
   });
-  const review = tasks.filter((item) => item.status === "needs_review" || !["ok", "pass", "succeeded"].includes(item.qa_status || ""));
+  const review = refreshedTasks.filter((item) => item.status === "needs_review" || !isPassingQaStatus(item.qa_status));
   await writeJson(path.join(batchDir, "needs_review_videos.json"), {
     schema_version: "voah.batch_needs_review_videos.v1",
     created_at: new Date().toISOString(),
@@ -361,4 +379,48 @@ async function writeBatchResultLists(batchDir, tasks) {
       error_message: item.error_message || ""
     }))
   });
+}
+
+async function refreshTasksFromDisk(tasks) {
+  const refreshed = [];
+  for (const task of tasks) {
+    refreshed.push(await refreshTaskFromDisk(task));
+  }
+  return refreshed;
+}
+
+async function refreshTaskFromDisk(task) {
+  if (!task?.task_dir) return task;
+  const manifestPath = path.join(task.task_dir, "task_manifest.json");
+  if (!existsSync(manifestPath)) return task;
+  try {
+    const manifest = await readJson(manifestPath);
+    const manifestStatus = String(manifest.status || "");
+    let status = manifest.status || task.status;
+    if (["succeeded", "completed"].includes(manifestStatus)) {
+      status = manifest.status;
+    } else if (task.status === "running" && ["queued", "stale", ""].includes(manifestStatus)) {
+      status = "running";
+    }
+    const qaStatus = manifest.qa?.status || task.qa_status || "";
+    const finalVideo = manifest.active_artifacts?.final_subtitled
+      ? path.join(task.task_dir, manifest.active_artifacts.final_subtitled)
+      : task.final_video || "";
+    const nextTask = {
+      ...task,
+      status,
+      qa_status: qaStatus,
+      final_video: finalVideo
+    };
+    if (["succeeded", "completed"].includes(status)) {
+      delete nextTask.failed_stage;
+      delete nextTask.error_message;
+      delete nextTask.resume_from;
+    } else {
+      nextTask.failed_stage = task.failed_stage || (await inferFailedStage(task.task_dir));
+    }
+    return nextTask;
+  } catch {
+    return task;
+  }
 }

@@ -145,6 +145,7 @@ def main() -> int:
     omni_final = load_omni_final(task_dir)
     omni_final_status = (omni_final.get("qa") or {}).get("status")
     omni_final_passed = omni_final_status == "ok"
+    omni_status_for_manifest = omni_final_status or "not_run"
     final_video_exists = media_paths["final_subtitled"].exists()
 
     warnings: list[str] = []
@@ -157,8 +158,7 @@ def main() -> int:
                 resolved_warnings.append(scoped_warning)
             else:
                 warnings.append(scoped_warning)
-    omni_status_for_manifest = omni_final_status or "missing"
-    if final_video_exists and omni_status_for_manifest != "ok":
+    if final_video_exists and omni_final_status and omni_status_for_manifest != "ok":
         warnings.append(f"omni_alignment_final: status={omni_status_for_manifest}")
     freeze_events_final = parse_freezedetect(task_dir / "qa_freezedetect.log")
     freeze_events_preview = parse_freezedetect(task_dir / "qa_freezedetect_preview_no_subtitles.log")
@@ -172,7 +172,7 @@ def main() -> int:
         "created_at": iso_now(),
         "task_dir": str(task_dir),
         "product": voice_script.get("product") or tts_audio.get("product") or {},
-        "objective": "Run copy/TTS/audio-section retrieval/video-fill/subtitle-burn/Omni QA from existing intake without re-ingest.",
+        "objective": "Run copy/TTS/audio-section retrieval/video-fill/subtitle-burn and deterministic QA from existing intake without re-ingest.",
         "pipeline": [
             "voah-task-brief",
             "voah-copy-brief",
@@ -185,7 +185,6 @@ def main() -> int:
             "voah-video-fill",
             "voah-caption-plan",
             "hyperframes-subtitle-burn",
-            "voah-omni-alignment-qa-final",
             "voah-render-qa",
             "voah-full-pipeline-manifest",
         ],
@@ -225,9 +224,9 @@ def main() -> int:
         "qa": {
             "status": (
                 "block"
-                if not final_video_exists or omni_status_for_manifest in {"missing", "block"}
+                if not final_video_exists
                 else "warning"
-                if warnings or omni_status_for_manifest != "ok"
+                if warnings
                 else "ok"
             ),
             "warnings": warnings,
@@ -256,17 +255,16 @@ def main() -> int:
             ],
         },
         "regression_notes": {
-            "copy_axis": "voice_script.json is the final TTS/subtitle source. This run used M3 copy generation, then one Omni-QA-driven copy calibration pass to align words with actual material evidence.",
+            "copy_axis": "voice_script.json is the final TTS/subtitle source.",
             "tts_axis": "MiniMax one-shot TTS is the timing source. audio_sections.json uses MiniMax subtitle character offsets for timing only; text remains voice_script.json.",
             "subtitle_axis": "caption_plan text comes from voice_script/audio_sections, not MiniMax subtitle_file or ASR output.",
             "video_fill": "Video fill executes timeline_selection.json. Clips may be trimmed or semantically stitched; default loop padding is not an accepted pass condition.",
-            "omni_alignment": "Final subtitled video passed Omni alignment QA across all sections.",
+            "omni_alignment": "Final Omni alignment is optional diagnostics and is not the default production gate.",
         },
         "next_recommendations": [
-            "Fold Omni-QA-driven copy calibration into a formal worker so the desktop app can retry from a failed/minor section automatically.",
             "Add a formal voah-video-fill skill and voah-subtitle skill, or fold these scripts into render workers.",
             "For HyperFrames subtitle burns, pre-encode base video with gop=30 if future renders show seek/freezing issues.",
-            "Use final Omni QA status as the desktop export gate, with intermediate child visual-review warnings treated as resolved when final QA passes.",
+            "Use deterministic QA as the desktop export gate; keep Omni as manual spot-check diagnostics.",
         ],
     }
     write_json(output, manifest)

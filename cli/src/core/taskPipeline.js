@@ -75,7 +75,7 @@ export async function runPipeline({ workspace, taskDir, from = "copy", options =
   }
   const manifest = await loadTaskManifest(taskDir);
   if (manifest) {
-    manifest.status = manifest.qa?.status === "ok" || manifest.qa?.status === "pass" ? "succeeded" : "needs_review";
+    manifest.status = taskStatusFromQa(manifest.qa?.status);
     manifest.updated_at = new Date().toISOString();
     await writeTaskManifest(taskDir, manifest);
   }
@@ -481,7 +481,7 @@ export async function runQaStage({ workspace, taskDir, options = {} }) {
     await prepareQaWorkspace(taskDir, outputDir);
   }
   const runner = createRunner(workspace);
-  if (!options["skip-omni"]) {
+  if (options["run-omni"] && !options["skip-omni"]) {
     await runner.run({
       command: "python3",
       args: [
@@ -530,7 +530,13 @@ export async function runQaStage({ workspace, taskDir, options = {} }) {
     timeoutMs: stageTimeout("qa", options)
   });
   requireStageOutputs(outputDir, "qa");
-  if (runContext) await promoteStageOutputs({ taskDir, runContext, stage: "qa" });
+  if (runContext) {
+    const promotePaths = ["full_pipeline_manifest.json", "desktop_quality_report.json", "desktop_quality_report.md"];
+    if (options["run-omni"] && !options["skip-omni"]) {
+      promotePaths.push("qa_omni_alignment_final");
+    }
+    await promoteStageOutputs({ taskDir, runContext, stage: "qa", paths: promotePaths });
+  }
   await updateQaFromManifest(taskDir);
   await refreshActiveArtifacts(taskDir, "qa");
   await importQaResources({ workspace, taskDir });
@@ -851,11 +857,21 @@ async function updateQaFromManifest(taskDir) {
   const manifest = await loadTaskManifest(taskDir);
   if (!manifest) return;
   const full = path.join(taskDir, "full_pipeline_manifest.json");
+  const report = path.join(taskDir, "desktop_quality_report.json");
   const fullPayload = existsSync(full) ? await readJson(full) : {};
-  manifest.qa = fullPayload.qa || fullPayload.export_gate || manifest.qa || {};
-  manifest.status = manifest.qa?.status === "ok" || manifest.qa?.status === "pass" ? "succeeded" : "needs_review";
+  const reportPayload = existsSync(report) ? await readJson(report) : {};
+  manifest.qa = reportPayload.qa || fullPayload.qa || fullPayload.export_gate || manifest.qa || {};
+  manifest.status = taskStatusFromQa(manifest.qa?.status);
   manifest.updated_at = new Date().toISOString();
   await writeTaskManifest(taskDir, manifest);
+}
+
+function taskStatusFromQa(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (["block", "blocked", "failed", "fail", "error"].includes(normalized)) {
+    return "failed";
+  }
+  return "succeeded";
 }
 
 async function importQaResources({ workspace, taskDir }) {

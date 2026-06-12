@@ -14,7 +14,7 @@ export const STAGE_OUTPUTS = {
   retrieve: ["candidate_sections.json", "timeline_selection.json", "timeline_fill.json", "preview_no_subtitles.mp4"],
   subtitle: ["caption_plan.json", "hyperframes_subtitle_burn"],
   render: ["hyperframes_subtitle_burn/final_subtitled.mp4", "hyperframes_subtitle_burn/hyperframes_subtitle_burn_manifest.json"],
-  qa: ["qa_omni_alignment_final", "qa_gate_report.json", "full_pipeline_manifest.json", "desktop_quality_report.json", "desktop_quality_report.md"]
+  qa: ["full_pipeline_manifest.json", "desktop_quality_report.json", "desktop_quality_report.md"]
 };
 
 export function manifestPath(taskDir) {

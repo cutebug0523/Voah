@@ -97,7 +97,7 @@ async function createTask(argv) {
 
 async function runTask(argv) {
   const options = parseArgs(argv, {
-    boolean: ["skip-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+    boolean: ["skip-omni", "run-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
   });
   const workspace = resolveWorkspace(options.workspace);
   const taskArg = options._[0] || options.task;

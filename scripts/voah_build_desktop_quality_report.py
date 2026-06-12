@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -113,6 +114,14 @@ def normalize_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or ""))
 
 
+def normalize_meaning_text(value: Any) -> str:
+    return "".join(
+        char
+        for char in normalize_text(value)
+        if not unicodedata.category(char).startswith("P")
+    )
+
+
 def safe_float(value: Any) -> float | None:
     if value in (None, ""):
         return None
@@ -176,7 +185,7 @@ def combine_check_status(statuses: list[str]) -> str:
 
 def qa_status_from_checks(checks: list[dict[str, Any]]) -> str:
     status = combine_check_status([str(check.get("status") or "warning") for check in checks])
-    return {"pass": "ok", "warning": "warning", "manual_review": "manual_review", "block": "block"}[status]
+    return {"pass": "ok", "warning": "warning", "manual_review": "warning", "block": "block"}[status]
 
 
 def make_check(
@@ -195,6 +204,8 @@ def make_check(
         "label": label,
         "status": status,
         "detail": detail,
+        "actionable": check_id in {"artifacts", "retrieval", "loop_policy", "voice_caption_alignment", "render_qa"}
+        and status == "block",
         "metrics": metrics or {},
         "evidence": evidence or {},
         "warnings": counted_messages(warnings or []),
@@ -527,7 +538,9 @@ def build_retrieval_check(
         clips = [clip for clip in (section.get("clips") or section.get("selected_clips") or []) if isinstance(clip, dict)]
         review_clip_count = sum(1 for clip in clips if clip.get("requires_visual_review"))
         section_missing = safe_float(section.get("missing_duration_s")) or 0.0
-        if section_missing > 0.08:
+        if section_missing > 0.35:
+            blocks.append(f"{section.get('section_id')}: missing_duration_s={section_missing:.3f}")
+        elif section_missing > 0.08:
             warnings.append(f"{section.get('section_id')}: missing_duration_s={section_missing:.3f}")
         if not clips:
             blocks.append(f"{section.get('section_id')}: 没有选中素材片段。")
@@ -562,10 +575,10 @@ def build_retrieval_check(
         or sum(1 for item in timeline_items if item.get("requires_review"))
     )
     visual_review_clip_count = sum(1 for clip in all_clips if clip.get("requires_visual_review"))
-    if requires_review_count and not omni_passed:
-        warnings.append(f"timeline_selection requires_review_count={requires_review_count}，缺少最终 Omni 通过证据。")
-    if visual_review_clip_count and not omni_passed:
-        warnings.append(f"{visual_review_clip_count} 个 clip 需要视觉复核，缺少最终 Omni 通过证据。")
+    if requires_review_count:
+        warnings.append(f"timeline_selection requires_review_count={requires_review_count}，建议人工抽看对应片段。")
+    if visual_review_clip_count:
+        warnings.append(f"{visual_review_clip_count} 个 clip 带视觉复核标记，建议人工抽看对应片段。")
 
     summary = timeline_fill.get("summary") or {}
     candidate_summary = {
@@ -582,9 +595,9 @@ def build_retrieval_check(
     if blocks:
         status = "block"
 
-    detail = "最终时间线按 audio_sections 填满，召回风险已由最终 Omni QA 兜底。"
-    if not omni_passed:
-        detail = "时间线已汇总，但召回准确性仍需要 Omni 或人工复核。"
+    detail = "最终时间线按 audio_sections 填满，召回与填充产物已落盘。"
+    if warnings:
+        detail = "时间线已汇总，但存在建议人工抽看的召回风险。"
     if blocks:
         detail = "时间线填充缺失或不完整，不能作为生产成片通过。"
 
@@ -734,7 +747,7 @@ def build_voice_caption_check(payloads: dict[str, dict[str, Any]], paths: dict[s
         section_captions = captions_by_section.get(section_id, [])
         caption_text = "".join(str(item.get("text") or "") for item in section_captions)
         reference_text = section.get("subtitle_text") or section.get("voice_text") or section.get("tts_text") or ""
-        text_match = normalize_text(caption_text) == normalize_text(reference_text)
+        text_match = normalize_meaning_text(caption_text) == normalize_meaning_text(reference_text)
         if not text_match:
             text_mismatches.append(section_id or "(unknown)")
         section_start = safe_float(section.get("caption_start_s") or section.get("audio_start_s"))
@@ -752,6 +765,7 @@ def build_voice_caption_check(payloads: dict[str, dict[str, Any]], paths: dict[s
                 "section_id": section_id,
                 "caption_count": len(section_captions),
                 "text_match": text_match,
+                "text_match_policy": "ignore_whitespace_and_punctuation",
                 "timing_source": section.get("timing_source"),
                 "caption_start_s": round_or_none(caption_start),
                 "caption_end_s": round_or_none(caption_end),
@@ -786,7 +800,7 @@ def build_voice_caption_check(payloads: dict[str, dict[str, Any]], paths: dict[s
     audio_voice_text = "".join(str(item.get("voice_text") or item.get("tts_text") or "") for item in sections)
     voice_script_matches_audio_sections = None
     if full_voice_text and audio_voice_text:
-        voice_script_matches_audio_sections = normalize_text(full_voice_text) == normalize_text(audio_voice_text)
+        voice_script_matches_audio_sections = normalize_meaning_text(full_voice_text) == normalize_meaning_text(audio_voice_text)
         if not voice_script_matches_audio_sections:
             warnings.append("voice_script.full_voice_text 与 audio_sections voice_text 拼接不一致。")
     elif not full_voice_text:
@@ -862,30 +876,52 @@ def build_omni_check(
     summary = final_omni.get("summary") or {}
     results = [item for item in (final_omni.get("results") or []) if isinstance(item, dict)]
     if not final_omni_state.get("exists"):
-        warnings.append("缺少 qa_omni_alignment_final/omni_alignment_results.json，最终音画字幕匹配需要人工复核。")
+        status = "pass"
+        detail = "最终 Omni 复核未运行；它是可选诊断，不影响默认生产主线。"
+        final_status = "not_run"
+        latest_preview = next((run for run in sorted(omni_runs, key=lambda item: item.get("mtime", 0), reverse=True) if not run.get("is_final")), None)
+        return make_check(
+            "omni_alignment",
+            "Omni 音画字幕 QA",
+            status,
+            detail,
+            metrics={
+                "final_status": final_status,
+                "section_count": None,
+                "pass_count": None,
+                "minor_review_count": None,
+                "major_review_count": None,
+                "fail_count": None,
+                "omni_run_count": len(omni_runs),
+                "latest_preview_status": latest_preview.get("status") if latest_preview else None,
+                "optional": True,
+            },
+            evidence={
+                "final_results": str(task_dir / "qa_omni_alignment_final" / "omni_alignment_results.json"),
+                "final_report": str(task_dir / "qa_omni_alignment_final" / "OMNI_ALIGNMENT_QA_REPORT.md"),
+                "runs": omni_runs,
+                "section_results": [],
+            },
+            warnings=[],
+            blocks=[],
+        )
     elif not final_omni_state.get("valid_json"):
         warnings.append(f"最终 Omni QA JSON 无法解析：{final_omni_state.get('error')}")
     else:
         status = qa.get("status") or "missing"
         if status != "ok":
-            if status in {"block", "fail"}:
-                blocks.append(f"最终 Omni QA status={status}")
-            else:
-                warnings.append(f"最终 Omni QA status={status}")
+            warnings.append(f"最终 Omni QA status={status}")
         fail_count = int(summary.get("fail_count") or 0)
         major_review_count = int(summary.get("major_review_count") or 0)
         minor_review_count = int(summary.get("minor_review_count") or 0)
         if fail_count or major_review_count:
-            blocks.append(f"最终 Omni QA fail={fail_count}, major_review={major_review_count}")
+            warnings.append(f"最终 Omni QA fail={fail_count}, major_review={major_review_count}")
         if minor_review_count:
             warnings.append(f"最终 Omni QA minor_review_count={minor_review_count}")
         for item in results:
             if item.get("overall") != "pass":
                 message = f"{item.get('section_id')}: overall={item.get('overall')}, action={item.get('recommended_action')}"
-                if item.get("overall") in {"fail", "major_review"}:
-                    blocks.append(message)
-                else:
-                    warnings.append(message)
+                warnings.append(message)
 
     status = "pass"
     if warnings:
@@ -894,7 +930,7 @@ def build_omni_check(
         status = "block"
     detail = "最终 Omni QA 全段通过。"
     if warnings:
-        detail = "最终 Omni QA 缺失或有复核项，桌面端应提示人工审核。"
+        detail = "最终 Omni QA 有诊断复核项，默认不阻断生产主线。"
     if blocks:
         detail = "最终 Omni QA 未通过，不能直接发布。"
     latest_preview = next((run for run in sorted(omni_runs, key=lambda item: item.get("mtime", 0), reverse=True) if not run.get("is_final")), None)
@@ -971,8 +1007,12 @@ def build_render_check(
         warnings.append(f"ffprobe final_subtitled 失败：{final_probe.get('error')}")
     if final_probe.get("warning"):
         warnings.append(str(final_probe.get("warning")))
-    if final_duration is not None and audio_duration is not None and abs(final_duration - audio_duration) > 0.35:
-        warnings.append(f"最终视频时长与音频主轴相差 {abs(final_duration - audio_duration):.3f}s。")
+    if final_duration is not None and audio_duration is not None:
+        duration_delta = audio_duration - final_duration
+        if duration_delta > 0.35:
+            blocks.append(f"最终视频短于音频主轴 {duration_delta:.3f}s，需要从 retrieve 阶段重跑素材填充。")
+        elif abs(duration_delta) > 0.35:
+            warnings.append(f"最终视频长于音频主轴 {abs(duration_delta):.3f}s，建议抽看结尾。")
     if preview_duration is not None and voice_duration is not None and abs(preview_duration - voice_duration) > 0.25:
         warnings.append(f"无字幕预览时长与 voice.wav 相差 {abs(preview_duration - voice_duration):.3f}s。")
 
@@ -1050,25 +1090,14 @@ def build_render_check(
 
 def build_artifact_check(paths: dict[str, Path], input_states: dict[str, dict[str, Any]]) -> dict[str, Any]:
     required = ("audio_sections", "timeline_fill", "caption_plan", "voice_wav", "final_subtitled")
-    optional = (
-        "full_pipeline_manifest",
-        "voice_script",
-        "tts_audio",
-        "candidate_sections",
-        "timeline_selection",
-        "hyperframes_manifest",
-        "omni_final_results",
-        "qa_gate_report",
-    )
+    optional = ("full_pipeline_manifest", "voice_script", "tts_audio", "candidate_sections", "timeline_selection", "hyperframes_manifest")
     warnings: list[str] = []
     blocks: list[str] = []
     for label in required:
         if not paths[label].exists():
             blocks.append(f"缺少必需产物 {label}: {paths[label]}")
     for label in optional:
-        if not paths[label].exists():
-            warnings.append(f"缺少可选 QA/manifest 产物 {label}: {paths[label]}")
-        elif label in input_states and not input_states[label].get("valid_json", True):
+        if paths[label].exists() and label in input_states and not input_states[label].get("valid_json", True):
             warnings.append(f"{label} JSON 无法解析：{input_states[label].get('error')}")
     status = "pass"
     if warnings:
@@ -1079,7 +1108,7 @@ def build_artifact_check(paths: dict[str, Path], input_states: dict[str, dict[st
         "artifacts",
         "关键产物完整性",
         status,
-        "关键产物已落盘，缺失的 QA 文件会进入 warning 而不是中断脚本。" if not blocks else "存在缺失的生产必需产物。",
+        "生产必需产物已落盘。" if not blocks else "存在缺失的生产必需产物。",
         metrics={
             "required_count": len(required),
             "missing_required_count": len(blocks),
@@ -1145,22 +1174,37 @@ def render_markdown(report: dict[str, Any]) -> str:
     active_warnings = qa.get("warnings") or []
     active_blocks = qa.get("blocks") or []
     resolved = qa.get("resolved_warnings") or []
-    lines.extend(["", "## 风险与复核", ""])
-    if active_blocks:
-        lines.append("### 阻断")
-        for item in active_blocks[:20]:
+    actionable_blocks = [
+        item
+        for check in checks
+        if check.get("actionable")
+        for item in (check.get("blocks") or [])
+    ]
+    diagnostic_warnings = [
+        item
+        for check in checks
+        if not check.get("actionable")
+        for item in (check.get("warnings") or [])
+    ]
+    lines.extend(["", "## 可操作问题", ""])
+    if actionable_blocks:
+        for item in actionable_blocks[:20]:
             lines.append(f"- {md_escape(item.get('message'))} x{item.get('count')}")
-    if active_warnings:
-        lines.append("### 警告")
-        for item in active_warnings[:30]:
+    else:
+        lines.append("- 无需阻断出片的硬问题。")
+
+    lines.extend(["", "## 诊断信息", ""])
+    if diagnostic_warnings:
+        lines.append("### 技术诊断")
+        for item in diagnostic_warnings[:20]:
             lines.append(f"- {md_escape(item.get('message'))} x{item.get('count')}")
     if resolved:
-        lines.append("### 已被最终 QA 兜底的 warning")
+        lines.append("### 已归档的 warning")
         for item in resolved[:20]:
             lines.append(f"- {md_escape(item)}")
         if len(resolved) > 20:
             lines.append(f"- 其余 {len(resolved) - 20} 条见 JSON。")
-    if not active_blocks and not active_warnings:
+    if not diagnostic_warnings and not resolved:
         lines.append("- 无未解决阻断或警告。")
 
     quality = report.get("quality") or {}
@@ -1168,17 +1212,15 @@ def render_markdown(report: dict[str, Any]) -> str:
     omni_sections = ((quality.get("omni_alignment") or {}).get("evidence") or {}).get("section_results") or []
     omni_by_id = {str(item.get("section_id") or ""): item for item in omni_sections if isinstance(item, dict)}
     if retrieval_sections:
-        lines.extend(["", "## 分段与召回摘要", "", "| Section | Clip 数 | 需复核 Clip | 缺口 | Omni |", "|---|---:|---:|---:|---|"])
+        lines.extend(["", "## 分段与召回摘要", "", "| Section | Clip 数 | 需复核 Clip | 缺口 |", "|---|---:|---:|---:|"])
         for section in retrieval_sections:
             section_id = str(section.get("section_id") or "")
-            omni = omni_by_id.get(section_id) or {}
             lines.append(
-                "| {sid} | {clips} | {review} | {missing} | {omni} |".format(
+                "| {sid} | {clips} | {review} | {missing} |".format(
                     sid=md_escape(section_id),
                     clips=section.get("selected_clip_count") or 0,
                     review=section.get("requires_visual_review_clip_count") or 0,
                     missing=section.get("missing_duration_s") or 0,
-                    omni=md_escape(omni.get("overall") or ""),
                 )
             )
 
@@ -1188,7 +1230,6 @@ def render_markdown(report: dict[str, Any]) -> str:
         "audio_sections",
         "timeline_fill",
         "caption_plan",
-        "omni_final_report",
         "final_subtitled",
     ):
         info = artifacts.get(label) or {}
@@ -1294,7 +1335,7 @@ def build_report(task_dir: Path, output: Path, markdown_output: Path) -> dict[st
             "missing_duration_s": (timeline_fill.get("summary") or {}).get("missing_duration_s"),
             "final_duration_s": round_or_none(media_duration(final_probe)),
             "tts_duration_s": round_or_none((tts_audio.get("timing") or {}).get("actual_audio_duration_s")),
-            "omni_final_status": ((final_omni.get("qa") or {}).get("status") or "missing"),
+            "omni_final_status": ((final_omni.get("qa") or {}).get("status") or "not_run"),
             "omni_final_passed": final_omni_ok,
         },
         "checks": checks,

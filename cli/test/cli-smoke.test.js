@@ -27,6 +27,51 @@ function runWithInput(args, input, options = {}) {
   });
 }
 
+async function writeQaFakeBin(workspace, { failOnOmni = false } = {}) {
+  const binDir = path.join(workspace, "bin");
+  await mkdir(binDir, { recursive: true });
+  await writeFile(
+    path.join(binDir, "python3"),
+    `#!/bin/sh
+case "$1" in
+  *voah_omni_alignment_qa.py)
+    ${failOnOmni ? "echo omni-called > \"$VOAH_FAKE_OMNI_MARKER\"; exit 9" : ""}
+    OUT=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--output-dir" ]; then shift; OUT="$1"; fi
+      shift
+    done
+    mkdir -p "$OUT"
+    echo '{"qa":{"status":"ok"},"summary":{"section_count":1,"pass_count":1,"fail_count":0}}' > "$OUT/omni_alignment_results.json"
+    echo omni-called > "$VOAH_FAKE_OMNI_MARKER"
+    ;;
+  *voah_write_full_pipeline_manifest.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    echo '{"qa":{"status":"ok"}}' > "$TASK/full_pipeline_manifest.json"
+    ;;
+  *voah_build_desktop_quality_report.py)
+    TASK=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
+      shift
+    done
+    echo '{"qa":{"status":"ok"}}' > "$TASK/desktop_quality_report.json"
+    echo '# report' > "$TASK/desktop_quality_report.md"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`,
+    { mode: 0o755 }
+  );
+  return binDir;
+}
+
 test("voah help prints stable commands", async () => {
   const result = await run(["--help"]);
   assert.equal(result.code, 0);
@@ -448,6 +493,96 @@ exit 0
   assert.equal(passed.passed_count, 0);
   const review = JSON.parse(await readFile(path.join(batchDir, "needs_review_videos.json"), "utf8"));
   assert.equal(review.needs_review_count, 2);
+});
+
+test("qa stage skips final Omni by default", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-qa-skip-omni-"));
+  const taskDir = path.join(workspace, "task");
+  const marker = path.join(workspace, "omni-called.txt");
+  await mkdir(path.join(taskDir, "hyperframes_subtitle_burn"), { recursive: true });
+  await writeFile(path.join(taskDir, "task_manifest.json"), JSON.stringify({ schema_version: "voah.task_manifest.v1", status: "queued", active_artifacts: {}, stages: {} }));
+  await writeFile(path.join(taskDir, "audio_sections.json"), JSON.stringify({ sections: [] }));
+  await writeFile(path.join(taskDir, "timeline_fill.json"), JSON.stringify({ timeline: [] }));
+  await writeFile(path.join(taskDir, "hyperframes_subtitle_burn", "final_subtitled.mp4"), "");
+  const binDir = await writeQaFakeBin(workspace, { failOnOmni: true });
+  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, VOAH_FAKE_OMNI_MARKER: marker };
+
+  const result = await run(["qa", "run", "--workspace", workspace, taskDir], { env });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(existsSync(marker), false);
+  const manifest = JSON.parse(await readFile(path.join(taskDir, "task_manifest.json"), "utf8"));
+  assert.equal(manifest.status, "succeeded");
+  assert.equal(manifest.active_artifacts.full_pipeline_manifest, "full_pipeline_manifest.json");
+  assert.equal(manifest.active_artifacts.desktop_quality_report, "desktop_quality_report.md");
+});
+
+test("qa stage runs final Omni only when explicitly requested", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-qa-run-omni-"));
+  const taskDir = path.join(workspace, "task");
+  const marker = path.join(workspace, "omni-called.txt");
+  await mkdir(path.join(taskDir, "hyperframes_subtitle_burn"), { recursive: true });
+  await writeFile(path.join(taskDir, "task_manifest.json"), JSON.stringify({ schema_version: "voah.task_manifest.v1", status: "queued", active_artifacts: {}, stages: {} }));
+  await writeFile(path.join(taskDir, "audio_sections.json"), JSON.stringify({ sections: [] }));
+  await writeFile(path.join(taskDir, "timeline_fill.json"), JSON.stringify({ timeline: [] }));
+  await writeFile(path.join(taskDir, "hyperframes_subtitle_burn", "final_subtitled.mp4"), "");
+  const binDir = await writeQaFakeBin(workspace);
+  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, VOAH_FAKE_OMNI_MARKER: marker };
+
+  const result = await run(["qa", "run", "--workspace", workspace, taskDir, "--run-omni"], { env });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(existsSync(marker), true);
+  assert.equal(existsSync(path.join(taskDir, "qa_omni_alignment_final", "omni_alignment_results.json")), true);
+});
+
+test("batch resume refreshes old failed snapshot from successful task manifest", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-batch-refresh-test-"));
+  const batchDir = path.join(workspace, "batch");
+  const taskDir = path.join(batchDir, "tasks", "001_demo");
+  await mkdir(path.join(taskDir, "hyperframes_subtitle_burn"), { recursive: true });
+  await writeFile(path.join(taskDir, "hyperframes_subtitle_burn", "final_subtitled.mp4"), "");
+  await writeFile(
+    path.join(taskDir, "task_manifest.json"),
+    JSON.stringify({
+      schema_version: "voah.task_manifest.v1",
+      status: "succeeded",
+      qa: { status: "warning" },
+      active_artifacts: { final_subtitled: "hyperframes_subtitle_burn/final_subtitled.mp4" },
+      stages: {}
+    })
+  );
+  await writeFile(
+    path.join(batchDir, "batch_manifest.json"),
+    JSON.stringify({
+      schema_version: "voah.batch_manifest.v1",
+      status: "partial_failed",
+      concurrency: 1,
+      tasks: [
+        {
+          task_id: "task_old",
+          task_dir: taskDir,
+          status: "failed",
+          qa_status: "block",
+          failed_stage: "copy",
+          error_message: "old traceback"
+        }
+      ]
+    })
+  );
+  const result = await run(["batch", "resume", "--workspace", workspace, batchDir]);
+
+  assert.equal(result.code, 0, result.stderr);
+  const batch = JSON.parse(await readFile(path.join(batchDir, "batch_manifest.json"), "utf8"));
+  assert.equal(batch.status, "completed");
+  assert.equal(batch.tasks[0].status, "succeeded");
+  assert.equal(batch.tasks[0].qa_status, "warning");
+  assert.equal(batch.tasks[0].failed_stage, undefined);
+  assert.equal(batch.tasks[0].error_message, undefined);
+  const passed = JSON.parse(await readFile(path.join(batchDir, "passed_videos.json"), "utf8"));
+  assert.equal(passed.passed_count, 1);
+  const review = JSON.parse(await readFile(path.join(batchDir, "needs_review_videos.json"), "utf8"));
+  assert.equal(review.needs_review_count, 0);
 });
 
 test("pipeline writes stage outputs under run workspace before promoting stable artifacts", async () => {
