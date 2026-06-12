@@ -13,6 +13,7 @@ import {
   collectHyperframesDiagnostics,
   hyperframesBaseRenderArgs,
   hyperframesRenderEnv,
+  hyperframesRenderSettingsForManifest,
   renderAttemptFailure,
   resolveHyperframesCommand,
   withHyperframesArgs
@@ -170,6 +171,19 @@ function optionalString(value) {
   return String(value || "").trim();
 }
 
+function hyperframesOptionsFromConfig(config = {}) {
+  const options = {};
+  if (optionalString(config.workers)) {
+    options.workers = optionalString(config.workers);
+  }
+  if (config.browser_gpu === true) {
+    options.gpu = true;
+  } else if (config.browser_gpu === false) {
+    options["no-gpu"] = true;
+  }
+  return options;
+}
+
 function dryStagePayload({ stage, task, product, brief, sourceArtifacts, qaStatus }) {
   const base = {
     schema_version: "1.0.0",
@@ -257,7 +271,8 @@ export class ProductionRecipe {
         }
       },
       tts: settings.tts,
-      subtitle: settings.subtitle
+      subtitle: settings.subtitle,
+      render: settings.render
     };
 
     const batchId = compactId("batch");
@@ -1152,7 +1167,8 @@ export class ProductionRecipe {
     const timeoutMs = Math.max(60000, Math.round(safeNumber(process.env.VOAH_HYPERFRAMES_RENDER_TIMEOUT_MS, DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS)));
     const hyperframes = resolveHyperframesCommand(this.storeService.workspaceRoot, { cwd: projectDir });
     const diagnostics = await collectHyperframesDiagnostics(this.storeService.workspaceRoot, hyperframes, { cwd: projectDir });
-    const baseArgs = hyperframesBaseRenderArgs({ output, quality: "standard", fps: 30 });
+    const renderOptions = hyperframesOptionsFromConfig(taskConfig(task).render?.hyperframes || {});
+    const baseArgs = hyperframesBaseRenderArgs({ output, quality: "standard", fps: 30, renderOptions });
     const attempts = [];
     const startedAt = Date.now();
     const env = hyperframesRenderEnv();
@@ -1174,6 +1190,7 @@ export class ProductionRecipe {
         render_timeout_ms: timeoutMs,
         low_memory_mode: false,
         attempts,
+        render_settings: hyperframesRenderSettingsForManifest(renderOptions),
         hyperframes: diagnostics
       };
     } catch (error) {
@@ -1201,6 +1218,7 @@ export class ProductionRecipe {
           render_timeout_ms: timeoutMs,
           low_memory_mode: true,
           attempts,
+          render_settings: hyperframesRenderSettingsForManifest(renderOptions),
           hyperframes: diagnostics
         };
       } catch (retryError) {
@@ -1226,6 +1244,7 @@ export class ProductionRecipe {
           render_timeout_ms: timeoutMs,
           low_memory_mode: false,
           attempts,
+          render_settings: hyperframesRenderSettingsForManifest(renderOptions),
           hyperframes: diagnostics
         };
       }

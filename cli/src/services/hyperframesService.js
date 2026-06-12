@@ -8,13 +8,20 @@ export const DEFAULT_HYPERFRAMES_BROWSER_TIMEOUT_MS = 180000;
 export const DEFAULT_HYPERFRAMES_PROTOCOL_TIMEOUT_MS = 600000;
 export const DEFAULT_HYPERFRAMES_PLAYER_READY_TIMEOUT_MS = 120000;
 export const DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS = 600000;
+export const DEFAULT_HYPERFRAMES_RENDER_PLATFORM_POLICY = {
+  darwin: { workers: "1", browserGpu: false },
+  win32: { workers: "auto", browserGpu: true },
+  linux: { workers: "auto", browserGpu: true },
+  default: { workers: "1", browserGpu: false }
+};
 
 export function resolveHyperframesCommand(workspace, { cwd = process.cwd() } = {}) {
+  const binName = process.platform === "win32" ? "hyperframes.cmd" : "hyperframes";
   const candidates = [
-    ["desktop/voah-app", path.join(workspace, "desktop", "voah-app", "node_modules", ".bin", "hyperframes")],
-    ["desktop/voah-studio", path.join(workspace, "desktop", "voah-studio", "node_modules", ".bin", "hyperframes")],
-    ["workspace", path.join(workspace, "node_modules", ".bin", "hyperframes")],
-    ["cwd", path.join(cwd, "node_modules", ".bin", "hyperframes")]
+    ["desktop/voah-app", path.join(workspace, "desktop", "voah-app", "node_modules", ".bin", binName)],
+    ["desktop/voah-studio", path.join(workspace, "desktop", "voah-studio", "node_modules", ".bin", binName)],
+    ["workspace", path.join(workspace, "node_modules", ".bin", binName)],
+    ["cwd", path.join(cwd, "node_modules", ".bin", binName)]
   ];
   for (const [source, bin] of candidates) {
     if (existsSync(bin)) {
@@ -27,7 +34,7 @@ export function resolveHyperframesCommand(workspace, { cwd = process.cwd() } = {
     }
   }
   return {
-    command: "npx",
+    command: process.platform === "win32" ? "npx.cmd" : "npx",
     args: ["--yes", "hyperframes"],
     source: "npx-fallback",
     isLocal: false
@@ -50,7 +57,35 @@ export function hyperframesRenderEnv({ lowMemoryMode = false } = {}) {
   };
 }
 
-export function hyperframesBaseRenderArgs({ output, quality = "standard", fps = 30 } = {}) {
+export function resolveHyperframesRenderOptions(options = {}) {
+  const platform = options.platform || process.platform;
+  const policy = DEFAULT_HYPERFRAMES_RENDER_PLATFORM_POLICY[platform] || DEFAULT_HYPERFRAMES_RENDER_PLATFORM_POLICY.default;
+  const workers = normalizeWorkers(options.workers ?? options["hyperframes-workers"] ?? process.env.VOAH_HYPERFRAMES_WORKERS, policy.workers);
+  const browserGpu = normalizeBrowserGpu(
+    options["no-gpu"] || options["no-browser-gpu"]
+      ? false
+      : options.browserGpu ?? options["browser-gpu"] ?? options.gpu ?? options["hyperframes-gpu"] ?? process.env.VOAH_HYPERFRAMES_GPU,
+    policy.browserGpu
+  );
+  return {
+    platform,
+    workers,
+    browser_gpu: browserGpu,
+    source: {
+      workers: optionWasSet(options.workers ?? options["hyperframes-workers"] ?? process.env.VOAH_HYPERFRAMES_WORKERS) ? "configured" : "platform_default",
+      browser_gpu: optionWasSet(
+        options["no-gpu"] || options["no-browser-gpu"]
+          ? false
+          : options.browserGpu ?? options["browser-gpu"] ?? options.gpu ?? options["hyperframes-gpu"] ?? process.env.VOAH_HYPERFRAMES_GPU
+      )
+        ? "configured"
+        : "platform_default"
+    }
+  };
+}
+
+export function hyperframesBaseRenderArgs({ output, quality = "standard", fps = 30, renderOptions = {} } = {}) {
+  const resolved = resolveHyperframesRenderOptions(renderOptions);
   return [
     "render",
     ".",
@@ -61,8 +96,8 @@ export function hyperframesBaseRenderArgs({ output, quality = "standard", fps = 
     "--fps",
     String(fps),
     "--workers",
-    "1",
-    "--no-browser-gpu",
+    resolved.workers,
+    resolved.browser_gpu ? "--gpu" : "--no-browser-gpu",
     "--browser-timeout",
     String(Math.round(DEFAULT_HYPERFRAMES_BROWSER_TIMEOUT_MS / 1000)),
     "--protocol-timeout",
@@ -94,6 +129,16 @@ export async function collectHyperframesDiagnostics(workspace, tool, { cwd = wor
       total_mb: Math.round(os.totalmem() / 1024 / 1024),
       free_mb: Math.round(os.freemem() / 1024 / 1024)
     }
+  };
+}
+
+export function hyperframesRenderSettingsForManifest(renderOptions = {}) {
+  const resolved = resolveHyperframesRenderOptions(renderOptions);
+  return {
+    platform: resolved.platform,
+    workers: resolved.workers,
+    browser_gpu: resolved.browser_gpu,
+    source: resolved.source
   };
 }
 
@@ -180,10 +225,37 @@ function tailLines(text, count) {
 }
 
 function detectChromePath() {
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    path.join(os.homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome")
-  ];
+  const candidates =
+    process.platform === "win32"
+      ? [
+          process.env.CHROME_PATH,
+          path.join(process.env.PROGRAMFILES || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+          path.join(process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+          path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe")
+        ]
+      : [
+          process.env.CHROME_PATH,
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          path.join(os.homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome")
+        ];
   return candidates.find((candidate) => existsSync(candidate)) || "";
+}
+
+function normalizeWorkers(value, fallback) {
+  const raw = String(value ?? fallback ?? "1").trim().toLowerCase();
+  if (raw === "auto") return "auto";
+  const number = Number(raw);
+  if (!Number.isFinite(number) || number < 1) return String(fallback || "1");
+  return String(Math.min(8, Math.round(number)));
+}
+
+function normalizeBrowserGpu(value, fallback) {
+  if (!optionWasSet(value)) return Boolean(fallback);
+  if (typeof value === "boolean") return value;
+  return ["1", "true", "yes", "on", "gpu"].includes(String(value).trim().toLowerCase());
+}
+
+function optionWasSet(value) {
+  return value !== undefined && value !== null && value !== "";
 }

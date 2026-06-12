@@ -125,7 +125,10 @@ test("task create writes task_manifest and task_brief without running models", a
     "--font-source",
     "/tmp/VoahFont.ttf",
     "--resolution",
-    "1080p"
+    "1080p",
+    "--hyperframes-workers",
+    "auto",
+    "--gpu"
   ]);
   assert.equal(result.code, 0, result.stderr);
   const taskDir = result.stdout.match(/task_dir=(.*)/)?.[1].trim();
@@ -144,6 +147,8 @@ test("task create writes task_manifest and task_brief without running models", a
   assert.equal(manifest.tts.voice_modify.timbre, -3);
   assert.equal(manifest.subtitle.preset, "live_bar_lower");
   assert.equal(manifest.subtitle.font_source, "/tmp/VoahFont.ttf");
+  assert.equal(manifest.render.hyperframes.workers, "auto");
+  assert.equal(manifest.render.hyperframes.browser_gpu, true);
   assert.equal(manifest.resolution, "1080p");
   assert.deepEqual(manifest.canvas, { preset: "1080p", width: 1080, height: 1920, fps: 30 });
   const brief = JSON.parse(await readFile(path.join(taskDir, "task_brief.json"), "utf8"));

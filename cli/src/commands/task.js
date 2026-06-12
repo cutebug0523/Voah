@@ -29,7 +29,9 @@ export async function runTaskCommand({ argv }) {
 }
 
 async function createTask(argv) {
-  const options = parseArgs(argv);
+  const options = parseArgs(argv, {
+    boolean: ["gpu", "no-gpu", "no-browser-gpu"]
+  });
   const workspace = resolveWorkspace(options.workspace);
   const productSlug = requireOption(options, "product");
   const productName = options["product-name"] || options.name || productSlug;
@@ -75,6 +77,7 @@ async function createTask(argv) {
     preset: options["subtitle-preset"] || "songti_white_gold_lower",
     font_source: options["font-source"] || ""
   };
+  manifest.render = renderManifestFromOptions(options);
   await writeTaskManifest(taskDir, manifest);
   await writeTaskBrief({
     workspace,
@@ -97,7 +100,7 @@ async function createTask(argv) {
 
 async function runTask(argv) {
   const options = parseArgs(argv, {
-    boolean: ["skip-omni", "run-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+    boolean: ["skip-omni", "run-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning", "gpu", "no-gpu", "no-browser-gpu"]
   });
   const workspace = resolveWorkspace(options.workspace);
   const taskArg = options._[0] || options.task;
@@ -111,6 +114,19 @@ async function runTask(argv) {
   await runPipeline({ workspace, taskDir, from: options.from || "copy", options });
   console.log(`task_dir=${taskDir}`);
   console.log(`task_manifest=${path.join(taskDir, "task_manifest.json")}`);
+}
+
+function renderManifestFromOptions(options = {}) {
+  const hyperframes = {};
+  if (options["hyperframes-workers"] !== undefined || options.workers !== undefined) {
+    hyperframes.workers = options["hyperframes-workers"] ?? options.workers;
+  }
+  if (options.gpu) {
+    hyperframes.browser_gpu = true;
+  } else if (options["no-gpu"] || options["no-browser-gpu"]) {
+    hyperframes.browser_gpu = false;
+  }
+  return Object.keys(hyperframes).length ? { hyperframes } : {};
 }
 
 async function inspectTask(argv) {

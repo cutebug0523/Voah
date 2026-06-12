@@ -267,6 +267,23 @@ voah resource cleanup
 
 命令可以先少做，但命名要从一开始稳定。
 
+### 5.1.1 HyperFrames 渲染硬件策略
+
+`voah task run`、`voah render run`、`voah batch run`、`voah batch resume` 支持把 HyperFrames 的硬件参数传入生产管线：
+
+```bash
+voah task run {task_dir} --from render --hyperframes-workers auto --gpu
+voah batch run --product demo --intake-run {run_dir} --count 20 --hyperframes-workers auto --gpu
+```
+
+默认策略：
+
+- macOS：`workers=1`、`--no-browser-gpu`，保持低内存机器上的保守行为。
+- Windows / Linux：`workers=auto`、`--gpu`，为独显和多核生产机准备。
+- 显式参数优先于默认策略，`--no-gpu` 可强制关闭 GPU。
+
+桌面端不直接控制 HyperFrames 进程；若需要配置渲染参数，应把配置写入任务的 `production_config.render.hyperframes`，由 CLI / Node worker 统一转成 HyperFrames 参数。最终使用的 `workers`、`browser_gpu` 和配置来源会写入 `hyperframes_subtitle_burn_manifest.json` 的 `render.render_settings`。
+
 ### 5.2 `voah doctor`
 
 用途：

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveHyperframesCommand, withHyperframesArgs } from "./hyperframesService.js";
@@ -33,10 +34,11 @@ export async function toolStatus(workspace) {
   const hyperframes = resolveHyperframesCommand(workspace);
   const hyperframesVersion = withHyperframesArgs(hyperframes, ["--version"]);
   const dashscopeCommand = resolveDashscopeCommand();
+  const pythonCommand = resolvePythonCommand();
   const checks = await Promise.all([
     commandVersion("ffmpeg", ["-version"]),
     commandVersion("ffprobe", ["-version"]),
-    commandVersion("python3", ["--version"]),
+    commandVersion(pythonCommand, ["--version"]),
     commandVersion("node", ["--version"]),
     commandVersion(hyperframesVersion.command, hyperframesVersion.args),
     commandVersion(dashscopeCommand, ["--help"])
@@ -44,10 +46,11 @@ export async function toolStatus(workspace) {
   return checks.map((item) => ({
     ...item,
     required:
-      ["ffmpeg", "ffprobe", "python3", "node"].includes(item.command) ||
+      ["ffmpeg", "ffprobe", "node"].includes(item.command) ||
+      item.command === pythonCommand ||
       item.command === hyperframesVersion.command ||
       item.command === dashscopeCommand,
-    tool: item.command === hyperframesVersion.command ? "hyperframes" : item.command === dashscopeCommand ? "dashscope" : item.command
+    tool: item.command === hyperframesVersion.command ? "hyperframes" : item.command === dashscopeCommand ? "dashscope" : item.command === pythonCommand ? "python" : item.command
   }));
 }
 
@@ -58,7 +61,13 @@ function firstLine(text) {
 export function resolveDashscopeCommand() {
   const candidates = [
     process.env.DASHSCOPE_CLI,
-    path.join(os.homedir(), "Library", "Python", "3.9", "bin", "dashscope"),
+    ...(process.platform === "win32"
+      ? [
+          path.join(process.env.APPDATA || "", "Python", "Python312", "Scripts", "dashscope.exe"),
+          path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python312", "Scripts", "dashscope.exe"),
+          "dashscope.exe"
+        ]
+      : [path.join(os.homedir(), "Library", "Python", "3.9", "bin", "dashscope")]),
     "dashscope"
   ].filter(Boolean);
   for (const candidate of candidates) {
@@ -67,4 +76,9 @@ export function resolveDashscopeCommand() {
     }
   }
   return "dashscope";
+}
+
+export function resolvePythonCommand() {
+  if (process.env.VOAH_PYTHON) return process.env.VOAH_PYTHON;
+  return process.platform === "win32" ? "python" : "python3";
 }

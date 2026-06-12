@@ -16,6 +16,7 @@ import {
   collectHyperframesDiagnostics,
   hyperframesBaseRenderArgs,
   hyperframesRenderEnv,
+  hyperframesRenderSettingsForManifest,
   renderAttemptFailure,
   resolveHyperframesCommand,
   withHyperframesArgs
@@ -371,6 +372,7 @@ export async function runSubtitleStage({ workspace, taskDir, runContext, options
 }
 
 export async function runRenderStage({ workspace, taskDir, runContext, options = {} }) {
+  const manifest = await requireTaskManifest(taskDir);
   const outputDir = runContext?.outputDir || taskDir;
   const projectDir = path.join(outputDir, "hyperframes_subtitle_burn");
   const finalVideo = path.join(projectDir, "final_subtitled.mp4");
@@ -412,7 +414,8 @@ export async function runRenderStage({ workspace, taskDir, runContext, options =
   const renderAttempts = [];
   const renderStartedAt = Date.now();
   const renderTimeoutMs = optionalInt(options["render-timeout-ms"], stageTimeout("render", options) || DEFAULT_HYPERFRAMES_RENDER_TIMEOUT_MS);
-  const baseRenderArgs = hyperframesBaseRenderArgs({ output: finalVideo, quality: "standard", fps: 30 });
+  const hyperframesRenderOptions = renderOptionsFromCli(options, manifest.render?.hyperframes || {});
+  const baseRenderArgs = hyperframesBaseRenderArgs({ output: finalVideo, quality: "standard", fps: 30, renderOptions: hyperframesRenderOptions });
   try {
     const result = await runner.run({
       ...withHyperframesArgs(hyperframes, [...baseRenderArgs, "--no-low-memory-mode"]),
@@ -468,6 +471,7 @@ export async function runRenderStage({ workspace, taskDir, runContext, options =
     render_timeout_ms: renderTimeoutMs,
     low_memory_mode: lowMemoryMode,
     attempts: renderAttempts,
+    render_settings: hyperframesRenderSettingsForManifest(hyperframesRenderOptions),
     hyperframes: diagnostics
   };
   payload.outputs ||= {};
@@ -488,6 +492,25 @@ export async function runRenderStage({ workspace, taskDir, runContext, options =
   }
   await refreshActiveArtifacts(taskDir, "render");
   return finalVideo;
+}
+
+function renderOptionsFromCli(options = {}, manifestOptions = {}) {
+  const renderOptions = {
+    ...manifestOptions
+  };
+  if (manifestOptions.browser_gpu !== undefined) {
+    renderOptions.gpu = manifestOptions.browser_gpu;
+  }
+  if (options["hyperframes-workers"] !== undefined || options.workers !== undefined) {
+    renderOptions.workers = options["hyperframes-workers"] ?? options.workers;
+  }
+  if (options.gpu) {
+    renderOptions.gpu = true;
+  }
+  if (options["no-gpu"] || options["no-browser-gpu"]) {
+    renderOptions["no-gpu"] = true;
+  }
+  return renderOptions;
 }
 
 export async function runQaStage({ workspace, taskDir, options = {} }) {

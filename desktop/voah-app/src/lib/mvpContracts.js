@@ -215,6 +215,12 @@ export const DEFAULT_SETTINGS = {
     font_source: "/System/Library/Fonts/Supplemental/Songti.ttc",
     split_punctuation: true
   },
+  render: {
+    hyperframes: {
+      workers: "",
+      browser_gpu: null
+    }
+  },
   tts_voice_preset: "MiniMax 女声 happy / speed 1.1",
   subtitle_preset: "方案 1：底部白字关键词高亮",
   provider_status: "已配置本机私有 key，不在应用中显示明文"
@@ -239,6 +245,14 @@ export function mergeVoahSettings(settings = {}) {
     subtitle: {
       ...DEFAULT_SETTINGS.subtitle,
       ...(settings.subtitle || {})
+    },
+    render: {
+      ...DEFAULT_SETTINGS.render,
+      ...(settings.render || {}),
+      hyperframes: {
+        ...DEFAULT_SETTINGS.render.hyperframes,
+        ...(settings.render?.hyperframes || {})
+      }
     }
   };
 }

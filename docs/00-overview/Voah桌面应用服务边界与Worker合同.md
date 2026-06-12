@@ -354,6 +354,23 @@ hyperframes render
 
 HyperFrames 工程目录必须登记为 artifact。
 
+渲染参数由服务层统一控制，不从 Renderer 直接拼命令：
+
+```json
+{
+  "production_config": {
+    "render": {
+      "hyperframes": {
+        "workers": "auto",
+        "browser_gpu": true
+      }
+    }
+  }
+}
+```
+
+默认策略必须保护当前 Mac 机器：macOS 默认 `workers=1` 且关闭 browser GPU；Windows / Linux 默认 `workers=auto` 且启用 GPU。实际执行值写入 HyperFrames manifest 的 `render.render_settings`，便于换生产机后排查。
+
 ### 7.4 Node internal worker
 
 用途：

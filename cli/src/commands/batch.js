@@ -22,7 +22,7 @@ export async function runBatchCommand({ argv }) {
     throw new UserError("用法：voah batch run|pause|resume");
   }
   const options = parseArgs(rest, {
-    boolean: ["skip-omni", "run-omni", "create-only", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+    boolean: ["skip-omni", "run-omni", "create-only", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning", "gpu", "no-gpu", "no-browser-gpu"]
   });
   const workspace = resolveWorkspace(options.workspace);
   const productSlug = requireOption(options, "product");
@@ -80,6 +80,7 @@ export async function runBatchCommand({ argv }) {
       preset: options["subtitle-preset"] || "songti_white_gold_lower",
       font_source: options["font-source"] || ""
     };
+    manifest.render = renderManifestFromOptions(options);
     await writeTaskManifest(taskDir, manifest);
     await writeTaskBrief({
       workspace,
@@ -193,7 +194,7 @@ async function pauseBatch(argv) {
 
 async function resumeBatch(argv) {
   const options = parseArgs(argv, {
-    boolean: ["skip-omni", "run-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+    boolean: ["skip-omni", "run-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning", "gpu", "no-gpu", "no-browser-gpu"]
   });
   const workspace = resolveWorkspace(options.workspace);
   const batchArg = options._[0] || options.batch || options["batch-dir"];
@@ -244,6 +245,19 @@ async function resumeBatch(argv) {
   console.log("paused=false");
   console.log(`queued=${runnable.length}`);
   console.log(`running=${running.length}`);
+}
+
+function renderManifestFromOptions(options = {}) {
+  const hyperframes = {};
+  if (options["hyperframes-workers"] !== undefined || options.workers !== undefined) {
+    hyperframes.workers = options["hyperframes-workers"] ?? options.workers;
+  }
+  if (options.gpu) {
+    hyperframes.browser_gpu = true;
+  } else if (options["no-gpu"] || options["no-browser-gpu"]) {
+    hyperframes.browser_gpu = false;
+  }
+  return Object.keys(hyperframes).length ? { hyperframes } : {};
 }
 
 function isRunnableOnResume(task) {

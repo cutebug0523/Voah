@@ -69,10 +69,10 @@ function printHelp() {
   voah product create|list|inspect
   voah intake run --product <slug> --source-dir <dir> [--limit N] [--label label]
   voah task create --product <slug> --intake-run <dir> [--target-duration N] [--label label]
-  voah task run <task_dir> [--from stage]
+  voah task run <task_dir> [--from stage] [--hyperframes-workers auto|N] [--gpu|--no-gpu]
   voah copy|tts|retrieve|subtitle|render|qa run <task_dir>
   voah tts preview --text <文本> | --text-file <文件> [--provider ...] [--voice-id ...] [--dry-run]
-  voah batch run --product <slug> --intake-run <dir> --count N [--concurrency K]
+  voah batch run --product <slug> --intake-run <dir> --count N [--concurrency K] [--hyperframes-workers auto|N] [--gpu|--no-gpu]
   voah batch pause|resume <batch_dir>
   voah resource upload --file <path> --purpose <purpose>
   voah resource cleanup --run <dir> [--expired-only]
