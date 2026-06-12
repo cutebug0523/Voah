@@ -21,6 +21,7 @@ export async function runProductCommand({ argv }) {
       slug,
       name,
       brand: options.brand || "",
+      category: options.category || "",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -88,6 +89,8 @@ async function refineProductContext(workspace, options) {
       options["product-name"] || options.name || product.name || "",
       "--brand",
       options.brand || product.brand || "",
+      "--category",
+      options.category || product.category || "",
       ...(options["no-fallback"] ? ["--no-allow-fallback"] : []),
     ],
     cwd: workspace,

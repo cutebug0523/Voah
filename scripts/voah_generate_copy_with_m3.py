@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -54,6 +55,67 @@ STRONG_VISUAL_MIN_COUNT = 2
 HIGH_EVIDENCE_MIN_COUNT = 3
 OPENING_RISK_TERMS = ("卡纹", "泛油", "油光", "地铁", "毛孔", "瑕疵")
 PROBLEM_TERMS = ("卡粉", "卡纹", "斑驳", "脱妆", "泛油", "油光", "地铁")
+DEFAULT_COPY_LLM_TEMPERATURE = 0.85
+
+CREATIVE_ANGLE_STRATEGIES = [
+    {
+        "angle_id": "daily_speed",
+        "opening_direction": "从赶时间、快速出门、补妆效率切入。",
+        "proof_direction": "证明段强调稳定和省心，避免堆叠所有测试动作。",
+        "cta_direction": "CTA 可以偏直接成交，表达轻快，不固定句式。",
+        "avoid": ["不要写成实验室口吻", "不要用同一句活动收尾"],
+    },
+    {
+        "angle_id": "natural_finish",
+        "opening_direction": "从自然妆效、近看不厚重、气色干净切入。",
+        "proof_direction": "证明段围绕妆面状态变化，不要逐字复述素材 ASR。",
+        "cta_direction": "CTA 可以偏自用/送人/外观选择，不固定句式。",
+        "avoid": ["不要写夸张天生好皮", "不要重复上条的开头结构"],
+    },
+    {
+        "angle_id": "proof_first",
+        "opening_direction": "从一个可见证明或结果感切入，但不要提前把 CTA 说完。",
+        "proof_direction": "证明段用不同措辞表达遇水/测试后的稳定，不固定为同一句。",
+        "cta_direction": "CTA 可以偏活动利益点，信息来自 product_campaigns/copy_parameters。",
+        "avoid": ["不要写具体测试部位", "不要写不存在的价格数字"],
+    },
+    {
+        "angle_id": "portable_scene",
+        "opening_direction": "从随手补妆、包里携带、日常使用负担低切入。",
+        "proof_direction": "证明段只保留一个最强证据，给后续素材留空间。",
+        "cta_direction": "CTA 可以偏套装/礼盒/款式选择，表达不要机械重复。",
+        "avoid": ["不要把便携写进每一段", "不要在 CTA 再讲上脸妆效"],
+    },
+    {
+        "angle_id": "first_person_review",
+        "opening_direction": "用真实试用感开头，像给朋友推荐，不要像广告标题。",
+        "proof_direction": "证明段写观察结果，少用模板化测试话术。",
+        "cta_direction": "CTA 可以偏建议型下单，不固定为命令句。",
+        "avoid": ["不要写绝对化承诺", "不要连续重复同一卖点"],
+    },
+    {
+        "angle_id": "gift_display",
+        "opening_direction": "从产品外观、陈列、礼盒感或拿到手的第一印象切入。",
+        "proof_direction": "证明段简洁带过稳定性，不抢产品展示段。",
+        "cta_direction": "CTA 可以偏礼盒/款式/活动承接，但不要死用固定词序。",
+        "avoid": ["不要只写包装不写核心卖点", "不要虚构赠品"],
+    },
+]
+
+PROOF_FALLBACK_SENTENCES = [
+    "做个遇水测试，水流过后，妆面还是稳的。",
+    "遇水测试后再看，妆面依然保持得很服帖。",
+    "水流过一遍，底妆状态还是干净稳定。",
+    "简单做个倒水测试，妆面没有轻易被带走。",
+]
+
+CTA_FALLBACK_SENTENCES = [
+    "喜欢这个妆感，按需拍同款就行。",
+    "想试这款的话，直接看同款下单。",
+    "自用或者送人都可以，按需选同款。",
+    "看中这个效果的，可以直接拍同款。",
+    "需要日常补妆的，按需下单就行。",
+]
 
 
 def iso_now() -> str:
@@ -169,7 +231,7 @@ def call_openai_compatible_llm(
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": float(os.environ.get("VOAH_COPY_LLM_TEMPERATURE") or 0.45),
+        "temperature": float(os.environ.get("VOAH_COPY_LLM_TEMPERATURE") or DEFAULT_COPY_LLM_TEMPERATURE),
         "max_tokens": int(os.environ.get("VOAH_COPY_LLM_MAX_TOKENS") or 3600),
         "stream": False,
     }
@@ -257,7 +319,7 @@ def call_minimax_m3(prompt_payload: dict[str, Any], timeout_s: int) -> tuple[dic
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": float(os.environ.get("VOAH_COPY_LLM_TEMPERATURE") or 0.45),
+        "temperature": float(os.environ.get("VOAH_COPY_LLM_TEMPERATURE") or DEFAULT_COPY_LLM_TEMPERATURE),
         "max_tokens": int(os.environ.get("VOAH_COPY_LLM_MAX_TOKENS") or 3600),
         "thinking": {"type": "disabled"},
         "stream": False,
@@ -288,6 +350,52 @@ def pronounce_text(text: str) -> str:
         .replace("PA+++", "PA三个加")
         .replace("618", "六一八")
     )
+
+
+def stable_index(value: str, size: int) -> int:
+    if size <= 0:
+        return 0
+    digest = hashlib.sha1(str(value or "").encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % size
+
+
+def stable_choice(options: list[str], seed: str) -> str:
+    if not options:
+        return ""
+    return options[stable_index(seed, len(options))]
+
+
+def creative_angle_for_variant(variant: str) -> dict[str, Any]:
+    raw = str(variant or "v1").strip() or "v1"
+    match = re.search(r"(?:^|[^0-9])(\d{1,4})(?:[^0-9]|$)", raw)
+    if match:
+        index = max(0, int(match.group(1)) - 1) % len(CREATIVE_ANGLE_STRATEGIES)
+    else:
+        index = stable_index(raw, len(CREATIVE_ANGLE_STRATEGIES))
+    strategy = dict(CREATIVE_ANGLE_STRATEGIES[index])
+    strategy["variant"] = raw
+    strategy["batch_diversity_rule"] = (
+        "同批不同 variant 必须换开场角度、证明表达和 CTA 句式；"
+        "不要沿用上一个 variant 的首句、proof 固定句或收尾固定句。"
+    )
+    return strategy
+
+
+def duplicate_sentence_warnings(text: str) -> list[str]:
+    warnings: list[str] = []
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for raw in re.split(r"(?<=[。！？!?])", str(text or "")):
+        sentence = raw.strip()
+        body = re.sub(r"[。！？!?]+$", "", sentence).strip()
+        if len(body) < 6:
+            continue
+        if body in seen and body not in duplicates:
+            duplicates.append(body)
+        seen.add(body)
+    if duplicates:
+        warnings.append(f"同条口播存在重复句：{' / '.join(duplicates[:3])}")
+    return warnings
 
 
 def material_text_blob(record: dict[str, Any]) -> str:
@@ -491,7 +599,10 @@ def sanitize_section_copy(section: dict[str, Any]) -> dict[str, Any]:
         voice_text = re.sub(r"做了遇水测试，做个倒水测试", "做了个倒水测试", voice_text)
         voice_text = re.sub(r"(做个倒水测试)[，,、]?(妆面)", r"\1，\2", voice_text)
         if len(voice_text) > 46 or any(term in voice_text for term in ("下雨", "小雨", "出汗", "临时", "不会轻易垮", "通勤用着")):
-            voice_text = "做个倒水测试，水流过后，妆面依然服帖稳定。"
+            voice_text = stable_choice(
+                PROOF_FALLBACK_SENTENCES,
+                f"{output.get('section_id')}-{output.get('intention_copy')}-{output.get('required_visual')}",
+            )
         voice_text = voice_text.replace("水流过后轻轻擦开，", "水流过后，")
         voice_text = voice_text.replace("擦干后依旧", "水流过后依旧")
         output["voice_text"] = voice_text
@@ -511,7 +622,10 @@ def sanitize_section_copy(section: dict[str, Any]) -> dict[str, Any]:
     if role == "cta":
         cta_noise_terms = ("通勤", "补妆", "放包", "出门", "上妆", "粉扑", "妆感")
         if any(term in voice_text for term in cta_noise_terms) or len(voice_text) > 24 or "礼盒装" in voice_text:
-            voice_text = "活动套装，多款外壳陈列，喜欢直接拍。"
+            voice_text = stable_choice(
+                CTA_FALLBACK_SENTENCES,
+                f"{output.get('section_id')}-{output.get('intention_copy')}-{output.get('required_meaning')}",
+            )
             output["voice_text"] = voice_text
             output["tts_text"] = pronounce_text(voice_text)
             output["required_meaning"] = "多款外壳、套装陈列与活动价，引导下单"
@@ -646,74 +760,9 @@ def rebalance_short_script(sections: list[dict[str, Any]], min_chars: int) -> tu
     full_text = "".join(section["voice_text"] for section in sections)
     if len(full_text) >= min_chars:
         return sections, []
-    output = [dict(section) for section in sections]
-    warnings = [f"voice_text below target min by {min_chars - len(full_text)} chars; inserted deterministic apply/effect section"]
-    has_apply_section = any(
-        str(section.get("role") or "") == "product"
-        and any(term in str(section.get("required_visual") or "") for term in ("上脸", "轻拍", "妆效"))
-        for section in output
-    )
-    if not has_apply_section:
-        insert_index = next(
-            (
-                index + 1
-                for index, section in enumerate(output)
-                if str(section.get("role") or "") == "product"
-            ),
-            min(2, len(output)),
-        )
-        output.insert(
-            insert_index,
-            {
-                "timeline_order": insert_index + 1,
-                "section_id": "sec_apply_effect",
-                "role": "product",
-                "rough_duration_s": 9.0,
-                "intention_copy": "独立展示粉扑轻拍上脸和自然柔焦妆效，承接产品质地段",
-                "required_meaning": "女性用粉扑轻拍上脸，妆效自然服帖、不厚重",
-                "required_visual": "女性用粉扑轻拍上脸、自然妆效近景",
-                "avoid": ["不要混入礼盒、精华液、遇水测试或手臂试色"],
-                "keywords": ["粉扑", "轻拍", "上脸", "柔焦", "服帖"],
-                "voice_text": "上脸的时候用粉扑轻轻拍开，妆面会很快贴住皮肤，不会一下子变厚。脸上的气色是自然提起来的，近看也不会有明显粉感。",
-                "tts_text": pronounce_text("上脸的时候用粉扑轻轻拍开，妆面会很快贴住皮肤，不会一下子变厚。脸上的气色是自然提起来的，近看也不会有明显粉感。"),
-            },
-        )
-    full_text = "".join(section["voice_text"] for section in output)
-    if len(full_text) < min_chars:
-        for section in output:
-            if str(section.get("role") or "") == "opening":
-                extra = "尤其是早八通勤或者临时补妆，越是赶时间，越需要这种不费手的底妆。"
-                if extra not in str(section.get("voice_text") or ""):
-                    section["voice_text"] = f"{section['voice_text']}{extra}"
-                    section["tts_text"] = pronounce_text(section["voice_text"])
-                break
-    full_text = "".join(section["voice_text"] for section in output)
-    if len(full_text) < min_chars:
-        for section in output:
-            if str(section.get("section_id") or "") == "sec_apply_effect":
-                extra = "不用反复叠很多层，镜头近一点看也会更干净。"
-                if extra not in str(section.get("voice_text") or ""):
-                    section["voice_text"] = f"{section['voice_text']}{extra}"
-                    section["tts_text"] = pronounce_text(section["voice_text"])
-                break
-    full_text = "".join(section["voice_text"] for section in output)
-    if len(full_text) < min_chars:
-        for section in output:
-            if str(section.get("role") or "") == "product" and any(
-                term in str(section.get("required_visual") or "") + str(section.get("voice_text") or "")
-                for term in ("上脸", "轻拍", "妆效", "粉扑")
-            ):
-                extra = "不用反复叠很多层，镜头近一点看也会更干净。"
-                if extra not in str(section.get("voice_text") or ""):
-                    section["voice_text"] = f"{section['voice_text']}{extra}"
-                    section["tts_text"] = pronounce_text(section["voice_text"])
-                break
-    for index, section in enumerate(output, start=1):
-        section["timeline_order"] = index
-        section_id = str(section.get("section_id") or "")
-        if section_id.startswith("section_") or section_id == "sec_apply_effect":
-            section["section_id"] = f"sec_{index}_{section.get('role') or 'product'}"
-    return output, warnings
+    return sections, [
+        f"voice_text below target min by {min_chars - len(full_text)} chars after LLM revisions; fixed sentence padding disabled"
+    ]
 
 
 def build_revision_prompt(
@@ -726,6 +775,7 @@ def build_revision_prompt(
     max_voice_chars: int,
     reason: str,
 ) -> dict[str, Any]:
+    creative_angle = creative_angle_for_variant(f"{variant}_rewrite")
     return {
         "task": "重写压缩 Voah 美妆带货混剪口播，修正文案长度和断句问题。",
         "product": safe_product_for_prompt(task_brief),
@@ -737,6 +787,7 @@ def build_revision_prompt(
             "note": "必须统计 script_sections[].voice_text 拼接后的总字数；标点也计入。",
         },
         "variant": f"{variant}_rewrite",
+        "creative_angle": creative_angle,
         "rewrite_reason": reason,
         "user_brief": task_brief.get("inputs", {}).get("user_brief") or {},
         "product_claims": task_brief.get("product_claims") or [],
@@ -747,12 +798,14 @@ def build_revision_prompt(
         "original_plan": raw_plan,
         "hard_rules": [
             "保留原销售逻辑：痛点 -> 产品/妆效 -> 稳定性证明 -> 便携/礼盒 -> 活动 CTA。",
+            "产品品类来自 product.category 人工字段；品类核心属性应作为主线重点表达，但不得发明 product_claims、素材能力或用户 brief 中没有的具体承诺。",
             "product_claims 中 tier=core 的核心卖点必须作为主线重点表达；tier=support 只能点缀，不要平均用力。",
             "必须重新写 script_sections[].voice_text，不要简单截断原文。",
             f"full_voice_text 必须落在 {min_voice_chars}-{max_voice_chars} 字之间。",
             "每一句都必须是完整自然中文，不允许出现“整。”“补。”“很。”这类残句。",
             "proof 段禁止写测试部位，也不要写滴几滴水、少量水、水珠等动作力度；只能泛化为倒水测试/遇水测试后妆面稳定。",
-            "cta 段只写礼盒装、活动价、多款外壳/陈列、自用送人和下单，25-38 字。",
+            "CTA 只使用 product_campaigns/copy_parameters 里有的活动、套装、外壳、送礼或下单信息；允许不同句式，不要固定为同一句。",
+            "同条内不得重复完整句；同批不同 variant 不得复用同一个首句、proof 固定句或 CTA 固定句。",
             "重写时必须贴合 material_capabilities；required_visual 不要写素材库没有的硬画面词。",
             "不要虚构具体价格、库存数字或赠品细节。",
             *product_naming_rules(task_brief),
@@ -790,6 +843,7 @@ def build_prompt(
     variant: str,
 ) -> dict[str, Any]:
     min_voice_chars, max_voice_chars = target_voice_char_range(target_duration_s)
+    creative_angle = creative_angle_for_variant(variant)
     return {
         "task": "为 Voah 美妆带货混剪生成 copy_brief 和 voice_script。",
         "product": safe_product_for_prompt(task_brief),
@@ -801,6 +855,7 @@ def build_prompt(
             "note": "统计 script_sections[].voice_text 拼接后的中文口播字符数，标点也会占 TTS 时长，尽量不要超过 max。",
         },
         "variant": variant,
+        "creative_angle": creative_angle,
         "user_brief": task_brief.get("inputs", {}).get("user_brief") or {},
         "product_claims": task_brief.get("product_claims") or [],
         "product_campaigns": task_brief.get("product_campaigns") or [],
@@ -809,6 +864,7 @@ def build_prompt(
         "constraints": task_brief.get("constraints") or [],
         "hard_rules": [
             "先定全片销售逻辑，再写连续口播。",
+            "产品品类来自 product.category 人工字段；品类核心属性应作为主线重点表达，但不得发明 product_claims、素材能力或用户 brief 中没有的具体承诺。",
             "product_claims 中 tier=core 的核心卖点必须作为主线重点表达；tier=support 只能点缀，不要平均用力。",
             "产品卖点、活动优惠、CTA 和禁忌以 product_claims、product_campaigns、copy_parameters 为准；素材 ASR 只作为画面能力参考，不要另写一套冲突卖点或活动。",
             "文案不绑定具体 shot，不要写“画面里/这里看到”这类依赖镜头的表达。",
@@ -826,8 +882,10 @@ def build_prompt(
             "证明段禁止写具体测试部位，例如手臂、脸、粉芯、粉面；也禁止写滴几滴水、少量水、水珠等动作力度；只写“做个倒水测试/遇水测试，妆面依然稳定”。",
             "required_visual 可以列多个可选画面，但 voice_text 只能说这些画面都能支撑的泛化语义，避免音画对象错配。",
             "如果想表达日常/通勤/出门，只能写成可由产品画面支撑的泛化需求，例如自然妆效近景；不要在 CTA 段写通勤补妆、放包、出门等需要额外画面的内容。",
-            "CTA 段只允许写礼盒装、活动价、多款外壳/陈列、自用送人、下单；控制在 25-38 字，避免素材时长不够。",
+            "CTA 段只使用 product_campaigns 或 copy_parameters 明确给出的活动、套装、外壳、送礼和下单信息；允许不同句式，控制在 18-38 字。",
             "如果 product_campaigns 或 copy_parameters.offer 为空，CTA 只能写通用下单引导，不要虚构具体活动。",
+            "同批不同 variant 必须按 creative_angle 换开场方式、证明措辞和 CTA 句式；不要复用固定首句、固定 proof 句或固定收尾句。",
+            "同条内不得重复完整句，也不要把同一个证明句连续写两遍。",
             "字幕文本真源是 full_voice_text，不要另写摘要字幕。",
             "不要虚构价格、库存、赠品必然有，不写医疗或绝对化功效。",
             *product_naming_rules(task_brief),
@@ -862,14 +920,16 @@ def build_prompt(
 
 def safe_product_for_prompt(task_brief: dict[str, Any]) -> dict[str, Any]:
     product = dict(task_brief.get("product") or {})
+    product_library = task_brief.get("product_library") if isinstance(task_brief.get("product_library"), dict) else {}
     slug = str(product.get("slug") or "").strip()
-    name = str(product.get("name") or "").strip()
-    brand = str(product.get("brand") or "").strip()
+    name = str(product.get("name") or product_library.get("name") or "").strip()
+    brand = str(product.get("brand") or product_library.get("brand") or "").strip()
+    category = str(product.get("category") or product_library.get("category") or "").strip()
     if is_invalid_product_name(name, slug):
         name = ""
-    output = {"slug": slug, "name": name, "brand": brand}
+    output = {"slug": slug, "name": name, "brand": brand, "category": category}
     if not name and not brand:
-        output["generic_name"] = generic_product_name(slug)
+        output["generic_name"] = generic_product_name(category)
     return output
 
 
@@ -885,12 +945,10 @@ def product_naming_rules(task_brief: dict[str, Any]) -> list[str]:
     return rules
 
 
-def generic_product_name(slug: str) -> str:
-    text = str(slug or "")
-    if "qidian" in text or "cushion" in text:
-        return "这盒气垫"
-    if "kouhong" in text or "lip" in text:
-        return "这支口红"
+def generic_product_name(category: str) -> str:
+    text = str(category or "").strip()
+    if text:
+        return f"这款{text}"
     return "这款产品"
 
 
@@ -969,7 +1027,11 @@ def main() -> int:
         sections, rebalance_warnings = rebalance_short_script(sections, min_voice_chars)
         full_voice_text = "".join(section["voice_text"] for section in sections)
     pronounce = "".join(section["tts_text"] for section in sections)
-    warnings: list[str] = [*auto_trim_warnings, *rebalance_warnings]
+    warnings: list[str] = [
+        *auto_trim_warnings,
+        *rebalance_warnings,
+        *duplicate_sentence_warnings(full_voice_text),
+    ]
     if len(full_voice_text) < min_voice_chars:
         warnings.append("voice_text may be short for target duration")
     if len(full_voice_text) > max_voice_chars:

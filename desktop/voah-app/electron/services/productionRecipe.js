@@ -124,6 +124,14 @@ function getIntakeRunDir(workspaceRoot, product) {
   return path.join(workspaceRoot, "cache", "voah_video_intake", product.slug, product.latest_intake_run);
 }
 
+function retrievalDiversityStatePath(workspaceRoot, task) {
+  const batchId = optionalString(task.batch_id);
+  if (batchId) {
+    return path.join(workspaceRoot, "cache", "voah_batches", batchId, "retrieval_diversity_state.json");
+  }
+  return "off";
+}
+
 function hyperframesCommandArgs(workspaceRoot, args, cwd) {
   return withHyperframesArgs(resolveHyperframesCommand(workspaceRoot, { cwd }), args);
 }
@@ -133,6 +141,7 @@ function productMeta(product) {
     id: product.id,
     name: product.name,
     brand: product.brand || "",
+    category: product.category || "",
     slug: product.slug
   };
 }
@@ -801,6 +810,7 @@ export class ProductionRecipe {
       product_library: {
         name: product.name,
         brand: product.brand || "",
+        category: product.category || "",
         selling_points: product.selling_points || product.claim_summary || "",
         compliance_notes: product.compliance_notes || "",
         cta_notes: product.cta_notes || "",
@@ -960,6 +970,8 @@ export class ProductionRecipe {
   async runRetrievalAndSelection({ task, product, jobId }) {
     const intakeRun = getIntakeRunDir(this.storeService.workspaceRoot, product);
     const shotIndex = path.join(intakeRun, "shot_index.json");
+    const config = taskConfig(task);
+    const retrieval = config.retrieval || {};
     const env = await this.buildModelEnv(["material_retrieval", "selection_planner"]);
     await this.runCommand({
       task,
@@ -982,9 +994,13 @@ export class ProductionRecipe {
         "--pool-k",
         "36",
         "--max-clips-per-section",
-        "6",
+        intArg(retrieval.max_clips_per_section, 6),
+        "--min-clip-duration-s",
+        numberArg(retrieval.min_clip_duration_s, 2.5),
+        "--batch-diversity-state",
+        retrievalDiversityStatePath(this.storeService.workspaceRoot, task),
         "--selection-planner",
-        "auto",
+        optionalString(retrieval.selection_planner) || "auto",
         "--width",
         "720",
         "--height",

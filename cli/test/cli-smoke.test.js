@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { acquireTaskRunLock, releaseTaskRunLock } from "../src/core/taskLock.js";
+import { resolveRetrievalDiversityStatePath, retrieveMinClipDuration } from "../src/core/taskPipeline.js";
 
 const CLI = fileURLToPath(new URL("../src/bin/voah.js", import.meta.url));
 
@@ -86,7 +87,7 @@ test("task create writes task_manifest and task_brief without running models", a
   await mkdir(intakeRun, { recursive: true });
   await mkdir(productDir, { recursive: true });
   await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
-  await writeFile(path.join(productDir, "product.json"), JSON.stringify({ name: "Demo", cta: "点击下单" }));
+  await writeFile(path.join(productDir, "product.json"), JSON.stringify({ name: "Demo", brand: "DemoBrand", category: "防晒气垫", cta: "点击下单" }));
   await writeFile(path.join(productDir, "claims.json"), JSON.stringify({ claims: [{ text: "服帖自然" }] }));
   await writeFile(path.join(productDir, "campaigns.json"), JSON.stringify({ campaigns: [{ text: "直播间限时福利" }] }));
   await writeFile(path.join(productDir, "blocked_terms.json"), JSON.stringify({ terms: [{ text: "最强" }] }));
@@ -152,6 +153,30 @@ test("task create writes task_manifest and task_brief without running models", a
   assert.equal(brief.copy_parameters.offer, "直播间限时福利");
   assert.equal(brief.copy_parameters.forbidden_terms, "最强");
   assert.equal(brief.copy_parameters.cta_policy, "点击下单");
+  assert.equal(brief.product.category, "防晒气垫");
+  assert.equal(brief.product_library.category, "防晒气垫");
+});
+
+test("product create writes optional category into product profile", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-product-test-"));
+  const result = await run([
+    "product",
+    "create",
+    "--workspace",
+    workspace,
+    "--slug",
+    "demo",
+    "--name",
+    "Demo",
+    "--brand",
+    "DemoBrand",
+    "--category",
+    "口红"
+  ]);
+  assert.equal(result.code, 0, result.stderr);
+  const product = JSON.parse(await readFile(path.join(workspace, "data", "products", "demo", "product.json"), "utf8"));
+  assert.equal(product.schema_version, "voah.product.v1");
+  assert.equal(product.category, "口红");
 });
 
 test("batch run --create-only writes batch and task manifests", async () => {
@@ -319,14 +344,14 @@ test("config get groups visible model keys by provider", async () => {
   assert.equal(payload.modules.find((item) => item.id === "copy_generation").model, "deepseek-v4-pro");
 });
 
-test("task create does not feed slug as product name when product name is blank", async () => {
+test("task create uses category, not slug guessing, when product name is blank", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-product-name-test-"));
   const intakeRun = path.join(workspace, "cache", "voah_video_intake", "fangshai-qidian", "run");
   const productDir = path.join(workspace, "data", "products", "fangshai-qidian");
   await mkdir(intakeRun, { recursive: true });
   await mkdir(productDir, { recursive: true });
   await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
-  await writeFile(path.join(productDir, "product.json"), JSON.stringify({ slug: "fangshai-qidian", name: "", brand: "" }));
+  await writeFile(path.join(productDir, "product.json"), JSON.stringify({ slug: "fangshai-qidian", name: "", brand: "", category: "防晒气垫" }));
   await writeFile(path.join(productDir, "claims.json"), JSON.stringify({ claims: [{ text: "防晒底妆二合一", tier: "core", rank: 1 }] }));
   await writeFile(path.join(productDir, "campaigns.json"), JSON.stringify({ campaigns: [] }));
   await writeFile(path.join(productDir, "blocked_terms.json"), JSON.stringify({ terms: [] }));
@@ -346,7 +371,8 @@ test("task create does not feed slug as product name when product name is blank"
   assert.equal(brief.product.slug, "fangshai-qidian");
   assert.equal(brief.product.name, "");
   assert.equal(brief.product.brand, "");
-  assert.equal(brief.product.generic_name, "这盒气垫");
+  assert.equal(brief.product.category, "防晒气垫");
+  assert.equal(brief.product.generic_name, "这款防晒气垫");
   assert.match(brief.constraints.join("\n"), /slug/);
 });
 
@@ -493,6 +519,23 @@ exit 0
   assert.equal(passed.passed_count, 0);
   const review = JSON.parse(await readFile(path.join(batchDir, "needs_review_videos.json"), "utf8"));
   assert.equal(review.needs_review_count, 2);
+});
+
+test("retrieve stage resolves min clip and batch diversity state for batch tasks", () => {
+  const taskDir = path.join(os.tmpdir(), "voah-task");
+  const batchDir = path.join(os.tmpdir(), "voah-batch");
+  const manifest = {
+    batch: { batch_dir: batchDir },
+    retrieval: { min_clip_duration_s: 3.1 }
+  };
+
+  assert.equal(retrieveMinClipDuration({}, manifest), 3.1);
+  assert.equal(
+    resolveRetrievalDiversityStatePath(taskDir, manifest, {}),
+    path.join(batchDir, "retrieval_diversity_state.json")
+  );
+  assert.equal(resolveRetrievalDiversityStatePath(taskDir, manifest, { "batch-diversity-state": "off" }), "off");
+  assert.equal(retrieveMinClipDuration({ "min-clip-duration-s": "2.7" }, manifest), 2.7);
 });
 
 test("qa stage skips final Omni by default", async () => {

@@ -115,7 +115,7 @@ function ProductDetail({ product, onStartIntake }) {
     setMessage("");
     const res = await window.voah.saveProductDetail({
       slug: product.slug,
-      product: { name: edit.name, brand: edit.brand, cta: edit.cta },
+      product: { name: edit.name, brand: edit.brand, category: edit.category, cta: edit.cta, created_at: detail?.product?.created_at },
       claims: claimsForSave(edit),
       campaigns: edit.campaigns,
       blockedTerms: edit.blockedTerms
@@ -178,6 +178,14 @@ function ProductDetail({ product, onStartIntake }) {
           </Field>
           <Field label="品牌">
             <input className="input" value={edit?.brand || ""} onChange={(e) => setEdit((v) => ({ ...v, brand: e.target.value }))} />
+          </Field>
+          <Field label="品类">
+            <input
+              className="input"
+              value={edit?.category || ""}
+              onChange={(e) => setEdit((v) => ({ ...v, category: e.target.value }))}
+              placeholder="防晒气垫 / 口红 / 代餐奶昔"
+            />
           </Field>
           <Field label="CTA">
             <input className="input" value={edit?.cta || ""} onChange={(e) => setEdit((v) => ({ ...v, cta: e.target.value }))} />
@@ -246,6 +254,7 @@ function toEditState(detail, product) {
   return {
     name: detail?.product?.name || product?.name || "",
     brand: detail?.product?.brand || product?.brand || "",
+    category: detail?.product?.category || product?.category || "",
     cta: detail?.product?.cta || "",
     claims: linesFromItems(claims),
     coreClaims: linesFromItems(claims.filter((item, index) => item.tier === "core" || (!item.tier && index < 2))),
@@ -288,18 +297,20 @@ function ProductDrawer({ open, onClose }) {
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
   const [brand, setBrand] = useState("");
+  const [category, setCategory] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   async function submit() {
     setBusy(true);
     setError("");
-    const res = await createProduct({ slug, name, brand });
+    const res = await createProduct({ slug, name, brand, category });
     setBusy(false);
     if (res?.ok) {
       setSlug("");
       setName("");
       setBrand("");
+      setCategory("");
       onClose?.();
     } else {
       setError(res?.stderr || res?.error || "创建失败");
@@ -324,6 +335,9 @@ function ProductDrawer({ open, onClose }) {
           </Field>
           <Field label="品牌">
             <input value={brand} onChange={(e) => setBrand(e.target.value)} className="input" placeholder="花西子" />
+          </Field>
+          <Field label="品类">
+            <input value={category} onChange={(e) => setCategory(e.target.value)} className="input" placeholder="防晒气垫 / 口红 / 代餐奶昔" />
           </Field>
           {error && <div className="text-xs text-err bg-err/5 border border-err/20 rounded-lg p-3">{error}</div>}
         </div>

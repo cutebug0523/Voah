@@ -6,7 +6,13 @@ import path from "node:path";
 import { dedupeIntakeRuns, normalizeIntakeStatus, summarizeIntakeRuns } from "../electron/intakeStatus.js";
 import { isTaskAcknowledged, withTaskAcknowledgement } from "../electron/taskAcknowledgements.js";
 import { listTaskRuns } from "../electron/taskRuns.js";
-import { buildCreateBatchArgs, buildCreateSampleTaskArgs, normalizeClaimsForSave, providerRowsFromModules } from "../electron/voahService.js";
+import {
+  buildCreateBatchArgs,
+  buildCreateSampleTaskArgs,
+  buildProductPayloadForSave,
+  normalizeClaimsForSave,
+  providerRowsFromModules
+} from "../electron/voahService.js";
 
 test("intake status prefers explicit failed result over missing shot index", () => {
   const status = normalizeIntakeStatus({
@@ -175,6 +181,24 @@ test("studio preserves core and support claim tiers when saving", () => {
     { text: "防晒底妆二合一", tier: "core", rank: 1 },
     { text: "轻薄服帖", tier: "support", rank: 2 }
   ]);
+});
+
+test("studio product save payload preserves category and original creation time", () => {
+  const payload = buildProductPayloadForSave({
+    slug: "demo",
+    product: {
+      name: "Demo",
+      brand: "DemoBrand",
+      category: "代餐奶昔",
+      cta: "立即下单"
+    },
+    currentProduct: {
+      created_at: "2026-06-01T00:00:00.000Z"
+    }
+  });
+
+  assert.equal(payload.category, "代餐奶昔");
+  assert.equal(payload.created_at, "2026-06-01T00:00:00.000Z");
 });
 
 test("studio passes resolution to batch and sample CLI args", () => {

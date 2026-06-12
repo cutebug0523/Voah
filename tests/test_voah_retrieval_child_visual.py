@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -60,6 +61,40 @@ def parent_candidate(children: list[dict]) -> dict:
         "child_physical_shots": children,
         "score": 0.8,
         "adjusted_score": 0.8,
+        "fill_reasons": [],
+        "fill_risks": [],
+    }
+
+
+def opening_section(duration: float = 6.0) -> dict:
+    return {
+        "section_id": "s_opening",
+        "role": "opening",
+        "voice_text": "通勤补妆想要自然气色，轻拍几下就干净。",
+        "required_visual": "粉扑轻拍上脸",
+        "required_meaning": "展示补妆后气色自然",
+        "audio_duration_s": duration,
+        "keywords": ["粉扑", "轻拍", "上脸"],
+    }
+
+
+def opening_candidate(unit_id: str, child_id: str, score: float = 0.8, asset_id: str | None = None) -> dict:
+    return {
+        "shot_id": unit_id,
+        "story_unit_id": unit_id,
+        "asset_id": asset_id or f"asset_{unit_id}",
+        "time_range": [0.0, 6.0],
+        "usable_range": [0.0, 6.0],
+        "duration_s": 6.0,
+        "trimmed_clip_path": f"/tmp/{unit_id}.mp4",
+        "visual_summary": "人物拿粉扑轻拍上脸，妆面自然有气色。",
+        "source_meaning": "展示气垫补妆和上脸效果",
+        "visual_actions": ["粉扑", "轻拍", "上脸"],
+        "child_physical_shots": [
+            child(child_id, 0.0, 3.0, ["粉扑", "轻拍", "上脸"], "粉扑轻拍脸颊，上脸自然"),
+        ],
+        "score": score,
+        "adjusted_score": score,
         "fill_reasons": [],
         "fill_risks": [],
     }
@@ -184,6 +219,186 @@ class ChildVisualSelectionTest(unittest.TestCase):
 
         self.assertEqual(selected["source_start_offset_s"], 0.0)
         self.assertEqual(selected["source_offset_strategy"], "child_start")
+
+    def test_opening_batch_state_penalizes_reused_first_unit(self):
+        section = opening_section()
+        reused = opening_candidate("unit_reused", "unit_reused_p00", score=0.95, asset_id="asset_a")
+        fresh = opening_candidate("unit_fresh", "unit_fresh_p00", score=0.86, asset_id="asset_b")
+        diversity_state = {
+            "opening_story_unit_counts": {"unit_reused": 2},
+            "opening_asset_counts": {"asset_a": 2},
+            "story_unit_counts": {},
+            "asset_counts": {},
+        }
+
+        adjusted_reused = voah.adjusted_candidate(reused, section, {}, diversity_state)
+        adjusted_fresh = voah.adjusted_candidate(fresh, section, {}, diversity_state)
+
+        self.assertLess(adjusted_reused["adjusted_score"], adjusted_fresh["adjusted_score"])
+        self.assertIn("opening_story_unit", adjusted_reused["batch_usage_counts"])
+        self.assertTrue(any("批次多样性降权" in item for item in adjusted_reused["fill_risks"]))
+
+    def test_opening_ignores_llm_reused_child_when_fresh_child_exists(self):
+        section = opening_section()
+        candidate = opening_candidate("unit_a", "p00")
+        candidate["child_physical_shots"].append(
+            child("p01", 3.0, 6.0, ["粉扑", "轻拍", "上脸"], "另一个粉扑轻拍上脸起点")
+        )
+        candidate["llm_preferred_child_physical_shot_ids"] = ["p00"]
+        candidate["batch_opening_child_counts"] = {"p00": 1}
+
+        selected = voah.select_child_physical_shot(candidate, section)
+
+        self.assertEqual(selected["child_physical_shot_id"], "p01")
+
+    def test_allocate_clip_plan_respects_min_clip_duration_and_leaves_short_gap(self):
+        section = {
+            "section_id": "s_product",
+            "role": "product",
+            "voice_text": "轻拍补妆，妆面自然。",
+            "required_visual": "粉扑轻拍上脸",
+            "required_meaning": "展示补妆效果",
+            "audio_duration_s": 5.2,
+            "keywords": ["粉扑", "轻拍"],
+        }
+        first = parent_candidate([child("p00", 0.0, 3.0, ["粉扑", "轻拍"], "粉扑轻拍上脸")])
+        first.update({"shot_id": "unit_a", "story_unit_id": "unit_a", "asset_id": "asset_a", "duration_s": 3.0, "trimmed_clip_path": ""})
+        second = parent_candidate([child("p10", 0.0, 2.2, ["粉扑", "轻拍"], "继续轻拍补妆")])
+        second.update({"shot_id": "unit_b", "story_unit_id": "unit_b", "asset_id": "asset_b", "duration_s": 2.2, "trimmed_clip_path": ""})
+
+        plans, selected_duration, missing = voah.allocate_clip_plan([first, second], section, min_clip_duration_s=2.5)
+
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["shot_id"], "unit_a")
+        self.assertGreaterEqual(plans[0]["planned_duration_s"], 2.5)
+        self.assertAlmostEqual(missing, 2.2, places=3)
+        self.assertAlmostEqual(selected_duration, 3.0, places=3)
+
+    def test_reused_unit_summary_and_state_are_recorded_without_double_count_on_rerun(self):
+        section = opening_section(duration=3.0)
+        clip = {
+            "section_id": section["section_id"],
+            "role": "opening",
+            "selected_clips": [
+                {
+                    "shot_id": "unit_a",
+                    "story_unit_id": "unit_a",
+                    "asset_id": "asset_a",
+                    "child_physical_shot_id": "child_a",
+                    "source_start_offset_s": 0.0,
+                    "planned_duration_s": 3.0,
+                    "min_clip_duration_s": 2.5,
+                }
+            ],
+        }
+        summary = voah.clip_usage_summary([clip])
+        state = voah.update_diversity_state_with_selection(
+            voah.empty_diversity_state(),
+            task_id="task_001",
+            task_dir=ROOT,
+            selection_sections=[clip],
+            usage_summary=summary,
+        )
+        state = voah.update_diversity_state_with_selection(
+            state,
+            task_id="task_001",
+            task_dir=ROOT,
+            selection_sections=[clip],
+            usage_summary=summary,
+        )
+
+        self.assertEqual(state["opening_story_unit_counts"], {"unit_a": 1})
+        self.assertEqual(state["opening_child_counts"], {"child_a": 1})
+        self.assertEqual(state["story_unit_counts"], {"unit_a": 1})
+
+    def test_locked_diversity_state_write_creates_summary_file(self):
+        clip = {
+            "section_id": "s_opening",
+            "role": "opening",
+            "selected_clips": [
+                {
+                    "shot_id": "unit_lock",
+                    "story_unit_id": "unit_lock",
+                    "asset_id": "asset_lock",
+                    "child_physical_shot_id": "child_lock",
+                    "source_start_offset_s": 0.0,
+                    "planned_duration_s": 3.0,
+                    "min_clip_duration_s": 2.5,
+                }
+            ],
+        }
+        summary = voah.clip_usage_summary([clip])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "retrieval_diversity_state.json"
+            state = voah.locked_update_diversity_state(
+                path,
+                task_id="task_lock",
+                task_dir=ROOT,
+                selection_sections=[clip],
+                usage_summary=summary,
+            )
+            state = voah.locked_update_diversity_state(
+                path,
+                task_id="task_lock",
+                task_dir=ROOT,
+                selection_sections=[clip],
+                usage_summary=summary,
+            )
+
+        self.assertEqual(state["task_count"], 1)
+        self.assertEqual(state["opening_first_clip_counts"], {"unit_lock|child_lock|0.000": 1})
+
+    def test_scoring_diversity_state_excludes_current_task_previous_run(self):
+        current_clip = {
+            "section_id": "s_opening",
+            "role": "opening",
+            "selected_clips": [
+                {
+                    "shot_id": "unit_current",
+                    "story_unit_id": "unit_current",
+                    "asset_id": "asset_current",
+                    "child_physical_shot_id": "child_current",
+                    "source_start_offset_s": 0.0,
+                    "planned_duration_s": 3.0,
+                    "min_clip_duration_s": 2.5,
+                }
+            ],
+        }
+        other_clip = {
+            "section_id": "s_opening",
+            "role": "opening",
+            "selected_clips": [
+                {
+                    "shot_id": "unit_other",
+                    "story_unit_id": "unit_other",
+                    "asset_id": "asset_other",
+                    "child_physical_shot_id": "child_other",
+                    "source_start_offset_s": 0.0,
+                    "planned_duration_s": 3.0,
+                    "min_clip_duration_s": 2.5,
+                }
+            ],
+        }
+        state = voah.empty_diversity_state()
+        state = voah.update_diversity_state_with_selection(
+            state,
+            task_id="task_current",
+            task_dir=ROOT,
+            selection_sections=[current_clip],
+            usage_summary=voah.clip_usage_summary([current_clip]),
+        )
+        state = voah.update_diversity_state_with_selection(
+            state,
+            task_id="task_other",
+            task_dir=ROOT,
+            selection_sections=[other_clip],
+            usage_summary=voah.clip_usage_summary([other_clip]),
+        )
+
+        scoring_state = voah.diversity_state_without_task(state, "task_current")
+
+        self.assertNotIn("unit_current", scoring_state["opening_story_unit_counts"])
+        self.assertEqual(scoring_state["opening_story_unit_counts"], {"unit_other": 1})
 
 
 if __name__ == "__main__":

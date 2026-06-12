@@ -263,10 +263,12 @@ def build_prompt(product: dict[str, Any], context: dict[str, Any]) -> dict[str, 
             "slug": product.get("slug") or "",
             "name": product.get("name") or "",
             "brand": product.get("brand") or "",
+            "category": product.get("category") or "",
         },
         "context": context,
         "rules": [
             "只归纳素材中有证据的卖点，不要编造品牌、价格、赠品、库存、医学功效。",
+            "产品品类的核心属性应作为 core 卖点优先；core 不允许语义重复。",
             "核心卖点只能 1-2 条，必须是成片文案必打的主信息；辅助卖点最多 8 条。",
             "活动优惠只整理明确出现的优惠、礼盒、套装、下单引导；没有就返回空数组。",
             "每条卖点要干净、去重、能直接给写稿模型使用，不要写成 ASR 原句碎片。",
@@ -359,6 +361,7 @@ def main() -> int:
     parser.add_argument("--product-slug", default="")
     parser.add_argument("--product-name", default="")
     parser.add_argument("--brand", default="")
+    parser.add_argument("--category", default="")
     parser.add_argument("--timeout-s", type=int, default=180)
     parser.add_argument("--allow-fallback", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
@@ -374,6 +377,7 @@ def main() -> int:
             "slug": args.product_slug or product.get("slug") or product_dir.name,
             "name": args.product_name or product.get("name") or "",
             "brand": args.brand or product.get("brand") or "",
+            "category": args.category or product.get("category") or "",
         }
     )
     context = collect_context(run_dir)

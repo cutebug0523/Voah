@@ -260,6 +260,10 @@ export async function runRetrieveStage({ workspace, taskDir, runContext, options
       String(optionalInt(options["pool-k"], 36)),
       "--max-clips-per-section",
       String(optionalInt(options["max-clips-per-section"], 6)),
+      "--min-clip-duration-s",
+      String(retrieveMinClipDuration(options, manifest)),
+      "--batch-diversity-state",
+      resolveRetrievalDiversityStatePath(taskDir, manifest, options),
       "--selection-planner",
       options["selection-planner"] || "auto",
       "--width",
@@ -283,6 +287,24 @@ export async function runRetrieveStage({ workspace, taskDir, runContext, options
   if (runContext) await promoteStageOutputs({ taskDir, runContext, stage: "retrieve" });
   await refreshActiveArtifacts(taskDir, "retrieve");
   return path.join(taskDir, "timeline_fill.json");
+}
+
+export function retrieveMinClipDuration(options = {}, manifest = {}) {
+  return optionalNumber(
+    options["min-clip-duration-s"] ?? manifest.retrieval?.min_clip_duration_s,
+    2.5
+  );
+}
+
+export function resolveRetrievalDiversityStatePath(taskDir, manifest = {}, options = {}) {
+  if (options["batch-diversity-state"] !== undefined) {
+    return String(options["batch-diversity-state"] || "");
+  }
+  const batchDir = String(manifest.batch?.batch_dir || "").trim();
+  if (batchDir) {
+    return path.join(batchDir, "retrieval_diversity_state.json");
+  }
+  return "";
 }
 
 export async function runSubtitleStage({ workspace, taskDir, runContext, options = {} }) {
@@ -910,6 +932,7 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
   const productContext = await readProductContext(workspace, manifest.product_slug);
   const targetDuration = manifest.target_duration_s || Number(brief.target_duration_s) || 45;
   const productLibrary = productContext.product_library || {};
+  const category = String(productLibrary.category || "").trim();
   const campaignText = linesFromItems(productContext.campaigns || []);
   const blockedText = linesFromItems(productContext.blocked_terms || []);
   const payload = {
@@ -921,7 +944,8 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
       slug: manifest.product_slug,
       name: validProductName(manifest.product_name, manifest.product_slug) || validProductName(productLibrary.name, manifest.product_slug),
       brand: String(productLibrary.brand || "").trim(),
-      generic_name: genericProductName(manifest.product_slug)
+      category,
+      generic_name: genericProductName(category)
     },
     task: {
       id: manifest.task_id,
@@ -940,7 +964,10 @@ export async function writeTaskBrief({ workspace, taskDir, manifest, brief = {} 
     product_claims: productContext.claims || [],
     product_campaigns: productContext.campaigns || [],
     product_blocked_terms: productContext.blocked_terms || [],
-    product_library: productLibrary,
+    product_library: {
+      ...productLibrary,
+      category
+    },
     copy_parameters: {
       main_claim: brief.main_claim || "",
       offer: brief.offer || campaignText,
@@ -1002,9 +1029,8 @@ function validProductName(name, slug) {
   return value;
 }
 
-function genericProductName(slug) {
-  const value = String(slug || "");
-  if (/qidian|cushion/i.test(value)) return "这盒气垫";
-  if (/kouhong|lip/i.test(value)) return "这支口红";
+function genericProductName(category) {
+  const value = String(category || "").trim();
+  if (value) return `这款${value}`;
   return "这款产品";
 }

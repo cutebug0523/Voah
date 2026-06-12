@@ -86,6 +86,7 @@ async function listProducts() {
       slug,
       name: product.name || slug,
       brand: product.brand || "",
+      category: product.category || "",
       product_dir: productDir,
       latest_intake_run: null,
       intake_run_count: 0,
@@ -101,6 +102,7 @@ async function listProducts() {
       slug,
       name: slug,
       brand: "",
+      category: "",
       product_dir: path.join(PRODUCTS_DIR, slug)
     };
     const mergedRun = runs.find((run) => run.name === "_merged" && run.ready);
@@ -151,10 +153,11 @@ async function inspectProduct(slug) {
   };
 }
 
-async function createProduct({ slug, name, brand }) {
+async function createProduct({ slug, name, brand, category }) {
   const args = ["product", "create", "--workspace", WORKSPACE, "--slug", slug || ""];
   if (name) args.push("--name", name);
   if (brand) args.push("--brand", brand);
+  if (category) args.push("--category", category);
   return runVoah(args);
 }
 
@@ -162,15 +165,8 @@ async function saveProductDetail({ slug, product, claims, campaigns, blockedTerm
   if (!slug) return { ok: false, error: "缺少产品 slug" };
   const productDir = path.join(PRODUCTS_DIR, slug);
   await fs.mkdir(productDir, { recursive: true });
-  await writeJson(path.join(productDir, "product.json"), {
-    schema_version: "voah.product.v1",
-    slug,
-    name: product?.name || "",
-    brand: product?.brand || "",
-    cta: product?.cta || "",
-    created_at: product?.created_at || new Date().toISOString(),
-    updated_at: new Date().toISOString()
-  });
+  const currentProduct = (await readJsonSafe(path.join(productDir, "product.json"))) || {};
+  await writeJson(path.join(productDir, "product.json"), buildProductPayloadForSave({ slug, product, currentProduct }));
   await writeJson(path.join(productDir, "claims.json"), {
     schema_version: "voah.product_claims.v2",
     claims: normalizeClaimsForSave(claims),
@@ -187,6 +183,19 @@ async function saveProductDetail({ slug, product, claims, campaigns, blockedTerm
     updated_at: new Date().toISOString()
   });
   return { ok: true };
+}
+
+export function buildProductPayloadForSave({ slug, product = {}, currentProduct = {} }) {
+  return {
+    schema_version: "voah.product.v1",
+    slug,
+    name: product?.name || "",
+    brand: product?.brand || "",
+    category: product?.category || "",
+    cta: product?.cta || "",
+    created_at: product?.created_at || currentProduct.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
 }
 
 async function refineProductContext({ slug, runDir }) {
@@ -206,7 +215,8 @@ async function refineProductContext({ slug, runDir }) {
     "--run-dir",
     selectedRunDir,
     ...(product.name ? ["--product-name", product.name] : []),
-    ...(product.brand ? ["--brand", product.brand] : [])
+    ...(product.brand ? ["--brand", product.brand] : []),
+    ...(product.category ? ["--category", product.category] : [])
   ]);
 }
 

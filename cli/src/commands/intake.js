@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs, requireOption, optionalInt, optionalNumber } from "../core/args.js";
 import { UserError } from "../core/errors.js";
@@ -22,7 +23,9 @@ export async function runIntakeCommand({ argv }) {
   });
   const workspace = resolveWorkspace(options.workspace);
   const productSlug = requireOption(options, "product");
-  const productName = options["product-name"] || options.name || productSlug;
+  const productDir = path.join(workspace, "data", "products", productSlug);
+  const product = existsSync(path.join(productDir, "product.json")) ? await readJson(path.join(productDir, "product.json")) : {};
+  const productName = options["product-name"] || options.name || product.name || productSlug;
   const sourceDir = resolvePath(requireOption(options, "source-dir"), workspace);
   const label = options.label || "cli_intake_v1";
   const maxVideos = optionalInt(options.limit ?? options["max-videos"], 0);
@@ -74,12 +77,12 @@ export async function runIntakeCommand({ argv }) {
       purpose: "embedding",
       consumers: ["qwen3-vl-embedding"]
     });
-    await refineProductContextAfterIntake({ workspace, productSlug, productName, runDir });
+    await refineProductContextAfterIntake({ workspace, productSlug, productName, category: options.category || product.category || "", runDir });
   }
   console.log(result.stdout.trim());
 }
 
-async function refineProductContextAfterIntake({ workspace, productSlug, productName, runDir }) {
+async function refineProductContextAfterIntake({ workspace, productSlug, productName, category, runDir }) {
   const productDir = path.join(workspace, "data", "products", productSlug);
   const runner = new WorkerRunner({ workspace, secretService: new SecretService() });
   try {
@@ -95,6 +98,8 @@ async function refineProductContextAfterIntake({ workspace, productSlug, product
         productSlug,
         "--product-name",
         productName,
+        "--category",
+        category || "",
       ],
       cwd: workspace,
       stage: "product_context_refinement",

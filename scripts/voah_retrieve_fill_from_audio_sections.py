@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import fcntl
 import importlib.util
 import json
 import math
@@ -18,6 +20,9 @@ from typing import Any
 
 SEARCH_SCRIPT = Path("/Users/noah/.codex/skills/voah-shot-retrieval/scripts/search.py")
 DEFAULT_MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION = 2
+DEFAULT_MIN_CLIP_DURATION_S = 2.5
+SHORT_CLIP_TOLERANCE_S = 0.08
+BATCH_DIVERSITY_STATE_FILENAME = "retrieval_diversity_state.json"
 
 DOMAIN_TERMS = [
     "SPF50+",
@@ -358,6 +363,13 @@ def write_json(path: Path, data: Any) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def write_json_atomic(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    write_json(temp_path, data)
+    temp_path.replace(path)
+
+
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -445,6 +457,56 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def count_map_increment(target: dict[str, int], key: str, amount: int = 1) -> None:
+    if not key:
+        return
+    target[key] = target.get(key, 0) + amount
+
+
+def count_map_from(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): safe_int(raw, 0)
+        for key, raw in value.items()
+        if str(key or "").strip() and safe_int(raw, 0) > 0
+    }
+
+
+def story_unit_key(record: dict[str, Any]) -> str:
+    return str(record.get("story_unit_id") or record.get("shot_id") or record.get("parent_shot_id") or "")
+
+
+def asset_key(record: dict[str, Any]) -> str:
+    return str(record.get("asset_id") or "")
+
+
+def child_key(record: dict[str, Any]) -> str:
+    return str(record.get("child_physical_shot_id") or "")
+
+
+def opening_first_clip_key(clip: dict[str, Any]) -> str:
+    start_offset = (
+        clip.get("source_start_offset_s")
+        if clip.get("source_start_offset_s") is not None
+        else clip.get("planned_source_start_offset_s")
+    )
+    return "|".join(
+        [
+            str(clip.get("story_unit_id") or clip.get("shot_id") or ""),
+            str(clip.get("child_physical_shot_id") or ""),
+            f"{safe_float(start_offset):.3f}",
+        ]
+    )
 
 
 def text_blob(record: dict[str, Any]) -> str:
@@ -541,6 +603,129 @@ def term_hit_info(record: dict[str, Any], section: dict[str, Any]) -> list[dict[
 def source_run_dir_from_index(index: dict[str, Any], index_path: Path) -> Path:
     source = str(index.get("source_run_dir") or "").strip()
     return as_abs(source) if source else index_path.parent
+
+
+def task_root_for_context(task_dir: Path) -> Path:
+    current = task_dir.resolve()
+    for path in [current, *current.parents]:
+        if (path / "task_manifest.json").exists():
+            return path
+        if path.name == "tasks":
+            break
+    if current.parent.name == "tasks":
+        return current
+    if current.name == "outputs" and current.parent.parent.name == ".runs":
+        return current.parent.parent.parent
+    return current
+
+
+def default_batch_diversity_state_path(task_dir: Path) -> Path | None:
+    task_root = task_root_for_context(task_dir)
+    manifest_path = task_root / "task_manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = load_json(manifest_path)
+        except Exception:
+            manifest = {}
+        batch = manifest.get("batch") if isinstance(manifest, dict) else {}
+        batch_dir = str((batch or {}).get("batch_dir") or "").strip()
+        if batch_dir:
+            return as_abs(batch_dir) / BATCH_DIVERSITY_STATE_FILENAME
+    if task_root.parent.name == "tasks" and (task_root.parent.parent / "batch_manifest.json").exists():
+        return task_root.parent.parent / BATCH_DIVERSITY_STATE_FILENAME
+    return None
+
+
+def resolve_batch_diversity_state_path(raw: str, task_dir: Path) -> Path | None:
+    value = str(raw or "").strip()
+    if value.lower() in {"off", "none", "false", "0"}:
+        return None
+    if value:
+        return as_abs(value, task_dir)
+    return default_batch_diversity_state_path(task_dir)
+
+
+def empty_diversity_state() -> dict[str, Any]:
+    return {
+        "schema_version": "voah.retrieval_diversity_state.v1",
+        "created_at": iso_now(),
+        "updated_at": iso_now(),
+        "tasks": {},
+        "opening_story_unit_counts": {},
+        "opening_asset_counts": {},
+        "opening_child_counts": {},
+        "opening_first_clip_counts": {},
+        "story_unit_counts": {},
+        "asset_counts": {},
+    }
+
+
+def load_diversity_state(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return empty_diversity_state()
+    try:
+        state = load_json(path)
+    except Exception:
+        state = empty_diversity_state()
+        state["load_warning"] = f"无法读取批次多样性状态，已重建：{path}"
+    if not isinstance(state, dict):
+        state = empty_diversity_state()
+    for key in (
+        "tasks",
+        "opening_story_unit_counts",
+        "opening_asset_counts",
+        "opening_child_counts",
+        "opening_first_clip_counts",
+        "story_unit_counts",
+        "asset_counts",
+    ):
+        if not isinstance(state.get(key), dict):
+            state[key] = {}
+    return state
+
+
+def acquire_diversity_state_lock(path: Path | None):
+    if path is None:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_file = lock_path.open("w", encoding="utf-8")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    return lock_file
+
+
+def release_diversity_state_lock(lock_file: Any) -> None:
+    if lock_file is None:
+        return
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except ValueError:
+        pass
+    finally:
+        try:
+            lock_file.close()
+        except ValueError:
+            pass
+
+
+def task_identity(task_dir: Path, audio_sections: dict[str, Any]) -> str:
+    task_root = task_root_for_context(task_dir)
+    for path in (task_root / "task_manifest.json", task_root / "task_brief.json"):
+        if not path.exists():
+            continue
+        try:
+            payload = load_json(path)
+        except Exception:
+            continue
+        for key in ("task_id", "id"):
+            value = str(payload.get(key) or "").strip() if isinstance(payload, dict) else ""
+            if value:
+                return value
+    for key in ("task_id", "id"):
+        value = str(audio_sections.get(key) or "").strip()
+        if value:
+            return value
+    return task_root.name
 
 
 def shot_id_of(record: dict[str, Any]) -> str:
@@ -1387,6 +1572,10 @@ def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, An
         duration = child_duration(child)
         if target_duration > 0:
             score += duration_score(duration, min(target_duration, max(duration, 0.1))) * 0.35
+        if str(section.get("role") or "") == "opening":
+            opening_child_reuse = count_map_from(candidate.get("batch_opening_child_counts")).get(child_id, 0)
+            if opening_child_reuse:
+                score -= min(1.4, opening_child_reuse * 0.72)
         if child.get("hard_subtitle_risk") == "high":
             score -= 0.35
         elif child.get("hard_subtitle_risk") == "medium":
@@ -1426,6 +1615,13 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
                     and best_scored_child_id != str(child.get("shot_id") or "")
                 ):
                     break
+                if (
+                    str(section.get("role") or "") == "opening"
+                    and count_map_from(candidate.get("batch_opening_child_counts")).get(str(child.get("shot_id") or ""), 0)
+                    and best_scored_child_id
+                    and best_scored_child_id != str(child.get("shot_id") or "")
+                ):
+                    break
                 base = {
                     "target_visual_terms": target_terms,
                     "semantic_hits": hits,
@@ -1459,6 +1655,12 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
         }
 
     best_score, _child_index, best_child, hits = scored[0]
+    opening_child_reuse_count = 0
+    if str(section.get("role") or "") == "opening":
+        opening_child_reuse_count = count_map_from(candidate.get("batch_opening_child_counts")).get(
+            str(best_child.get("shot_id") or ""),
+            0,
+        )
     source_duration = child_duration(best_child)
     source_path = best_child.get("trimmed_clip_path") or best_child.get("source_clip_path") or ""
     if not source_path:
@@ -1497,6 +1699,7 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
             f"{'；未找到 child 硬画面命中，回退软评分' if hard_visual_fallback else ''}"
             f"{'；按父级证明动作顺序定位' if child_proof_action_order_score(best_child, section, _child_index, len([child for child in candidate.get('child_physical_shots') or [] if isinstance(child, dict) and is_child_renderable(child)])) else ''}"
             f"{'；使用 story 文本顺序定位' if term_positions else ''}"
+            f"{'；同批 opening 已用过该 child，素材少时允许复用' if opening_child_reuse_count else ''}"
         ),
         "source_clip_path": source_path,
         "source_duration_s": source_duration,
@@ -1509,6 +1712,7 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
         "source_meaning": best_child.get("source_meaning") or candidate.get("source_meaning"),
         "hard_subtitle_risk": best_child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
         "voiceover_fit": best_child.get("voiceover_fit") or candidate.get("voiceover_fit"),
+        "batch_opening_child_reuse_count": opening_child_reuse_count,
         "requires_review": requires_review,
     }
 
@@ -1531,7 +1735,12 @@ def child_selection_start(candidate: dict[str, Any], section: dict[str, Any]) ->
     return selected
 
 
-def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], max_duration: float) -> list[dict[str, Any]]:
+def candidate_clip_segments(
+    candidate: dict[str, Any],
+    section: dict[str, Any],
+    max_duration: float,
+    min_clip_duration_s: float = DEFAULT_MIN_CLIP_DURATION_S,
+) -> list[dict[str, Any]]:
     if max_duration <= 0:
         return []
     intra = child_selection_start(candidate, section)
@@ -1551,12 +1760,21 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
     if parent_clip and parent_duration > 0 and parent_start_offset < parent_duration - 0.03:
         return [clip_segment_from_parent_story_unit(candidate, section, intra, max_duration)]
     if not children:
-        return [clip_segment_from_intra(candidate, intra, max_duration)]
+        segment = clip_segment_from_intra(candidate, intra, max_duration)
+        if safe_float(segment.get("planned_duration_s")) + SHORT_CLIP_TOLERANCE_S < min_clip_duration_s and max_duration > min_clip_duration_s + SHORT_CLIP_TOLERANCE_S:
+            segment["below_min_clip_duration"] = True
+            segment["min_clip_duration_s"] = min_clip_duration_s
+            segment.setdefault("selection_risks", [])
+            segment["selection_risks"] = list(segment.get("selection_risks") or []) + [
+                f"素材不足，单 clip 时长 {safe_float(segment.get('planned_duration_s')):.3f}s 低于最短展示 {min_clip_duration_s:.3f}s"
+            ]
+        return [segment]
     segments: list[dict[str, Any]] = []
     remaining = max_duration
     start_index = int(intra.get("start_index") or 0)
     ordered_children = children[start_index:]
     max_child_clips = max_child_clips_per_story_unit(section)
+    deferred_short: list[dict[str, Any]] = []
     for child in ordered_children:
         if len(segments) >= max_child_clips:
             break
@@ -1565,10 +1783,22 @@ def candidate_clip_segments(candidate: dict[str, Any], section: dict[str, Any], 
             continue
         child_intra = select_child_metadata_from_child(candidate, section, child, intra)
         planned = min(duration, remaining)
+        if planned + SHORT_CLIP_TOLERANCE_S < min_clip_duration_s and remaining > min_clip_duration_s + SHORT_CLIP_TOLERANCE_S:
+            deferred_short.append(clip_segment_from_intra(candidate, child_intra, planned))
+            continue
         segments.append(clip_segment_from_intra(candidate, child_intra, planned))
         remaining = max(0.0, remaining - planned)
         if remaining <= 0.03:
             break
+    if not segments and deferred_short:
+        segment = deferred_short[0]
+        segment["below_min_clip_duration"] = True
+        segment["min_clip_duration_s"] = min_clip_duration_s
+        segment.setdefault("selection_risks", [])
+        segment["selection_risks"] = list(segment.get("selection_risks") or []) + [
+            f"候选只有短 child，素材不足时保留 {safe_float(segment.get('planned_duration_s')):.3f}s 片段"
+        ]
+        return [segment]
     return segments
 
 
@@ -1665,6 +1895,7 @@ def clip_segment_from_parent_story_unit(
         "hard_visual_fallback": hard_visual_fallback,
         "child_metadata_precision": intra.get("child_metadata_precision", ""),
         "semantic_score": candidate.get("semantic_score"),
+        "batch_opening_child_reuse_count": intra.get("batch_opening_child_reuse_count", 0),
         "requires_visual_review": requires_review,
     }
 
@@ -1697,6 +1928,12 @@ def select_child_metadata_from_child(
     )
     planned_for_offset = min(duration, float(section.get("audio_duration_s") or duration or 0))
     internal_offset, offset_strategy, offset_reason = child_internal_start_offset(child, section, planned_for_offset)
+    opening_child_reuse_count = 0
+    if str(section.get("role") or "") == "opening":
+        opening_child_reuse_count = count_map_from(candidate.get("batch_opening_child_counts")).get(
+            str(child.get("shot_id") or ""),
+            0,
+        )
     return {
         "mode": "child_physical_shot",
         "child_physical_shot_id": child.get("shot_id") or "",
@@ -1713,6 +1950,7 @@ def select_child_metadata_from_child(
             f"{'、'.join(hits) if hits else '无硬视觉词'}"
             f"{'；硬词仅见于父级上下文：' + '、'.join(parent_context_hits[:6]) if inherited_only_hits else ''}"
             f"{'；未找到 child 硬画面命中，回退软评分' if hard_visual_fallback else ''}"
+            f"{'；同批 opening 已用过该 child，素材少时允许复用' if opening_child_reuse_count else ''}"
         ),
         "source_clip_path": child.get("trimmed_clip_path") or child.get("source_clip_path") or "",
         "source_duration_s": duration,
@@ -1725,6 +1963,7 @@ def select_child_metadata_from_child(
         "source_meaning": child.get("source_meaning") or candidate.get("source_meaning"),
         "hard_subtitle_risk": child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
         "voiceover_fit": child.get("voiceover_fit") or candidate.get("voiceover_fit"),
+        "batch_opening_child_reuse_count": opening_child_reuse_count,
         "requires_review": requires_review,
     }
 
@@ -1781,15 +2020,58 @@ def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], pl
         "hard_visual_fallback": bool(intra.get("hard_visual_fallback")),
         "child_metadata_precision": intra.get("child_metadata_precision", ""),
         "semantic_score": intra.get("semantic_score") if intra.get("semantic_score") is not None else candidate.get("semantic_score"),
+        "batch_opening_child_reuse_count": intra.get("batch_opening_child_reuse_count", 0),
         "requires_visual_review": bool(intra.get("requires_review")),
     }
 
 
-def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_counts: dict[str, int]) -> dict[str, Any]:
+def diversity_counts_from_state(diversity_state: dict[str, Any] | None, key: str) -> dict[str, int]:
+    if not diversity_state:
+        return {}
+    return count_map_from(diversity_state.get(key))
+
+
+def same_task_usage_counts(used_counts: dict[str, int], candidate: dict[str, Any]) -> dict[str, int]:
+    shot_id = str(candidate.get("shot_id") or "")
+    unit_id = story_unit_key(candidate)
+    asset_id = asset_key(candidate)
+    return {
+        "shot": used_counts.get(shot_id, 0),
+        "story_unit": used_counts.get(f"story_unit:{unit_id}", 0) if unit_id else 0,
+        "asset": used_counts.get(f"asset:{asset_id}", used_counts.get(asset_id, 0)) if asset_id else 0,
+    }
+
+
+def batch_usage_counts(diversity_state: dict[str, Any] | None, candidate: dict[str, Any], section: dict[str, Any]) -> dict[str, int]:
+    if not diversity_state:
+        return {}
+    unit_id = story_unit_key(candidate)
+    asset_id = asset_key(candidate)
+    counts = {
+        "story_unit": diversity_counts_from_state(diversity_state, "story_unit_counts").get(unit_id, 0),
+        "asset": diversity_counts_from_state(diversity_state, "asset_counts").get(asset_id, 0),
+    }
+    if str(section.get("role") or "") == "opening":
+        counts.update(
+            {
+                "opening_story_unit": diversity_counts_from_state(diversity_state, "opening_story_unit_counts").get(unit_id, 0),
+                "opening_asset": diversity_counts_from_state(diversity_state, "opening_asset_counts").get(asset_id, 0),
+            }
+        )
+    return counts
+
+
+def adjusted_candidate(
+    candidate: dict[str, Any],
+    section: dict[str, Any],
+    used_counts: dict[str, int],
+    diversity_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     target = float(section.get("audio_duration_s") or 0)
     duration = float(candidate.get("duration_s") or 0)
     asset_id = str(candidate.get("asset_id") or "")
     shot_id = str(candidate.get("shot_id") or "")
+    unit_id = story_unit_key(candidate)
     score = float(candidate.get("score") or 0)
     reasons = list(candidate.get("rerank_reasons") or [])
     risks = list(candidate.get("risks") or [])
@@ -1821,10 +2103,35 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
         score -= 0.08
         risks.append("未命中本段必要语义/视觉术语")
     reuse_scale = 0.35 if visual_score >= 3.0 else 0.65 if visual_score >= 1.25 else 1.0
-    reuse_penalty = (used_counts.get(shot_id, 0) * 0.42 + used_counts.get(asset_id, 0) * 0.035) * reuse_scale
+    same_task_counts = same_task_usage_counts(used_counts, candidate)
+    reuse_penalty = (
+        same_task_counts["shot"] * 0.46
+        + same_task_counts["story_unit"] * 0.58
+        + same_task_counts["asset"] * 0.055
+    ) * reuse_scale
     if reuse_penalty:
         score -= reuse_penalty
-        risks.append(f"复用惩罚 {reuse_penalty:.3f}")
+        risks.append(f"单条内复用降权 {reuse_penalty:.3f}")
+        reasons.append(
+            "单条内已使用该素材，除非素材池不足或硬画面强命中才继续复用"
+        )
+    batch_counts = batch_usage_counts(diversity_state, candidate, section)
+    batch_penalty = (
+        batch_counts.get("story_unit", 0) * 0.05
+        + batch_counts.get("asset", 0) * 0.018
+    ) * reuse_scale
+    if str(section.get("role") or "") == "opening":
+        batch_penalty += (
+            batch_counts.get("opening_story_unit", 0) * 0.92
+            + batch_counts.get("opening_asset", 0) * 0.18
+        ) * reuse_scale
+    if batch_penalty:
+        score -= batch_penalty
+        risks.append(f"批次多样性降权 {batch_penalty:.3f}")
+        if str(section.get("role") or "") == "opening":
+            reasons.append("同批 opening 已使用过该开场素材，优先打散到其他 story unit/child")
+        else:
+            reasons.append("同批已使用过该素材，作为轻量分散参考")
     subtitle = candidate.get("hard_subtitle_risk")
     if subtitle in ("medium", "high"):
         if subtitle == "medium":
@@ -1853,6 +2160,9 @@ def adjusted_candidate(candidate: dict[str, Any], section: dict[str, Any], used_
     output["required_visual_score"] = visual_score
     output["child_required_visual_hits"] = child_visual_hits
     output["hard_visual_child_hit_count"] = len(child_visual_hits)
+    output["same_task_usage_counts"] = same_task_counts
+    output["batch_usage_counts"] = batch_counts
+    output["reuse_policy"] = "penalize_same_story_unit_and_asset_allow_if_shortage"
     output["hard_visual_child_filter_required"] = section_requires_child_visual_hit(section)
     output["section_forbidden_hits"] = forbidden_hits
     output["visual_theme_contract"] = theme_eval.get("contract")
@@ -1909,6 +2219,7 @@ def expand_with_theme_candidates(
     records: list[dict[str, Any]],
     section: dict[str, Any],
     used_counts: dict[str, int] | None = None,
+    diversity_state: dict[str, Any] | None = None,
     limit: int = 18,
 ) -> list[dict[str, Any]]:
     selected = list(candidates)
@@ -1920,7 +2231,7 @@ def expand_with_theme_candidates(
             continue
         if record.get("planning_granularity") not in (None, "", "story_unit"):
             continue
-        candidate = adjusted_candidate(candidate_from_index_record(record, section), section, used_counts or {})
+        candidate = adjusted_candidate(candidate_from_index_record(record, section), section, used_counts or {}, diversity_state)
         if not candidate_renderable(candidate):
             continue
         if not visual_theme_allowed(candidate, section):
@@ -1980,16 +2291,31 @@ def apply_selection_overrides(
     return selected
 
 
-def allocate_clip_plan(selected: list[dict[str, Any]], section: dict[str, Any]) -> tuple[list[dict[str, Any]], float, float]:
+def effective_min_clip_duration(section: dict[str, Any], min_clip_duration_s: float) -> float:
+    target = safe_float(section.get("audio_duration_s"))
+    if target <= 0:
+        return max(0.0, min_clip_duration_s)
+    return max(0.0, min(min_clip_duration_s, target))
+
+
+def allocate_clip_plan(
+    selected: list[dict[str, Any]],
+    section: dict[str, Any],
+    min_clip_duration_s: float = DEFAULT_MIN_CLIP_DURATION_S,
+) -> tuple[list[dict[str, Any]], float, float]:
     target = float(section.get("audio_duration_s") or 0)
+    effective_min = effective_min_clip_duration(section, min_clip_duration_s)
     remaining = target
     plans: list[dict[str, Any]] = []
+    deferred_short_segments: list[dict[str, Any]] = []
     total_source = 0.0
     clip_order = 1
     for item in selected:
         if remaining <= 0.03:
             break
-        segments = candidate_clip_segments(item, section, remaining)
+        if plans and remaining + SHORT_CLIP_TOLERANCE_S < effective_min:
+            break
+        segments = candidate_clip_segments(item, section, remaining, effective_min)
         if not segments:
             continue
         for segment in segments:
@@ -1997,13 +2323,28 @@ def allocate_clip_plan(selected: list[dict[str, Any]], section: dict[str, Any]) 
             planned_duration = float(segment.get("planned_duration_s") or 0)
             if planned_duration <= 0:
                 continue
+            if planned_duration + SHORT_CLIP_TOLERANCE_S < effective_min and remaining > effective_min + SHORT_CLIP_TOLERANCE_S:
+                segment["below_min_clip_duration"] = True
+                segment["min_clip_duration_s"] = effective_min
+                deferred_short_segments.append(segment)
+                continue
             total_source += source_duration
             segment["clip_order"] = clip_order
+            segment["min_clip_duration_s"] = effective_min
             plans.append(segment)
             clip_order += 1
             remaining = max(0.0, remaining - planned_duration)
             if remaining <= 0.03:
                 break
+    if not plans and deferred_short_segments:
+        segment = deferred_short_segments[0]
+        segment["clip_order"] = clip_order
+        segment["selection_risks"] = list(segment.get("selection_risks") or []) + [
+            "没有满足最短展示时长的可用片段，保留短 clip 并标记复核"
+        ]
+        plans.append(segment)
+        total_source += float(segment.get("source_duration_s") or 0)
+        remaining = max(0.0, remaining - float(segment.get("planned_duration_s") or 0))
     return plans, round(total_source, 3), round(max(0.0, remaining), 3)
 
 
@@ -2040,6 +2381,7 @@ def top_up_selection(
     adjusted: list[dict[str, Any]],
     section: dict[str, Any],
     max_clips_per_section: int,
+    min_clip_duration_s: float = DEFAULT_MIN_CLIP_DURATION_S,
 ) -> tuple[list[dict[str, Any]], str]:
     selected = list(selected)
     note = ""
@@ -2050,7 +2392,7 @@ def top_up_selection(
         note = "；强画面段没有 child 硬词命中，补齐阶段回退软评分并标记复核"
     effective_max = max(max_clips_per_section, len(selected) + max_clips_per_section)
     selected_ids = {str(item.get("shot_id") or "") for item in selected}
-    selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
+    selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section, min_clip_duration_s)
     seed = selected[0] if selected else None
     while missing_duration_s > 0.08 and len(selected) < effective_max:
         next_item = None
@@ -2076,10 +2418,55 @@ def top_up_selection(
             break
         selected.append(next_item)
         selected_ids.add(str(next_item.get("shot_id") or ""))
-        selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
+        selected_clips, _selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section, min_clip_duration_s)
         if not note:
             note = "；命中 story unit 内连续 child 不足时，追加同语义候选补齐"
     return selected, note
+
+
+def opening_batch_pressure(candidate: dict[str, Any]) -> int:
+    counts = candidate.get("batch_usage_counts") or {}
+    return safe_int(counts.get("opening_story_unit")) * 4 + safe_int(counts.get("opening_asset"))
+
+
+def diversify_opening_seed(
+    selected: list[dict[str, Any]],
+    adjusted: list[dict[str, Any]],
+    section: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str]:
+    if str(section.get("role") or "") != "opening" or not selected:
+        return selected, ""
+    current = selected[0]
+    current_pressure = opening_batch_pressure(current)
+    if current_pressure <= 0:
+        return selected, ""
+    selected_ids = {str(item.get("shot_id") or "") for item in selected}
+    alternatives = [
+        item
+        for item in adjusted
+        if str(item.get("shot_id") or "")
+        and str(item.get("shot_id") or "") not in selected_ids
+        and candidate_renderable(item)
+        and candidate_allowed_for_section(item, section)
+        and opening_batch_pressure(item) < current_pressure
+    ]
+    if not alternatives:
+        return selected, "；批次 opening 候选不足，保留已用开场素材但会记录复用"
+    alternatives.sort(
+        key=lambda item: (
+            opening_batch_pressure(item),
+            -int(item.get("hard_visual_child_hit_count") or 0),
+            -float(item.get("required_visual_score") or 0),
+            -candidate_semantic_score(item),
+            -candidate_score(item),
+        ),
+    )
+    replacement = alternatives[0]
+    note = (
+        f"；批次 opening 打散：将已用开场 {current.get('shot_id')} "
+        f"替换为 {replacement.get('shot_id')}"
+    )
+    return [replacement, *selected[1:]], note
 
 
 def reject_reason(candidate: dict[str, Any], section: dict[str, Any], selected_ids: set[str], target: float) -> str:
@@ -2131,6 +2518,275 @@ def build_rejected_candidates(
         if len(rejected) >= limit:
             break
     return rejected
+
+
+def clip_usage_summary(sections: list[dict[str, Any]], clip_key: str = "selected_clips") -> dict[str, Any]:
+    story_counts: dict[str, int] = {}
+    asset_counts: dict[str, int] = {}
+    child_counts: dict[str, int] = {}
+    below_min: list[dict[str, Any]] = []
+    opening_first_clips: list[dict[str, Any]] = []
+    for section in sections:
+        clips = section.get(clip_key) or section.get("clips") or []
+        if not isinstance(clips, list):
+            continue
+        for index, clip in enumerate(clips):
+            if not isinstance(clip, dict):
+                continue
+            unit_id = story_unit_key(clip)
+            asset_id = asset_key(clip)
+            child_id = child_key(clip)
+            count_map_increment(story_counts, unit_id)
+            count_map_increment(asset_counts, asset_id)
+            count_map_increment(child_counts, child_id)
+            duration = safe_float(clip.get("planned_duration_s") or clip.get("rendered_duration_s"))
+            min_duration = safe_float(clip.get("min_clip_duration_s"), DEFAULT_MIN_CLIP_DURATION_S)
+            if clip.get("below_min_clip_duration") or (
+                duration > 0
+                and min_duration > 0
+                and duration + SHORT_CLIP_TOLERANCE_S < min_duration
+                and len(clips) > 1
+            ):
+                below_min.append(
+                    {
+                        "section_id": section.get("section_id"),
+                        "shot_id": clip.get("shot_id"),
+                        "story_unit_id": unit_id,
+                        "child_physical_shot_id": child_id,
+                        "planned_duration_s": round(duration, 3),
+                        "min_clip_duration_s": round(min_duration, 3),
+                    }
+                )
+            if str(section.get("role") or "") == "opening" and index == 0:
+                opening_first_clips.append(
+                    {
+                        "section_id": section.get("section_id"),
+                        "shot_id": clip.get("shot_id"),
+                        "story_unit_id": unit_id,
+                        "asset_id": asset_id,
+                        "child_physical_shot_id": child_id,
+                        "source_start_offset_s": clip.get("source_start_offset_s")
+                        if clip.get("source_start_offset_s") is not None
+                        else clip.get("planned_source_start_offset_s"),
+                        "signature": opening_first_clip_key(clip),
+                    }
+                )
+    repeated_story_units = {
+        key: value for key, value in sorted(story_counts.items(), key=lambda item: item[1], reverse=True) if value > 1
+    }
+    repeated_assets = {
+        key: value for key, value in sorted(asset_counts.items(), key=lambda item: item[1], reverse=True) if value > 1
+    }
+    return {
+        "unique_story_unit_count": len(story_counts),
+        "unique_asset_count": len(asset_counts),
+        "unique_child_count": len(child_counts),
+        "story_unit_counts": story_counts,
+        "asset_counts": asset_counts,
+        "child_counts": child_counts,
+        "repeated_story_units": repeated_story_units,
+        "repeated_assets": repeated_assets,
+        "below_min_clip_duration_count": len(below_min),
+        "below_min_clip_duration_clips": below_min,
+        "opening_first_clips": opening_first_clips,
+    }
+
+
+def duplicate_policy_notes(usage_summary: dict[str, Any], material_shortage: bool) -> list[str]:
+    notes: list[str] = []
+    repeated_units = usage_summary.get("repeated_story_units") or {}
+    repeated_assets = usage_summary.get("repeated_assets") or {}
+    if repeated_units:
+        notes.append(
+            "单条内存在 story unit 复用；"
+            + ("素材池/时长不足时允许策略性复用" if material_shortage else "已通过降权尽量压低")
+        )
+    if repeated_assets:
+        notes.append(
+            "单条内存在 asset 复用；"
+            + ("素材少时允许同原片不同片段补齐" if material_shortage else "后续段已按 asset 轻量降权")
+        )
+    if usage_summary.get("below_min_clip_duration_count"):
+        notes.append("存在低于最短展示时长的 clip，已写入 QA 供复核")
+    return notes
+
+
+def subtract_count_map(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key, raw in (source or {}).items():
+        text_key = str(key or "")
+        if not text_key:
+            continue
+        next_value = safe_int(target.get(text_key), 0) - safe_int(raw, 0)
+        if next_value > 0:
+            target[text_key] = next_value
+        else:
+            target.pop(text_key, None)
+
+
+def add_count_map(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key, raw in (source or {}).items():
+        text_key = str(key or "")
+        value = safe_int(raw, 0)
+        if text_key and value > 0:
+            target[text_key] = safe_int(target.get(text_key), 0) + value
+
+
+def diversity_task_record(
+    task_id: str,
+    task_dir: Path,
+    selection_sections: list[dict[str, Any]],
+    usage_summary: dict[str, Any],
+) -> dict[str, Any]:
+    opening = (usage_summary.get("opening_first_clips") or [{}])[0] if usage_summary.get("opening_first_clips") else {}
+    opening_story_counts: dict[str, int] = {}
+    opening_asset_counts: dict[str, int] = {}
+    opening_child_counts: dict[str, int] = {}
+    opening_first_counts: dict[str, int] = {}
+    if opening:
+        count_map_increment(opening_story_counts, str(opening.get("story_unit_id") or opening.get("shot_id") or ""))
+        count_map_increment(opening_asset_counts, str(opening.get("asset_id") or ""))
+        count_map_increment(opening_child_counts, str(opening.get("child_physical_shot_id") or ""))
+        count_map_increment(opening_first_counts, str(opening.get("signature") or ""))
+    return {
+        "task_id": task_id,
+        "task_dir": str(task_dir),
+        "updated_at": iso_now(),
+        "opening_first_clip": opening,
+        "opening_story_unit_counts": opening_story_counts,
+        "opening_asset_counts": opening_asset_counts,
+        "opening_child_counts": opening_child_counts,
+        "opening_first_clip_counts": opening_first_counts,
+        "story_unit_counts": usage_summary.get("story_unit_counts") or {},
+        "asset_counts": usage_summary.get("asset_counts") or {},
+        "selected_clip_count": sum(len(item.get("selected_clips") or []) for item in selection_sections),
+        "below_min_clip_duration_count": usage_summary.get("below_min_clip_duration_count", 0),
+    }
+
+
+def update_diversity_state_with_selection(
+    state: dict[str, Any],
+    task_id: str,
+    task_dir: Path,
+    selection_sections: list[dict[str, Any]],
+    usage_summary: dict[str, Any],
+) -> dict[str, Any]:
+    output = dict(state or empty_diversity_state())
+    for key in (
+        "tasks",
+        "opening_story_unit_counts",
+        "opening_asset_counts",
+        "opening_child_counts",
+        "opening_first_clip_counts",
+        "story_unit_counts",
+        "asset_counts",
+    ):
+        if not isinstance(output.get(key), dict):
+            output[key] = {}
+    previous = output["tasks"].get(task_id)
+    if isinstance(previous, dict):
+        subtract_count_map(output["opening_story_unit_counts"], previous.get("opening_story_unit_counts") or {})
+        subtract_count_map(output["opening_asset_counts"], previous.get("opening_asset_counts") or {})
+        subtract_count_map(output["opening_child_counts"], previous.get("opening_child_counts") or {})
+        subtract_count_map(output["opening_first_clip_counts"], previous.get("opening_first_clip_counts") or {})
+        subtract_count_map(output["story_unit_counts"], previous.get("story_unit_counts") or {})
+        subtract_count_map(output["asset_counts"], previous.get("asset_counts") or {})
+    record = diversity_task_record(task_id, task_dir, selection_sections, usage_summary)
+    output["tasks"][task_id] = record
+    add_count_map(output["opening_story_unit_counts"], record.get("opening_story_unit_counts") or {})
+    add_count_map(output["opening_asset_counts"], record.get("opening_asset_counts") or {})
+    add_count_map(output["opening_child_counts"], record.get("opening_child_counts") or {})
+    add_count_map(output["opening_first_clip_counts"], record.get("opening_first_clip_counts") or {})
+    add_count_map(output["story_unit_counts"], record.get("story_unit_counts") or {})
+    add_count_map(output["asset_counts"], record.get("asset_counts") or {})
+    output["updated_at"] = iso_now()
+    output["task_count"] = len(output["tasks"])
+    return output
+
+
+def diversity_state_without_task(state: dict[str, Any], task_id: str) -> dict[str, Any]:
+    if not task_id or not isinstance(state, dict):
+        return state
+    tasks = state.get("tasks") or {}
+    previous = tasks.get(task_id)
+    if not isinstance(previous, dict):
+        return state
+    output = dict(state)
+    output["tasks"] = dict(tasks)
+    output["tasks"].pop(task_id, None)
+    for key in (
+        "opening_story_unit_counts",
+        "opening_asset_counts",
+        "opening_child_counts",
+        "opening_first_clip_counts",
+        "story_unit_counts",
+        "asset_counts",
+    ):
+        output[key] = dict(output.get(key) or {})
+    subtract_count_map(output["opening_story_unit_counts"], previous.get("opening_story_unit_counts") or {})
+    subtract_count_map(output["opening_asset_counts"], previous.get("opening_asset_counts") or {})
+    subtract_count_map(output["opening_child_counts"], previous.get("opening_child_counts") or {})
+    subtract_count_map(output["opening_first_clip_counts"], previous.get("opening_first_clip_counts") or {})
+    subtract_count_map(output["story_unit_counts"], previous.get("story_unit_counts") or {})
+    subtract_count_map(output["asset_counts"], previous.get("asset_counts") or {})
+    output["task_count"] = len(output["tasks"])
+    return output
+
+
+def batch_diversity_summary(state: dict[str, Any] | None, path: Path | None) -> dict[str, Any]:
+    if not state:
+        return {"enabled": False, "state_path": str(path) if path else ""}
+    return {
+        "enabled": path is not None,
+        "state_path": str(path) if path else "",
+        "task_count": len(state.get("tasks") or {}),
+        "opening_story_unit_counts": count_map_from(state.get("opening_story_unit_counts")),
+        "opening_asset_counts": count_map_from(state.get("opening_asset_counts")),
+        "opening_child_counts": count_map_from(state.get("opening_child_counts")),
+        "opening_first_clip_counts": count_map_from(state.get("opening_first_clip_counts")),
+    }
+
+
+def locked_update_diversity_state(
+    path: Path,
+    task_id: str,
+    task_dir: Path,
+    selection_sections: list[dict[str, Any]],
+    usage_summary: dict[str, Any],
+) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            state = update_diversity_state_file(
+                path,
+                task_id=task_id,
+                task_dir=task_dir,
+                selection_sections=selection_sections,
+                usage_summary=usage_summary,
+            )
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return state
+
+
+def update_diversity_state_file(
+    path: Path,
+    task_id: str,
+    task_dir: Path,
+    selection_sections: list[dict[str, Any]],
+    usage_summary: dict[str, Any],
+) -> dict[str, Any]:
+    state = load_diversity_state(path)
+    state = update_diversity_state_with_selection(
+        state,
+        task_id=task_id,
+        task_dir=task_dir,
+        selection_sections=selection_sections,
+        usage_summary=usage_summary,
+    )
+    write_json_atomic(path, state)
+    return state
 
 
 def compact_child_for_llm(child: dict[str, Any], index: int, section: dict[str, Any]) -> dict[str, Any]:
@@ -2711,14 +3367,23 @@ def build_selection_section(
     candidates: list[dict[str, Any]],
     used_counts: dict[str, int],
     max_clips_per_section: int,
+    min_clip_duration_s: float,
     records_by_id: dict[str, dict[str, Any]],
     selection_overrides: dict[str, Any],
+    diversity_state: dict[str, Any] | None = None,
     llm_decision: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     warnings: list[str] = []
     manual_reviews: list[str] = []
     target = float(section.get("audio_duration_s") or 0)
-    adjusted = [adjusted_candidate(item, section, used_counts) for item in candidates]
+    opening_child_counts = diversity_counts_from_state(diversity_state, "opening_child_counts")
+    prepped_candidates: list[dict[str, Any]] = []
+    for item in candidates:
+        candidate = dict(item)
+        if str(section.get("role") or "") == "opening" and opening_child_counts:
+            candidate["batch_opening_child_counts"] = opening_child_counts
+        prepped_candidates.append(candidate)
+    adjusted = [adjusted_candidate(item, section, used_counts, diversity_state) for item in prepped_candidates]
     adjusted.sort(key=lambda item: candidate_score(item), reverse=True)
     hard_visual_fallback = False
 
@@ -2726,7 +3391,7 @@ def build_selection_section(
     has_override = selected_override is not None
     llm_selected: list[dict[str, Any]] | None = None
     if selected_override is not None:
-        selected = [adjusted_candidate(item, section, used_counts) for item in selected_override]
+        selected = [adjusted_candidate(item, section, used_counts, diversity_state) for item in selected_override]
         strategy = "manual_selection_override"
         selection_reason = "使用人工锁片 selection_overrides.json，脚本只校验时长和风险。"
     else:
@@ -2803,11 +3468,24 @@ def build_selection_section(
                 selection_reason = f"单条长素材语义命中不足或不存在，改用最多 {max_clips_per_section} 条同语义候选拼接。"
 
     if selected_override is None:
-        selected, top_up_note = top_up_selection(selected, adjusted, section, max_clips_per_section)
+        selected, opening_diversity_note = diversify_opening_seed(selected, adjusted, section)
+        if opening_diversity_note and opening_diversity_note not in selection_reason:
+            selection_reason += opening_diversity_note
+        selected, top_up_note = top_up_selection(selected, adjusted, section, max_clips_per_section, min_clip_duration_s)
         if top_up_note and top_up_note not in selection_reason:
             selection_reason += top_up_note
 
-    selected_clips, selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section)
+    selected_clips, selected_duration_s, missing_duration_s = allocate_clip_plan(selected, section, min_clip_duration_s)
+    section_usage_summary = clip_usage_summary(
+        [
+            {
+                "section_id": section.get("section_id"),
+                "role": section.get("role"),
+                "selected_clips": selected_clips,
+            }
+        ]
+    )
+    below_min_count = int(section_usage_summary.get("below_min_clip_duration_count") or 0)
     if not selected_clips:
         message = f"{section.get('section_id')}: 没有可用候选，缺口 {target:.3f}s"
         warnings.append(message)
@@ -2818,6 +3496,13 @@ def build_selection_section(
         message = (
             f"{section.get('section_id')}: 已选素材总时长 {selected_duration_s:.3f}s "
             f"短于口播 {target:.3f}s，缺口 {missing_duration_s:.3f}s；默认不 loop"
+        )
+        warnings.append(message)
+        manual_reviews.append(message)
+    if below_min_count:
+        message = (
+            f"{section.get('section_id')}: {below_min_count} 个 clip 低于最短展示 "
+            f"{effective_min_clip_duration(section, min_clip_duration_s):.3f}s，素材不足或尾段短缺时保留并复核"
         )
         warnings.append(message)
         manual_reviews.append(message)
@@ -2858,6 +3543,24 @@ def build_selection_section(
         "selected_clips": selected_clips,
         "selected_duration_s": selected_duration_s,
         "missing_duration_s": missing_duration_s,
+        "min_clip_duration_s": effective_min_clip_duration(section, min_clip_duration_s),
+        "diversity": {
+            "same_task_usage_before": {
+                "story_unit_counts": {
+                    key.removeprefix("story_unit:"): value
+                    for key, value in used_counts.items()
+                    if key.startswith("story_unit:") and value > 0
+                },
+                "asset_counts": {
+                    key.removeprefix("asset:"): value
+                    for key, value in used_counts.items()
+                    if key.startswith("asset:") and value > 0
+                },
+            },
+            "batch_usage_available": bool(diversity_state),
+            "section_usage_summary": section_usage_summary,
+            "notes": duplicate_policy_notes(section_usage_summary, missing_duration_s > 0.08),
+        },
         "rejected_candidates": build_rejected_candidates(adjusted, section, selected),
         "confidence": confidence,
         "requires_review": requires_review,
@@ -2975,6 +3678,8 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=14)
     parser.add_argument("--pool-k", type=int, default=36)
     parser.add_argument("--max-clips-per-section", type=int, default=6)
+    parser.add_argument("--min-clip-duration-s", type=float, default=DEFAULT_MIN_CLIP_DURATION_S)
+    parser.add_argument("--batch-diversity-state", default="")
     parser.add_argument("--timeline-selection", default="timeline_selection.json")
     parser.add_argument("--selection-overrides", default="")
     parser.add_argument("--selection-planner", default="auto", choices=["auto", "off", "minimax-m3"])
@@ -2997,6 +3702,7 @@ def main() -> int:
     index_path = as_abs(args.index)
     voice_wav = as_abs(args.voice_wav)
     task_dir = as_abs(args.task_dir) if args.task_dir else audio_sections_path.parent
+    task_root = task_root_for_context(task_dir)
     output = as_abs(args.output, task_dir) if args.output == "preview_no_subtitles.mp4" else as_abs(args.output)
     timeline_selection_path = as_abs(args.timeline_selection, task_dir)
     candidate_sections_path = task_dir / "candidate_sections.json"
@@ -3005,6 +3711,8 @@ def main() -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     audio_sections = load_json(audio_sections_path)
+    task_id = task_identity(task_dir, audio_sections)
+    diversity_state_path = resolve_batch_diversity_state_path(args.batch_diversity_state, task_dir)
     index = load_json(index_path)
     index, intake_boundary_contract = ensure_child_physical_shots(index, index_path)
     records_by_id = {str(record.get("shot_id")): record for record in index.get("records", [])}
@@ -3013,6 +3721,7 @@ def main() -> int:
     if not sections:
         raise ValueError("audio_sections has no sections")
 
+    raw_candidate_sections: list[dict[str, Any]] = []
     candidate_sections: list[dict[str, Any]] = []
 
     for section in sections:
@@ -3035,16 +3744,34 @@ def main() -> int:
             max_per_asset=0,
             pool_k=args.pool_k,
         )
-        adjusted = [adjusted_candidate(item, section, {}) for item in candidates]
-        adjusted = expand_with_theme_candidates(adjusted, index.get("records", []), section, {})
+        raw_candidate_sections.append(
+            {
+                "section": section,
+                "query": query,
+                "search_role": role,
+                "candidates": candidates,
+            }
+        )
+
+    diversity_lock_file = acquire_diversity_state_lock(diversity_state_path)
+    if diversity_lock_file is not None:
+        atexit.register(release_diversity_state_lock, diversity_lock_file)
+    diversity_state = load_diversity_state(diversity_state_path) if diversity_state_path else {}
+    scoring_diversity_state = diversity_state_without_task(diversity_state, task_id) if diversity_state else {}
+
+    for raw_candidate_section in raw_candidate_sections:
+        section = raw_candidate_section["section"]
+        candidates = raw_candidate_section["candidates"]
+        adjusted = [adjusted_candidate(item, section, {}, scoring_diversity_state) for item in candidates]
+        adjusted = expand_with_theme_candidates(adjusted, index.get("records", []), section, {}, diversity_state=scoring_diversity_state)
         adjusted.sort(key=lambda item: candidate_score(item), reverse=True)
         candidate_sections.append(
             {
                 "section_id": section.get("section_id"),
                 "timeline_order": section.get("timeline_order"),
                 "role": section.get("role"),
-                "query": query,
-                "search_role": role,
+                "query": raw_candidate_section["query"],
+                "search_role": raw_candidate_section["search_role"],
                 "audio_duration_s": float(section.get("audio_duration_s") or 0),
                 "candidate_count": len(adjusted),
                 "candidates": adjusted,
@@ -3071,6 +3798,9 @@ def main() -> int:
             "prefer_long_material": True,
             "loop_default": False,
             "intra_story_unit_selection": "child_physical_shot_text_and_order_v1",
+            "min_clip_duration_s": args.min_clip_duration_s,
+            "same_task_unit_reuse": "penalize_story_unit_and_asset_allow_if_shortage",
+            "batch_opening_diversity": batch_diversity_summary(scoring_diversity_state, diversity_state_path),
         },
         "sections": candidate_sections,
         "qa": {
@@ -3167,16 +3897,45 @@ def main() -> int:
             candidates=candidate_section.get("candidates") or [],
             used_counts=used_counts,
             max_clips_per_section=args.max_clips_per_section,
+            min_clip_duration_s=args.min_clip_duration_s,
             records_by_id=records_by_id,
             selection_overrides=selection_overrides,
+            diversity_state=scoring_diversity_state,
             llm_decision=llm_plan_by_section.get(section_id),
         )
         selection_warnings.extend(select_warnings)
         selection_manual_reviews.extend(select_manual_reviews)
         selection_sections.append(selection_section)
         for selected_item in selection_section.get("selected_clips") or []:
-            used_counts[str(selected_item.get("shot_id") or "")] = used_counts.get(str(selected_item.get("shot_id") or ""), 0) + 1
-            used_counts[str(selected_item.get("asset_id") or "")] = used_counts.get(str(selected_item.get("asset_id") or ""), 0) + 1
+            shot_id = str(selected_item.get("shot_id") or "")
+            asset_id = asset_key(selected_item)
+            unit_id = story_unit_key(selected_item)
+            count_map_increment(used_counts, shot_id)
+            if unit_id:
+                count_map_increment(used_counts, f"story_unit:{unit_id}")
+            if asset_id:
+                count_map_increment(used_counts, f"asset:{asset_id}")
+
+    selection_usage_summary = clip_usage_summary(selection_sections)
+    selection_material_shortage = (
+        safe_float(selection_usage_summary.get("below_min_clip_duration_count")) > 0
+        or round(sum(float(item.get("missing_duration_s") or 0) for item in selection_sections), 3) > 0.08
+    )
+    for note in duplicate_policy_notes(selection_usage_summary, selection_material_shortage):
+        selection_warnings.append(note)
+    if diversity_state_path:
+        try:
+            diversity_state = update_diversity_state_file(
+                diversity_state_path,
+                task_id=task_id,
+                task_dir=task_root,
+                selection_sections=selection_sections,
+                usage_summary=selection_usage_summary,
+            )
+        except Exception as exc:
+            message = f"批次多样性状态写入失败：{exc}"
+            selection_warnings.append(message)
+            selection_manual_reviews.append(message)
 
     selection_payload = {
         "schema_version": "1.0.0",
@@ -3213,8 +3972,11 @@ def main() -> int:
             "multimodal_llm_default": False,
             "prefer_single_long_story_unit": True,
             "max_clips_per_section": args.max_clips_per_section,
+            "min_clip_duration_s": args.min_clip_duration_s,
             "loop_default": False,
-            "material_shortage_action": "manual_review",
+            "material_shortage_action": "allow_strategy_reuse_with_manual_review",
+            "same_task_unit_reuse": "penalize_story_unit_and_asset_allow_if_shortage",
+            "batch_opening_diversity": batch_diversity_summary(diversity_state, diversity_state_path),
             "intra_story_unit_selection": "child_physical_shot_text_and_order_v1",
         },
         "sections": selection_sections,
@@ -3229,16 +3991,27 @@ def main() -> int:
             ),
             "requires_review_count": sum(1 for item in selection_sections if item.get("requires_review")),
             "missing_duration_s": round(sum(float(item.get("missing_duration_s") or 0) for item in selection_sections), 3),
+            "min_clip_duration_s": args.min_clip_duration_s,
+            "below_min_clip_duration_count": selection_usage_summary.get("below_min_clip_duration_count", 0),
+            "unique_story_unit_count": selection_usage_summary.get("unique_story_unit_count", 0),
+            "unique_asset_count": selection_usage_summary.get("unique_asset_count", 0),
+            "repeated_story_unit_count": len(selection_usage_summary.get("repeated_story_units") or {}),
+            "repeated_asset_count": len(selection_usage_summary.get("repeated_assets") or {}),
+            "opening_first_clips": selection_usage_summary.get("opening_first_clips", []),
+            "material_reuse_policy": "素材少时允许复用，但同条/批次均降权并记录 QA",
         },
         "qa": {
             "status": qa_status_from(selection_warnings, selection_manual_reviews),
             "warnings": selection_warnings,
             "manual_review": selection_manual_reviews,
             "intake_boundary_contract": intake_boundary_contract,
+            "diversity_summary": selection_usage_summary,
         },
         "next_consumers": ["voah-video-fill"],
     }
     write_json(timeline_selection_path, selection_payload)
+    release_diversity_state_lock(diversity_lock_file)
+    diversity_lock_file = None
 
     timeline_sections: list[dict[str, Any]] = []
     rendered_parts: list[Path] = []
@@ -3297,6 +4070,8 @@ def main() -> int:
                     "planned_source_start_offset_s": selected_item.get("source_start_offset_s"),
                     "planned_source_end_offset_s": selected_item.get("source_end_offset_s"),
                     "planned_duration_s": selected_item.get("planned_duration_s"),
+                    "min_clip_duration_s": selected_item.get("min_clip_duration_s"),
+                    "below_min_clip_duration": bool(selected_item.get("below_min_clip_duration")),
                     "visual_summary": selected_item.get("visual_summary"),
                     "source_meaning": selected_item.get("source_meaning"),
                     "selling_points": selected_item.get("selling_points", []),
@@ -3306,6 +4081,7 @@ def main() -> int:
                     "selection_risks": selected_item.get("selection_risks", []),
                     "semantic_hits": selected_item.get("semantic_hits", []),
                     "semantic_score": selected_item.get("semantic_score"),
+                    "batch_opening_child_reuse_count": selected_item.get("batch_opening_child_reuse_count", 0),
                     "requires_visual_review": bool(selected_item.get("requires_visual_review")),
                     "allow_loop": False,
                     "loop_policy": "disabled_by_default",
@@ -3345,6 +4121,14 @@ def main() -> int:
         fill_warnings.append(f"preview duration {preview_duration}s differs from voice duration {voice_duration}s")
         fill_manual_reviews.append(f"preview_duration_s={preview_duration} differs from voice_duration_s={voice_duration}")
 
+    fill_usage_summary = clip_usage_summary(timeline_sections, clip_key="clips")
+    fill_material_shortage = (
+        safe_float(fill_usage_summary.get("below_min_clip_duration_count")) > 0
+        or round(sum(float(item.get("missing_duration_s") or 0) for item in timeline_sections), 3) > 0.08
+    )
+    for note in duplicate_policy_notes(fill_usage_summary, fill_material_shortage):
+        fill_warnings.append(note)
+
     timeline_payload = {
         "schema_version": "1.0.0",
         "stage": "voah_video_fill_from_audio_section_retrieval",
@@ -3380,6 +4164,14 @@ def main() -> int:
                 if item.get("child_physical_shot_id")
             ),
             "missing_duration_s": round(sum(float(item.get("missing_duration_s") or 0) for item in timeline_sections), 3),
+            "min_clip_duration_s": args.min_clip_duration_s,
+            "below_min_clip_duration_count": fill_usage_summary.get("below_min_clip_duration_count", 0),
+            "unique_story_unit_count": fill_usage_summary.get("unique_story_unit_count", 0),
+            "unique_asset_count": fill_usage_summary.get("unique_asset_count", 0),
+            "repeated_story_unit_count": len(fill_usage_summary.get("repeated_story_units") or {}),
+            "repeated_asset_count": len(fill_usage_summary.get("repeated_assets") or {}),
+            "opening_first_clips": fill_usage_summary.get("opening_first_clips", []),
+            "material_reuse_policy": "素材少时允许复用，但同条/批次均降权并记录 QA",
         },
         "timeline": timeline_sections,
         "media_probe": probe_media(output),
@@ -3388,6 +4180,8 @@ def main() -> int:
             "warnings": fill_warnings,
             "manual_review": fill_manual_reviews,
             "intake_boundary_contract": intake_boundary_contract,
+            "diversity_summary": fill_usage_summary,
+            "batch_diversity": batch_diversity_summary(diversity_state, diversity_state_path),
         },
         "next_consumers": ["voah-caption-plan", "hyperframes-subtitle-burn"],
     }

@@ -326,7 +326,7 @@ voah config set tts.provider minimax-official   # 默认 provider,可切 gpt-sov
 命令：
 
 ```bash
-voah product create --slug huaxizi-qidian --name 花西子气垫
+voah product create --slug huaxizi-qidian --name 花西子气垫 --category 防晒气垫
 voah product list
 voah product inspect huaxizi-qidian
 ```
@@ -341,6 +341,20 @@ data/products/{product_slug}/blocked_terms.json
 ```
 
 产品库不是素材入库产物，但会被 `copy run` 消费。
+
+`product.json` 使用 `schema_version = "voah.product.v1"`，基础字段包括：
+
+```json
+{
+  "slug": "huaxizi-qidian",
+  "name": "花西子气垫",
+  "brand": "花西子",
+  "category": "防晒气垫",
+  "cta": "点击下单"
+}
+```
+
+`category` 是人工维护的产品品类信号。入库后的卖点提炼和任务文案 prompt 可以读取它，并使用“品类核心属性优先”的通用规则；代码和 prompt 不写死具体品类知识。
 
 ### 5.5 `voah intake run`
 
@@ -419,6 +433,8 @@ cache/voah_tasks/{product_slug}/{timestamp}_{task_slug}/
   task_manifest.json
   logs/
 ```
+
+`task_brief.json` 的 `product` 与 `product_library` 会带上产品库的 `category`。如果产品名和品牌为空，下游只能使用人工 `category` 生成泛称；不能从 slug 猜产品品类。
 
 ### 5.6.1 Task Worktree
 
