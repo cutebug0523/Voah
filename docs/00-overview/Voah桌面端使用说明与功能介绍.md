@@ -38,34 +38,32 @@ cache/voah_tasks/huaxizi-qidian/20260607_023341_selected6_full_pipeline_v1/hyper
 项目目录：
 
 ```text
-/Users/noah/混剪/desktop/voah-app
+/Users/noah/混剪/desktop/voah-studio
 ```
 
 开发模式：
 
 ```bash
-cd /Users/noah/混剪/desktop/voah-app
+cd /Users/noah/混剪/desktop/voah-studio
 npm run dev
-npm run electron:local
 ```
 
 浏览器调试模式：
 
 ```bash
-cd /Users/noah/混剪/desktop/voah-app
-node scripts/dev-bridge.mjs
-npm run dev
+cd /Users/noah/混剪/desktop/voah-studio
+npm run dev:vite
 ```
 
 然后打开：
 
 ```text
-http://127.0.0.1:5173/
+http://127.0.0.1:5174/
 ```
 
 注意：
 
-- `dev-bridge` 只用于浏览器调试 Electron main 侧能力。
+- `npm run dev` 会同时启动 Vite 和 Electron。
 - 正式本地操作优先用 Electron。
 - API key 不写入仓库；桌面端会读本机私有配置。
 

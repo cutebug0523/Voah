@@ -318,11 +318,10 @@ ffmpeg / HyperFrames 后续接入
 MVP 第一版可以用本地 JSON store 代替 SQLite，但代码结构必须保留迁移到 SQLite 的边界：
 
 ```text
-StoreService
 ArtifactService
 JobQueueService
 WorkerRunner
-ProductionRecipe
+VoahCliService
 ```
 
 Renderer 不直接跑 worker，不直接写任意文件。
