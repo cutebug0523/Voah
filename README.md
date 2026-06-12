@@ -40,7 +40,7 @@
 | **产物先于界面** | 每一步落盘，不靠进程内变量或 UI 状态承接 |
 | **可追溯 · 可复跑** | 每个产物记录 inputs/outputs/QA/下一步消费者，支持从任意阶段断点重跑 |
 | **Secret 不进产物** | API key 只从本机私有配置读取，绝不写入 manifest/日志/示例 |
-| **QA Gate 守门** | 时长、碎帧、字幕同源、素材对齐、Omni 对齐全部校验通过才放行 |
+| **QA Gate 守门** | 默认做时长、碎帧、字幕同源、素材覆盖等本地校验；高成本 Omni 对齐需显式开启 |
 
 ## 🏗️ 生产管线
 
@@ -68,10 +68,16 @@ flowchart LR
 - **🔍 语义召回**：多通道向量（视频/画面/语义/ASR/OCR/标签）粗召回 → MiniMax M3 精选 → required_visual 硬过滤 → child 级精准对位
 - **✍️ 文案 + 配音**：MiniMax M3 写稿（字数→时长校准）→ MiniMax TTS（中文读法归一、营销数字处理）
 - **🔥 字幕渲染**：HyperFrames 工程化字幕（动效/高亮）+ ffmpeg PNG 叠加兜底，像素级换行不溢出
-- **🛡️ QA Gate**：时长、碎帧、字幕同源、素材覆盖、Omni 音画对齐全维度校验
+- **🛡️ QA Gate**：时长、碎帧、字幕同源、素材覆盖等本地校验；需要时可用 `--run-omni` 追加 Omni 音画对齐
 - **📦 批量队列**：并发上限、单条失败不阻塞、断点续跑、合格成片清单导出
 
 ## 🚀 快速开始
+
+没有全局安装 `voah` 时，把下面命令里的 `voah` 替换成：
+
+```bash
+node cli/src/bin/voah.js
+```
 
 ```bash
 # 1. 环境自检（工具链 + 模型 key）
@@ -91,8 +97,10 @@ voah batch run --product my-product --intake-run <intake_dir> --count 20 --concu
 桌面端（Electron 工作台，给员工的低心智界面）：
 
 ```bash
-cd desktop/voah-studio && ./dev.sh
+./dev.sh
 ```
+
+当前唯一桌面端是 `desktop/voah-studio`；历史实验壳已删除。桌面端只负责提交参数、展示 manifest/日志和调 CLI，不保留第二套生产编排。
 
 ## 📟 命令总览
 
@@ -106,6 +114,14 @@ voah copy|tts|retrieve|subtitle|render|qa run   单阶段复跑
 voah tts preview                     配音试听
 voah batch run|pause|resume          批量队列
 voah resource upload|cleanup         临时 OSS 资源层
+```
+
+## 🧪 验证
+
+```bash
+cd cli && npm test
+cd desktop/voah-studio && node --test test/voahService.test.js && npm run build
+python3 -m unittest discover -s tests -p 'test_voah_*.py'
 ```
 
 ## 🧩 技术栈

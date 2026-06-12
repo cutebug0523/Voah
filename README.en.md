@@ -40,7 +40,7 @@ It's not "let AI cut one clip for you" — it's an **industrial batch-production
 | **Artifacts before UI** | Every step is persisted to disk, never carried in process memory or UI state |
 | **Traceable & resumable** | Each artifact records inputs/outputs/QA/next-consumers; resume from any stage |
 | **Secrets never in artifacts** | API keys are read only from local private config — never written to manifests/logs/examples |
-| **QA Gate guards export** | Duration, carry-frames, subtitle-source, shot alignment, Omni alignment must all pass |
+| **QA Gate guards export** | Local checks cover duration, carry-frames, subtitle source, and footage coverage by default; high-cost Omni alignment is opt-in |
 
 ## 🏗️ Pipeline
 
@@ -68,10 +68,16 @@ flowchart LR
 - **🔍 Semantic retrieval**: multi-channel vectors (video/visual/meaning/ASR/OCR/tags) → MiniMax M3 selection → required_visual hard filter → child-level precise alignment
 - **✍️ Script + voiceover**: MiniMax M3 scripting (char→duration calibration) → MiniMax TTS (Chinese reading normalization, marketing-number handling)
 - **🔥 Subtitle render**: HyperFrames engineered captions (motion/highlight) + ffmpeg PNG overlay fallback, pixel-accurate wrapping with no overflow
-- **🛡️ QA Gate**: duration, carry-frames, subtitle-source, coverage, Omni audio-visual alignment — fully validated
+- **🛡️ QA Gate**: local validation for duration, carry-frames, subtitle-source, and coverage; add `--run-omni` when final Omni audio-visual alignment is needed
 - **📦 Batch queue**: concurrency cap, single-failure isolation, resume, qualified-output export
 
 ## 🚀 Quick start
+
+If `voah` is not installed globally, replace `voah` below with:
+
+```bash
+node cli/src/bin/voah.js
+```
 
 ```bash
 # 1. Environment check (toolchain + model keys)
@@ -91,8 +97,10 @@ voah batch run --product my-product --intake-run <intake_dir> --count 20 --concu
 Desktop (Electron workbench — low-cognitive UI for operators):
 
 ```bash
-cd desktop/voah-studio && ./dev.sh
+./dev.sh
 ```
+
+The only maintained desktop app is `desktop/voah-studio`; the legacy experimental shell has been removed. The desktop app submits parameters, reads manifests/logs, and invokes the CLI — it does not keep a second production orchestrator.
 
 ## 📟 Commands
 
@@ -106,6 +114,14 @@ voah copy|tts|retrieve|subtitle|render|qa run   single-stage rerun
 voah tts preview                     voiceover preview
 voah batch run|pause|resume          batch queue
 voah resource upload|cleanup         ephemeral OSS resource layer
+```
+
+## 🧪 Verify
+
+```bash
+cd cli && npm test
+cd desktop/voah-studio && node --test test/voahService.test.js && npm run build
+python3 -m unittest discover -s tests -p 'test_voah_*.py'
 ```
 
 ## 🧩 Stack

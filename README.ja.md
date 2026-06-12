@@ -40,7 +40,7 @@
 | **成果物が UI に先行** | 各ステップはディスクに保存され、プロセス内変数や UI 状態に依存しない |
 | **追跡・再実行可能** | 各成果物が inputs/outputs/QA/次の消費者を記録し、任意の段階から再開可能 |
 | **シークレットは成果物に入れない** | API キーはローカルの私的設定からのみ読み込み、manifest/ログ/例には決して書かない |
-| **QA ゲートが門番** | 尺・コマ混入・字幕同源・素材整合・Omni 整合のすべてが通過してはじめて出力 |
+| **QA ゲートが門番** | デフォルトでは尺・コマ混入・字幕同源・素材カバレッジをローカル検証し、高コストな Omni 整合は明示的に有効化 |
 
 ## 🏗️ パイプライン
 
@@ -68,10 +68,16 @@ flowchart LR
 - **🔍 意味検索**：マルチチャネルベクトル（動画/映像/意味/ASR/OCR/タグ）→ MiniMax M3 選定 → required_visual ハードフィルタ → child レベル精密整合
 - **✍️ 台本 + ナレーション**：MiniMax M3 執筆（文字数→尺キャリブレーション）→ MiniMax TTS（中国語読み正規化、マーケティング数値処理）
 - **🔥 字幕レンダリング**：HyperFrames 工学的字幕（モーション/ハイライト）+ ffmpeg PNG オーバーレイのフォールバック、ピクセル単位の折り返しでオーバーフローなし
-- **🛡️ QA ゲート**：尺・コマ混入・字幕同源・カバレッジ・Omni 音画整合をフル検証
+- **🛡️ QA ゲート**：尺・コマ混入・字幕同源・カバレッジをローカル検証し、必要な場合は `--run-omni` で Omni 音画整合を追加
 - **📦 バッチキュー**：並列上限、単一失敗の隔離、再開、合格成果物リスト出力
 
 ## 🚀 クイックスタート
+
+`voah` をグローバルにインストールしていない場合は、下の `voah` を次に置き換えてください。
+
+```bash
+node cli/src/bin/voah.js
+```
 
 ```bash
 # 1. 環境チェック（ツールチェーン + モデルキー）
@@ -91,8 +97,10 @@ voah batch run --product my-product --intake-run <intake_dir> --count 20 --concu
 デスクトップ（Electron ワークベンチ — オペレーター向けの低認知負荷 UI）：
 
 ```bash
-cd desktop/voah-studio && ./dev.sh
+./dev.sh
 ```
+
+現在メンテナンスされているデスクトップアプリは `desktop/voah-studio` のみです。旧実験シェルは削除済みです。デスクトップはパラメータ送信、manifest/ログ表示、CLI 呼び出しだけを担当し、第二の制作オーケストレーターは持ちません。
 
 ## 📟 コマンド一覧
 
@@ -106,6 +114,14 @@ voah copy|tts|retrieve|subtitle|render|qa run   単一段階の再実行
 voah tts preview                     ナレーション試聴
 voah batch run|pause|resume          バッチキュー
 voah resource upload|cleanup         一時 OSS リソース層
+```
+
+## 🧪 検証
+
+```bash
+cd cli && npm test
+cd desktop/voah-studio && node --test test/voahService.test.js && npm run build
+python3 -m unittest discover -s tests -p 'test_voah_*.py'
 ```
 
 ## 🧩 技術スタック
