@@ -1112,6 +1112,10 @@ function defaultStudioSettings() {
       font: "smiley-sans",
       font_source: path.join(STUDIO_FONTS_DIR, "SmileySans-Oblique.otf"),
       font_label: "得意黑"
+    },
+    render: {
+      hyperframes_workers: "auto",
+      gpu: "auto"
     }
   };
 }
@@ -1135,6 +1139,10 @@ function mergeStudioSettings(settings) {
       ...(source.subtitle || {}),
       ...resolveSubtitleFontSettings(source.subtitle),
       preset: source.subtitle?.preset === "方案1" ? "songti_white_gold_lower" : source.subtitle?.preset || defaults.subtitle.preset
+    },
+    render: {
+      ...defaults.render,
+      ...(source.render || {})
     }
   };
 }
@@ -1360,7 +1368,7 @@ function mergeVoices(primary, remote) {
 
 async function readSecret(key) {
   const envKey = keyToEnvName(key);
-  const secrets = await new SecretService().readSecrets();
+  const secrets = await new SecretService({ workspace: WORKSPACE }).readSecrets();
   return secrets[envKey] || "";
 }
 

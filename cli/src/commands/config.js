@@ -1,17 +1,20 @@
 import { parseArgs } from "../core/args.js";
 import { UserError } from "../core/errors.js";
+import { resolveWorkspace } from "../core/paths.js";
 import { SecretService } from "../services/secretService.js";
 
 export async function runConfigCommand({ argv }) {
   const [subcommand, ...rest] = argv;
-  const service = new SecretService();
   if (!subcommand || subcommand === "get") {
+    const options = parseArgs(rest, { aliases: { w: "workspace" } });
+    const service = new SecretService({ workspace: resolveWorkspace(options.workspace) });
     const config = await service.publicConfig();
     console.log(JSON.stringify(config, null, 2));
     return;
   }
   if (subcommand === "set") {
     const options = parseArgs(rest, { aliases: { v: "value" } });
+    const service = new SecretService({ workspace: resolveWorkspace(options.workspace) });
     const key = options._[0];
     if (!key) {
       throw new UserError("用法：voah config set <key> [value]");

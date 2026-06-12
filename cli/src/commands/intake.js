@@ -29,7 +29,7 @@ export async function runIntakeCommand({ argv }) {
   const sourceDir = resolvePath(requireOption(options, "source-dir"), workspace);
   const label = options.label || "cli_intake_v1";
   const maxVideos = optionalInt(options.limit ?? options["max-videos"], 0);
-  const secretService = new SecretService();
+  const secretService = new SecretService({ workspace });
   const runner = new WorkerRunner({ workspace, secretService });
   const result = await runner.run({
     command: "python3",
@@ -50,7 +50,7 @@ export async function runIntakeCommand({ argv }) {
       "--run-label",
       label,
       "--mode",
-      options.mode || (subcommand === "add" ? "add" : "add"),
+      options.mode || (subcommand === "add" ? "add" : "run"),
       ...(options["scene-threshold"] ? ["--scene-threshold", String(optionalNumber(options["scene-threshold"], 0))] : []),
       ...(options["candidate-min-duration"] ? ["--candidate-min-duration", String(optionalNumber(options["candidate-min-duration"], 0))] : []),
       ...(options["min-physical-duration"] ? ["--min-physical-duration", String(optionalNumber(options["min-physical-duration"], 0))] : []),
@@ -84,7 +84,7 @@ export async function runIntakeCommand({ argv }) {
 
 async function refineProductContextAfterIntake({ workspace, productSlug, productName, category, runDir }) {
   const productDir = path.join(workspace, "data", "products", productSlug);
-  const runner = new WorkerRunner({ workspace, secretService: new SecretService() });
+  const runner = new WorkerRunner({ workspace, secretService: new SecretService({ workspace }) });
   try {
     await runner.run({
       command: "python3",

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../hooks/useStore.js";
 import { DURATION_PRESETS } from "../lib/status.js";
+import { buildProductionArgs } from "../lib/productionArgs.js";
 
 const RESOLUTION_PRESETS = [
   { value: "720p", label: "720p" },
@@ -46,7 +47,7 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
       intakeRun: selected.latest_intake_run,
       concurrency: Number(concurrency),
       resolution,
-      extraArgs: productionArgs(studioSettings)
+      extraArgs: buildProductionArgs(studioSettings)
     });
     setSubmitting(false);
     setResult(res);
@@ -65,7 +66,7 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
       targetDuration,
       intakeRun: selected.latest_intake_run,
       resolution,
-      extraArgs: productionArgs(studioSettings)
+      extraArgs: buildProductionArgs(studioSettings)
     });
     setSampling(false);
     setResult(res);
@@ -204,37 +205,6 @@ export function NewBatchDrawer({ open, onClose, onOpenSample }) {
       </div>
     </>
   );
-}
-
-function productionArgs(settings) {
-  const args = [];
-  const copy = settings?.copy || {};
-  const tts = settings?.tts || {};
-  const mapping = [
-    ["--platform", copy.platform],
-    ["--style", copy.style],
-    ["--audience", copy.audience],
-    ["--forbidden", copy.forbidden],
-    ["--cta", copy.cta],
-    ["--tts-provider", tts.provider],
-    ["--tts-model", tts.model],
-    ["--voice-id", tts.voice_id],
-    ["--speed", tts.speed],
-    ["--vol", tts.vol],
-    ["--pitch", tts.pitch],
-    ["--emotion", tts.emotion],
-    ["--modify-pitch", tts.modify_pitch],
-    ["--modify-intensity", tts.intensity],
-    ["--modify-timbre", tts.timbre],
-    ["--subtitle-preset", settings?.subtitle?.preset],
-    ["--font-source", settings?.subtitle?.font_source]
-  ];
-  for (const [flag, value] of mapping) {
-    if (value !== undefined && value !== null && String(value).trim() !== "") {
-      args.push(flag, String(value));
-    }
-  }
-  return args;
 }
 
 function Field({ label, children }) {

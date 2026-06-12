@@ -6,6 +6,8 @@ import { markRunStage } from "../core/taskRun.js";
 import { compactId } from "../core/paths.js";
 import { redactText } from "../core/redact.js";
 
+const MAX_TIMEOUT_KILL_GRACE_MS = 2000;
+
 export class WorkerRunner {
   constructor({ workspace, secretService }) {
     this.workspace = workspace;
@@ -134,10 +136,31 @@ function spawnCapture(command, args, { cwd, env, timeoutMs, logger }) {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    const timer = timeoutMs
+    let settled = false;
+    let timer = null;
+    let killTimer = null;
+    const timeoutKillGraceMs = timeoutMs ? Math.min(MAX_TIMEOUT_KILL_GRACE_MS, Math.max(100, Math.floor(timeoutMs / 2))) : 0;
+    function clearTimers() {
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+    }
+    function settle(callback, value) {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      callback(value);
+    }
+    timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true;
           proc.kill("SIGTERM");
+          killTimer = setTimeout(() => {
+            try {
+              proc.kill("SIGKILL");
+            } catch {
+              // process may already be gone
+            }
+          }, timeoutKillGraceMs);
         }, timeoutMs)
       : null;
     proc.stdout.on("data", (chunk) => {
@@ -150,10 +173,9 @@ function spawnCapture(command, args, { cwd, env, timeoutMs, logger }) {
       stderr += text;
       logger.stderr(text);
     });
-    proc.on("error", reject);
+    proc.on("error", (error) => settle(reject, error));
     proc.on("close", (code, signal) => {
-      if (timer) clearTimeout(timer);
-      resolve({
+      settle(resolve, {
         code: timedOut ? 124 : code,
         signal,
         timedOut,

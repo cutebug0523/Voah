@@ -13,7 +13,16 @@ export async function runStageCommand(stage, { argv }) {
     throw new UserError(`用法：voah ${stage} run <task_dir>`);
   }
   const options = parseArgs(rest, {
-    boolean: ["skip-omni", "run-omni", "no-subtitle-enable", "no-split-punctuation", "allow-inspect-warning"]
+    boolean: [
+      "skip-omni",
+      "run-omni",
+      "no-subtitle-enable",
+      "no-split-punctuation",
+      "allow-inspect-warning",
+      "gpu",
+      "no-gpu",
+      "no-browser-gpu"
+    ]
   });
   const workspace = resolveWorkspace(options.workspace);
   const taskArg = options._[0] || options.task;

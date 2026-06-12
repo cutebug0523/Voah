@@ -22,7 +22,7 @@ export async function runTtsPreview({ argv }) {
     throw new UserError(`找不到文本文件：${textFile}`);
   }
 
-  const provider = options.provider || (await readTtsProvider());
+  const provider = options.provider || (await readTtsProvider(workspace));
   const outputRoot = options["output-root"]
     ? resolvePath(options["output-root"], workspace)
     : path.join(workspace, "cache", "voah_tts", "desktop_preview");
@@ -57,7 +57,7 @@ export async function runTtsPreview({ argv }) {
   if (options["dry-run"]) args.push("--dry-run");
 
   const moduleId = provider === "vectorengine-minimax" ? "tts_fallback" : "tts_primary";
-  const runner = new WorkerRunner({ workspace, secretService: new SecretService() });
+  const runner = new WorkerRunner({ workspace, secretService: new SecretService({ workspace }) });
   const result = await runner.run({
     command: "python3",
     args,
@@ -71,9 +71,9 @@ export async function runTtsPreview({ argv }) {
   }
 }
 
-async function readTtsProvider() {
+async function readTtsProvider(workspace) {
   try {
-    const config = await new SecretService().readConfig();
+    const config = await new SecretService({ workspace }).readConfig();
     return config["tts.provider"] || "";
   } catch {
     return "";

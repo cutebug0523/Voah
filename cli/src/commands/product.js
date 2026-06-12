@@ -74,7 +74,7 @@ async function refineProductContext(workspace, options) {
   const productDir = productPath(workspace, slugify(slug));
   await ensureDir(productDir);
   const product = existsSync(path.join(productDir, "product.json")) ? await readJson(path.join(productDir, "product.json")) : {};
-  const runner = new WorkerRunner({ workspace, secretService: new SecretService() });
+  const runner = new WorkerRunner({ workspace, secretService: new SecretService({ workspace }) });
   const result = await runner.run({
     command: "python3",
     args: [

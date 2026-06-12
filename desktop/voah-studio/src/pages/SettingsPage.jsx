@@ -292,6 +292,25 @@ export function SettingsPage() {
               <FontPreview font={selectedFont} ready={fontsReady} />
             </Field>
           </Block>
+
+          <Block title="渲染">
+            <Field label="Workers">
+              <select className="input" value={form.render.hyperframes_workers} onChange={(e) => setNested(setForm, "render.hyperframes_workers", e.target.value)}>
+                <option value="auto">auto</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+              </select>
+            </Field>
+            <Field label="GPU">
+              <select className="input" value={form.render.gpu} onChange={(e) => setNested(setForm, "render.gpu", e.target.value)}>
+                <option value="auto">自动</option>
+                <option value="on">开启</option>
+                <option value="off">关闭</option>
+              </select>
+            </Field>
+          </Block>
         </div>
         <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-between">
           <span className="text-xs text-ink-400 truncate">{message}</span>
@@ -467,6 +486,7 @@ function setNested(setter, path, value) {
 function normalizeSettings(settings) {
   const tts = settings?.tts || {};
   const subtitle = settings?.subtitle || {};
+  const render = settings?.render || {};
   const legacyModifyPitch = tts.modify_pitch ?? (Number(tts.pitch) > 12 ? tts.pitch : undefined);
   return {
     ...settings,
@@ -489,6 +509,10 @@ function normalizeSettings(settings) {
       font: subtitle.font || "smiley-sans",
       font_label: subtitle.font_label || "得意黑",
       font_source: subtitle.font_source || ""
+    },
+    render: {
+      hyperframes_workers: String(render.hyperframes_workers || "auto"),
+      gpu: ["on", "off", "auto"].includes(String(render.gpu || "")) ? String(render.gpu) : "auto"
     }
   };
 }

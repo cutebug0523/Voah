@@ -410,11 +410,17 @@ async function refreshTaskFromDisk(task) {
   try {
     const manifest = await readJson(manifestPath);
     const manifestStatus = String(manifest.status || "");
-    let status = manifest.status || task.status;
+    let status = task.status || manifestStatus || "queued";
     if (["succeeded", "completed"].includes(manifestStatus)) {
       status = manifest.status;
+    } else if (["failed", "needs_review"].includes(manifestStatus)) {
+      status = manifest.status;
+    } else if (task.status === "failed" && ["running", "queued", "stale", ""].includes(manifestStatus)) {
+      status = "failed";
     } else if (task.status === "running" && ["queued", "stale", ""].includes(manifestStatus)) {
       status = "running";
+    } else if (manifestStatus) {
+      status = manifest.status;
     }
     const qaStatus = manifest.qa?.status || task.qa_status || "";
     const finalVideo = manifest.active_artifacts?.final_subtitled

@@ -6,6 +6,7 @@ import path from "node:path";
 import { dedupeIntakeRuns, normalizeIntakeStatus, summarizeIntakeRuns } from "../electron/intakeStatus.js";
 import { isTaskAcknowledged, withTaskAcknowledgement } from "../electron/taskAcknowledgements.js";
 import { listTaskRuns } from "../electron/taskRuns.js";
+import { buildProductionArgs } from "../src/lib/productionArgs.js";
 import {
   buildCreateBatchArgs,
   buildCreateSampleTaskArgs,
@@ -220,4 +221,17 @@ test("studio passes resolution to batch and sample CLI args", () => {
     resolution: "1080p"
   });
   assert.deepEqual(sampleArgs.slice(sampleArgs.indexOf("--resolution"), sampleArgs.indexOf("--resolution") + 2), ["--resolution", "1080p"]);
+});
+
+test("studio production args include render hardware settings", () => {
+  const args = buildProductionArgs({
+    copy: { platform: "抖音", cta: "点左下角" },
+    tts: { provider: "minimax-official", voice_id: "voice-a", speed: 1.1, pitch: 0, modify_pitch: 20, intensity: 20, timbre: 0 },
+    subtitle: { preset: "songti_white_gold_lower", font_source: "/tmp/font.otf" },
+    render: { hyperframes_workers: "auto", gpu: "off" }
+  });
+
+  assert.deepEqual(args.slice(args.indexOf("--hyperframes-workers"), args.indexOf("--hyperframes-workers") + 2), ["--hyperframes-workers", "auto"]);
+  assert.equal(args.includes("--no-gpu"), true);
+  assert.equal(args.includes("--gpu"), false);
 });

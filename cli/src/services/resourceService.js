@@ -32,16 +32,17 @@ export class ResourceService {
 
   async registerLocal({ runDir, file, purpose, provider = "local", consumers = [] }) {
     const manifest = await this.read(runDir);
+    const absoluteFile = path.isAbsolute(file) ? file : path.resolve(runDir, file);
     const resource = {
       schema_version: "voah.resource.v1",
       resource_id: compactId("res"),
-      local_path: path.isAbsolute(file) ? file : path.relative(runDir, path.resolve(runDir, file)),
+      local_path: path.isAbsolute(file) ? file : path.relative(runDir, absoluteFile),
       purpose,
       provider,
       remote_url_present: false,
       headers_required: {},
       consumers,
-      status: existsSync(file) ? "ready" : "missing",
+      status: existsSync(absoluteFile) ? "ready" : "missing",
       created_at: new Date().toISOString(),
       expires_at: null
     };

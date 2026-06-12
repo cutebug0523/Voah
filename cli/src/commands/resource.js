@@ -13,7 +13,7 @@ export async function runResourceCommand({ argv }) {
     const file = resolvePath(requireOption(options, "file"), workspace);
     const purpose = requireOption(options, "purpose");
     const runDir = resolvePath(options.run || options["run-dir"] || options.outputDir || process.cwd(), workspace);
-    const secretService = new SecretService();
+    const secretService = new SecretService({ workspace });
     const resource = await service.upload({
       runDir,
       file,

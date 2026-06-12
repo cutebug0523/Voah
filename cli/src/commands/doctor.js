@@ -11,7 +11,7 @@ export async function runDoctorCommand({ argv }) {
   const workspace = resolveWorkspace(options.workspace);
   const outputDir = path.join(workspace, "cache", "voah_system", "doctor", `${compactDateTime()}_doctor`);
   await ensureDir(outputDir);
-  const secretService = new SecretService();
+  const secretService = new SecretService({ workspace });
   const tools = await toolStatus(workspace);
   const keys = await secretService.keyStatus();
   const report = {

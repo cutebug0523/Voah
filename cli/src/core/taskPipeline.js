@@ -41,11 +41,11 @@ function stageTimeout(stage, options = {}) {
 }
 
 export async function runPipeline({ workspace, taskDir, from = "copy", options = {} }) {
-  const runContext = options.runContext || await createTaskRun({ taskDir, from, scope: "pipeline" });
   const startIndex = STAGE_ORDER.indexOf(from);
   if (startIndex < 0) {
     throw new UserError(`未知起始阶段：${from}`);
   }
+  const runContext = options.runContext || await createTaskRun({ taskDir, from, scope: "pipeline" });
   // 自动 stale 检测：若上游产物 hash 相对基线变了，从最早变化的阶段起把下游全部标 stale。
   const changedStage = await detectUpstreamChange(taskDir, from);
   if (changedStage) {
@@ -85,10 +85,6 @@ export async function runPipeline({ workspace, taskDir, from = "copy", options =
 export async function runStageByName(stage, context) {
   let runContext = context.options?.runContext;
   let ownRun = false;
-  if (!runContext) {
-    runContext = await createTaskRun({ taskDir: context.taskDir, stage, scope: "stage" });
-    ownRun = true;
-  }
   const handlers = {
     copy: runCopyStage,
     tts: runTtsStage,
@@ -99,6 +95,11 @@ export async function runStageByName(stage, context) {
   };
   const handler = handlers[stage];
   if (!handler) throw new UserError(`未知阶段：${stage}`);
+  await requireTaskManifest(context.taskDir);
+  if (!runContext) {
+    runContext = await createTaskRun({ taskDir: context.taskDir, stage, scope: "stage" });
+    ownRun = true;
+  }
   try {
     const result = await handler({ ...context, runContext });
     // 阶段成功后记录产物 hash，作为下游 stale 判断基线。
@@ -118,6 +119,12 @@ export async function runStageByName(stage, context) {
       status: "failed",
       finished_at: new Date().toISOString(),
       error_message: error.message || String(error)
+    });
+    await markStage(context.taskDir, stage, {
+      status: "failed",
+      finished_at: new Date().toISOString(),
+      error_message: error.message || String(error),
+      run_id: runContext?.runId || ""
     });
     if (ownRun) {
       await updateTaskRun(runContext, {
@@ -174,7 +181,7 @@ export async function runTtsStage({ workspace, taskDir, runContext, options = {}
   const voiceScript = path.join(taskDir, "voice_script.json");
   const outputDir = runContext?.outputDir || taskDir;
   requireFile(voiceScript, "voice_script.json");
-  const provider = options.provider || manifest.tts?.provider || (await readTtsProvider()) || "minimax-official";
+  const provider = options.provider || manifest.tts?.provider || (await readTtsProvider(workspace)) || "minimax-official";
   if (provider === "gpt-sovits") {
     await runGptSovitsTts({ workspace, taskDir, outputDir, runContext, manifest, options });
   } else {
@@ -549,7 +556,6 @@ export async function runQaStage({ workspace, taskDir, options = {} }) {
       stage: "qa",
       cwd: workspace,
       moduleIds: ["material_understanding"],
-      allowFailure: true,
       timeoutMs: stageTimeout("qa", options)
     });
   }
@@ -850,7 +856,7 @@ async function burnOverlayFallback({ runner, workspace, taskDir, projectDir, out
 }
 
 function createRunner(workspace) {
-  return new WorkerRunner({ workspace, secretService: new SecretService() });
+  return new WorkerRunner({ workspace, secretService: new SecretService({ workspace }) });
 }
 
 async function requireTaskManifest(taskDir) {
@@ -888,9 +894,9 @@ function requireStageOutputs(taskDir, stage) {
   }
 }
 
-async function readTtsProvider() {
+async function readTtsProvider(workspace) {
   try {
-    const service = new SecretService();
+    const service = new SecretService({ workspace });
     const config = await service.readConfig();
     return config["tts.provider"] || "";
   } catch {
@@ -915,6 +921,9 @@ function taskStatusFromQa(status) {
   const normalized = String(status || "").toLowerCase();
   if (["block", "blocked", "failed", "fail", "error"].includes(normalized)) {
     return "failed";
+  }
+  if (["needs_review", "manual_review", "review"].includes(normalized)) {
+    return "needs_review";
   }
   return "succeeded";
 }

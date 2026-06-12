@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveWorkspace } from "../core/paths.js";
 import { MODEL_MODULES, envKeysForModuleIds, runtimeEnvForModuleIds, visibleModelProviders } from "./modelModules.js";
 
 const CONFIG_DIR = process.env.VOAH_CONFIG_DIR || path.join(os.homedir(), ".voah");
@@ -17,10 +18,11 @@ const SECRET_KEYS = {
 const CONFIG_KEYS = new Set(["tts.provider"]);
 
 export class SecretService {
-  constructor({ configDir = CONFIG_DIR } = {}) {
+  constructor({ configDir = CONFIG_DIR, workspace = null } = {}) {
     this.configDir = configDir;
     this.configPath = path.join(configDir, "config.json");
     this.secretsPath = path.join(configDir, "secrets.env");
+    this.workspace = resolveWorkspace(workspace || process.env.VOAH_WORKSPACE);
   }
 
   async ensureDir() {
@@ -118,7 +120,7 @@ export class SecretService {
   async readSecrets() {
     return {
       ...process.env,
-      ...(await readWorkspaceEnv()),
+      ...(await readWorkspaceEnv(this.workspace)),
       ...(await this.readSecretsFile())
     };
   }
@@ -149,13 +151,13 @@ export class SecretService {
   }
 }
 
-async function readWorkspaceEnv() {
+async function readWorkspaceEnv(workspace) {
   const paths = [
-    path.join("/Users/noah/混剪", ".env"),
+    workspace ? path.join(workspace, ".env") : "",
     path.join(os.homedir(), ".voah", "video_intake", ".env")
-  ];
+  ].filter(Boolean);
   const merged = {};
-  for (const file of paths) {
+  for (const file of [...new Set(paths)]) {
     try {
       Object.assign(merged, parseEnv(await readFile(file, "utf8")));
     } catch {

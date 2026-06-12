@@ -8,6 +8,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { acquireTaskRunLock, releaseTaskRunLock } from "../src/core/taskLock.js";
 import { resolveRetrievalDiversityStatePath, retrieveMinClipDuration } from "../src/core/taskPipeline.js";
+import { ResourceService } from "../src/services/resourceService.js";
+import { WorkerRunner } from "../src/services/workerRunner.js";
 
 const CLI = fileURLToPath(new URL("../src/bin/voah.js", import.meta.url));
 
@@ -28,7 +30,7 @@ function runWithInput(args, input, options = {}) {
   });
 }
 
-async function writeQaFakeBin(workspace, { failOnOmni = false } = {}) {
+async function writeQaFakeBin(workspace, { failOnOmni = false, qaStatus = "ok" } = {}) {
   const binDir = path.join(workspace, "bin");
   await mkdir(binDir, { recursive: true });
   await writeFile(
@@ -52,7 +54,7 @@ case "$1" in
       if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
       shift
     done
-    echo '{"qa":{"status":"ok"}}' > "$TASK/full_pipeline_manifest.json"
+    echo '{"qa":{"status":"${qaStatus}"}}' > "$TASK/full_pipeline_manifest.json"
     ;;
   *voah_build_desktop_quality_report.py)
     TASK=""
@@ -60,7 +62,7 @@ case "$1" in
       if [ "$1" = "--task-dir" ]; then shift; TASK="$1"; fi
       shift
     done
-    echo '{"qa":{"status":"ok"}}' > "$TASK/desktop_quality_report.json"
+    echo '{"qa":{"status":"${qaStatus}"}}' > "$TASK/desktop_quality_report.json"
     echo '# report' > "$TASK/desktop_quality_report.md"
     ;;
   *)
@@ -78,6 +80,50 @@ test("voah help prints stable commands", async () => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /voah task run/);
   assert.match(result.stdout, /voah batch run/);
+});
+
+test("single render stage accepts HyperFrames GPU flags", async () => {
+  for (const flag of ["--gpu", "--no-gpu"]) {
+    const missingTask = path.join(os.tmpdir(), `voah-missing-task-${process.pid}-${flag.slice(2)}`);
+    const result = await run(["render", "run", missingTask, flag]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /缺少 task_manifest\.json|任务目录不存在/);
+    assert.doesNotMatch(result.stderr, /缺少参数值/);
+    assert.equal(existsSync(path.join(missingTask, ".runs")), false);
+  }
+});
+
+test("intake run and add pass distinct wrapper modes", async () => {
+  for (const subcommand of ["run", "add"]) {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), `voah-cli-intake-${subcommand}-`));
+    const sourceDir = path.join(workspace, "source");
+    const binDir = path.join(workspace, "bin");
+    const argsFile = path.join(workspace, "args.txt");
+    await mkdir(sourceDir, { recursive: true });
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      path.join(binDir, "python3"),
+      `#!/bin/sh
+printf '%s\\n' "$@" > "$VOAH_FAKE_ARGS"
+echo '{"outputs":{}}'
+`,
+      { mode: 0o755 }
+    );
+    const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, VOAH_FAKE_ARGS: argsFile };
+    const result = await run([
+      "intake",
+      subcommand,
+      "--workspace",
+      workspace,
+      "--product",
+      "demo",
+      "--source-dir",
+      sourceDir
+    ], { env });
+    assert.equal(result.code, 0, result.stderr);
+    const args = (await readFile(argsFile, "utf8")).trim().split(/\r?\n/);
+    assert.equal(args[args.indexOf("--mode") + 1], subcommand);
+  }
 });
 
 test("task create writes task_manifest and task_brief without running models", async () => {
@@ -349,6 +395,25 @@ test("config get groups visible model keys by provider", async () => {
   assert.equal(payload.modules.find((item) => item.id === "copy_generation").model, "deepseek-v4-pro");
 });
 
+test("config get reads keys from selected workspace env", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-config-workspace-env-"));
+  const configDir = await mkdtemp(path.join(os.tmpdir(), "voah-cli-config-workspace-home-"));
+  await writeFile(path.join(workspace, ".env"), "DEEPSEEK_API_KEY=workspace-env-deepseek\n");
+  const env = {
+    ...process.env,
+    VOAH_CONFIG_DIR: configDir,
+    DEEPSEEK_API_KEY: "",
+    DASHSCOPE_API_KEY: "",
+    MINIMAX_API_KEY: "",
+    VECTORENGINE_API_KEY: ""
+  };
+  const getResult = await run(["config", "get", "--workspace", workspace], { env });
+  assert.equal(getResult.code, 0, getResult.stderr);
+  assert.doesNotMatch(getResult.stdout, /workspace-env-deepseek/);
+  const payload = JSON.parse(getResult.stdout);
+  assert.equal(payload.secrets["deepseek.api_key"], true);
+});
+
 test("task create uses category, not slug guessing, when product name is blank", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-product-name-test-"));
   const intakeRun = path.join(workspace, "cache", "voah_video_intake", "fangshai-qidian", "run");
@@ -404,6 +469,22 @@ test("resource upload failure records redacted manifest and public output", asyn
   assert.doesNotMatch(manifestText, /sk-[A-Za-z0-9_-]{12,}/);
   const manifest = JSON.parse(manifestText);
   assert.equal(manifest.resources[0].status, "upload_failed");
+});
+
+test("resource registerLocal resolves relative files under run dir", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-resource-local-test-"));
+  const runDir = path.join(workspace, "run");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "clip.mp4"), "");
+  const service = new ResourceService({ workspace });
+  const resource = await service.registerLocal({
+    runDir,
+    file: "clip.mp4",
+    purpose: "omni_qa",
+    consumers: ["test"]
+  });
+  assert.equal(resource.local_path, "clip.mp4");
+  assert.equal(resource.status, "ready");
 });
 
 test("batch result lists do not pass missing QA videos", async () => {
@@ -582,6 +663,46 @@ test("qa stage runs final Omni only when explicitly requested", async () => {
   assert.equal(result.code, 0, result.stderr);
   assert.equal(existsSync(marker), true);
   assert.equal(existsSync(path.join(taskDir, "qa_omni_alignment_final", "omni_alignment_results.json")), true);
+});
+
+test("qa stage fails when explicitly requested Omni fails", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-qa-run-omni-fail-"));
+  const taskDir = path.join(workspace, "task");
+  const marker = path.join(workspace, "omni-called.txt");
+  await mkdir(path.join(taskDir, "hyperframes_subtitle_burn"), { recursive: true });
+  await writeFile(path.join(taskDir, "task_manifest.json"), JSON.stringify({ schema_version: "voah.task_manifest.v1", status: "queued", active_artifacts: {}, stages: {} }));
+  await writeFile(path.join(taskDir, "audio_sections.json"), JSON.stringify({ sections: [] }));
+  await writeFile(path.join(taskDir, "timeline_fill.json"), JSON.stringify({ timeline: [] }));
+  await writeFile(path.join(taskDir, "hyperframes_subtitle_burn", "final_subtitled.mp4"), "");
+  const binDir = await writeQaFakeBin(workspace, { failOnOmni: true });
+  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, VOAH_FAKE_OMNI_MARKER: marker };
+
+  const result = await run(["qa", "run", "--workspace", workspace, taskDir, "--run-omni"], { env });
+
+  assert.notEqual(result.code, 0);
+  assert.equal(existsSync(marker), true);
+  const manifest = JSON.parse(await readFile(path.join(taskDir, "task_manifest.json"), "utf8"));
+  assert.equal(manifest.status, "failed");
+  assert.equal(manifest.stages.qa.status, "failed");
+});
+
+test("qa stage maps needs_review to task status", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-qa-needs-review-"));
+  const taskDir = path.join(workspace, "task");
+  await mkdir(path.join(taskDir, "hyperframes_subtitle_burn"), { recursive: true });
+  await writeFile(path.join(taskDir, "task_manifest.json"), JSON.stringify({ schema_version: "voah.task_manifest.v1", status: "queued", active_artifacts: {}, stages: {} }));
+  await writeFile(path.join(taskDir, "audio_sections.json"), JSON.stringify({ sections: [] }));
+  await writeFile(path.join(taskDir, "timeline_fill.json"), JSON.stringify({ timeline: [] }));
+  await writeFile(path.join(taskDir, "hyperframes_subtitle_burn", "final_subtitled.mp4"), "");
+  const binDir = await writeQaFakeBin(workspace, { qaStatus: "needs_review" });
+  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}` };
+
+  const result = await run(["qa", "run", "--workspace", workspace, taskDir], { env });
+
+  assert.equal(result.code, 0, result.stderr);
+  const manifest = JSON.parse(await readFile(path.join(taskDir, "task_manifest.json"), "utf8"));
+  assert.equal(manifest.status, "needs_review");
+  assert.equal(manifest.qa.status, "needs_review");
 });
 
 test("batch resume refreshes old failed snapshot from successful task manifest", async () => {
@@ -774,6 +895,79 @@ exit 0
   assert.equal(manifest.runs.latest, names[0]);
   assert.equal(manifest.stages.render.promoted_run_id, names[0]);
   assert.equal(manifest.active_artifacts.final_subtitled, "hyperframes_subtitle_burn/final_subtitled.mp4");
+});
+
+test("pipeline marks stable stage failed when worker exits without required outputs", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-missing-output-fail-"));
+  const intakeRun = path.join(workspace, "cache", "voah_video_intake", "demo", "run");
+  const binDir = path.join(workspace, "bin");
+  await mkdir(intakeRun, { recursive: true });
+  await mkdir(binDir, { recursive: true });
+  await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
+  await writeFile(path.join(binDir, "python3"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const created = await run([
+    "task",
+    "create",
+    "--workspace",
+    workspace,
+    "--product",
+    "demo",
+    "--intake-run",
+    intakeRun
+  ]);
+  assert.equal(created.code, 0, created.stderr);
+  const taskDir = created.stdout.match(/task_dir=(.*)/)?.[1].trim();
+  const result = await run(["task", "run", "--workspace", workspace, taskDir, "--from", "copy"], {
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }
+  });
+  assert.notEqual(result.code, 0);
+  const manifest = JSON.parse(await readFile(path.join(taskDir, "task_manifest.json"), "utf8"));
+  assert.equal(manifest.status, "failed");
+  assert.equal(manifest.stages.copy.status, "failed");
+  assert.match(manifest.stages.copy.error_message, /copy_brief\.json/);
+});
+
+test("task run rejects invalid from stage before creating run workspace", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-invalid-from-"));
+  const intakeRun = path.join(workspace, "cache", "voah_video_intake", "demo", "run");
+  await mkdir(intakeRun, { recursive: true });
+  await writeFile(path.join(intakeRun, "shot_index.json"), JSON.stringify({ records: [] }));
+  const created = await run([
+    "task",
+    "create",
+    "--workspace",
+    workspace,
+    "--product",
+    "demo",
+    "--intake-run",
+    intakeRun
+  ]);
+  assert.equal(created.code, 0, created.stderr);
+  const taskDir = created.stdout.match(/task_dir=(.*)/)?.[1].trim();
+  const result = await run(["task", "run", "--workspace", workspace, taskDir, "--from", "typo"]);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /未知起始阶段/);
+  assert.equal(existsSync(path.join(taskDir, ".runs")), false);
+});
+
+test("worker timeout escalates to SIGKILL when child ignores SIGTERM", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "voah-cli-worker-timeout-"));
+  const runner = new WorkerRunner({
+    workspace,
+    secretService: { envForModules: async () => ({}) }
+  });
+  const started = Date.now();
+  const result = await runner.run({
+    command: process.execPath,
+    args: ["-e", "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);"],
+    cwd: workspace,
+    stage: "timeout_test",
+    timeoutMs: 100,
+    allowFailure: true
+  });
+  assert.equal(result.code, 124);
+  assert.equal(result.timedOut, true);
+  assert.ok(Date.now() - started < 2500);
 });
 
 test("tts preview dry-run writes manifest without secrets", async () => {
