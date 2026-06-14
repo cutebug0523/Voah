@@ -1,0 +1,9 @@
+# Python worker runtime dependencies for Voah.
+#
+# Keep this file focused on packages imported by repo scripts and the
+# voah-video-intake / voah-shot-retrieval skill scripts that the current
+# pipeline still calls. Node/Electron/HyperFrames dependencies stay in npm.
+
+dashscope>=1.25.20,<2
+Pillow>=10.4.0,<12
+requests>=2.31.0,<3

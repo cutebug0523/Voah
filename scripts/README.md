@@ -10,6 +10,16 @@
 - API key 只从环境变量或本地私有配置读取，不写进脚本参数示例。
 - 不主动启动常驻服务；需要服务时由用户或桌面应用显式管理。
 
+## Python 依赖
+
+统一依赖入口是仓库根目录的 `requirements.txt`：
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+新增 worker 或继续依赖 skill scripts 时，若引入第三方 Python 包，必须同步更新 `requirements.txt`。
+
 ## 当前脚本
 
 ### 素材入库

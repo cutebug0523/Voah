@@ -119,6 +119,7 @@ voah resource upload|cleanup         临时 OSS 资源层
 ## 🧪 验证
 
 ```bash
+python3 -m pip install -r requirements.txt
 cd cli && npm test
 cd desktop/voah-studio && node --test test/voahService.test.js && npm run build
 python3 -m unittest discover -s tests -p 'test_voah_*.py'

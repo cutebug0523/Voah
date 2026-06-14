@@ -152,13 +152,7 @@ runtime_root/python/
   Lib/site-packages/
 ```
 
-必须包含的 Python 依赖至少有：
-
-- dashscope
-- requests
-- Pillow
-
-实际依赖应以 `scripts/` 和 skill scripts 的 import 扫描为准，不要凭感觉塞。
+必须包含的 Python 依赖以仓库根目录 `requirements.txt` 为准；变更 Python worker 或仍被调用的 skill scripts 后，应同步更新该文件。
 
 ## 6. GitHub Actions 方案
 
@@ -224,4 +218,3 @@ doctor 能看到 ffmpeg / ffprobe / HyperFrames
 3. skill 依赖脚本完成 repo 化，或明确随包策略。
 4. 本地 Python 依赖清单固定。
 5. GitHub Actions 只负责构建，不负责业务逻辑修补。
-
