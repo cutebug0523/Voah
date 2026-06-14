@@ -200,6 +200,12 @@ configurable Voah workspace root
 
 API key 存本机私有配置或系统 keychain，不写进仓库、文档、manifest。
 
+Windows `.exe` 打包的详细方案先只作为后续实现文档维护，见：
+
+```text
+docs/00-overview/Voah-Windows-EXE打包方案.md
+```
+
 ## 11. 当前设计文档
 
 模块与产物流转：

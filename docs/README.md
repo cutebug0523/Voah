@@ -39,6 +39,7 @@
 - `00-overview/Voah桌面端使用说明与功能介绍.md`
 - `00-overview/Voah仓库范围与发布约定.md`
 - `00-overview/混剪工作台技术方案.md`
+- `00-overview/Voah-Windows-EXE打包方案.md`
 
 ### 素材入库
 
