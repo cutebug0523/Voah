@@ -1,0 +1,4 @@
+interface:
+  display_name: "Voah Shot Retrieval"
+  short_description: "按 TTS audio_sections 召回和填充素材"
+  default_prompt: "Use $voah-shot-retrieval to build a local shot index and retrieve/rerank clips for each Voah audio_sections.json section."

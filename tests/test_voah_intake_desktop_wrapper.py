@@ -19,6 +19,14 @@ SPEC.loader.exec_module(wrapper)
 
 
 class DesktopIntakeWrapperStateTest(unittest.TestCase):
+    def test_default_intake_scripts_dir_uses_repo_runtime_bundle(self):
+        expected = ROOT / "runtime" / "skills" / "voah-video-intake" / "scripts"
+        self.assertEqual(wrapper.DEFAULT_WORKSPACE, ROOT)
+        self.assertEqual(wrapper.DEFAULT_INTAKE_SCRIPTS_DIR, expected)
+        self.assertTrue((wrapper.DEFAULT_INTAKE_SCRIPTS_DIR / "run_intake.py").exists())
+        self.assertTrue((wrapper.DEFAULT_INTAKE_SCRIPTS_DIR / "trim_and_upload.py").exists())
+        self.assertNotIn("/Users/noah/.codex", str(wrapper.DEFAULT_INTAKE_SCRIPTS_DIR))
+
     def test_write_status_creates_job_status_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

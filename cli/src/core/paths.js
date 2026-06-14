@@ -1,8 +1,12 @@
 import { mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-export const DEFAULT_WORKSPACE = "/Users/noah/混剪";
+export const DEFAULT_WORKSPACE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../.."
+);
 
 export function resolveWorkspace(value) {
   return path.resolve(expandHome(value || process.env.VOAH_WORKSPACE || DEFAULT_WORKSPACE));

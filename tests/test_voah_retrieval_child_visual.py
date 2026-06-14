@@ -101,6 +101,12 @@ def opening_candidate(unit_id: str, child_id: str, score: float = 0.8, asset_id:
 
 
 class ChildVisualSelectionTest(unittest.TestCase):
+    def test_default_search_script_uses_repo_runtime_bundle(self):
+        expected = ROOT / "runtime" / "skills" / "voah-shot-retrieval" / "scripts" / "search.py"
+        self.assertEqual(voah.SEARCH_SCRIPT, expected)
+        self.assertTrue(voah.SEARCH_SCRIPT.exists())
+        self.assertNotIn("/Users/noah/.codex", str(voah.SEARCH_SCRIPT))
+
     def test_proof_section_selects_child_with_required_visual_and_offsets_parent_clip(self):
         section = proof_section()
         candidate = parent_candidate(

@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_SKILL_RUNNER = Path("/Users/noah/.codex/skills/voah-video-intake/scripts/run_intake.py")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SKILL_RUNNER = REPO_ROOT / "runtime" / "skills" / "voah-video-intake" / "scripts" / "run_intake.py"
 
 
 def parse_json_with_repairs(text: str) -> dict[str, Any]:

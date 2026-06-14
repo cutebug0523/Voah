@@ -26,13 +26,14 @@ python3 -m pip install -r requirements.txt
 
 - `voah_intake_desktop_wrapper.py`
   - 桌面端可调用的素材入库 worker wrapper。
-  - 读取产品名/slug、源素材目录、最多 N 条视频等参数，通过 `voah_run_intake_compat.py` 复用 `voah-video-intake` skill 的 `run_intake.py`，并复用 skill 的 `trim_and_upload.py`，再调用 repo 内固定 worker 做 child 级 Omni 细化与向量化。
+  - 读取产品名/slug、源素材目录、最多 N 条视频等参数，通过 `voah_run_intake_compat.py` 复用 repo 内置 `runtime/skills/voah-video-intake/scripts/run_intake.py`，并复用同 bundle 的 `trim_and_upload.py`，再调用 repo 内固定 worker 做 child 级 Omni 细化与向量化。
+  - 可用 `VOAH_VIDEO_INTAKE_SCRIPTS_DIR` 或 `--intake-scripts-dir` 临时覆盖 skill scripts 路径；默认不依赖本机 `.codex/skills` 或 Crab/OhMyCrab harness。
   - 顺序为 `run_intake -> trim_and_upload -> voah_refine_child_vlm -> voah_vectorize_intake -> build_shot_index`。
   - 输出 `cache/voah_video_intake/{product_slug}/{timestamp}_{run_label}/desktop_intake_result.json`，并补齐 `run_manifest.json`、`physical_shots.json`、`trimmed_physical/`、`child_vlm_refine_results.json`、`vectorization_inputs.json`、`embedding_results.json`、`shot_index.json` 等桌面端/下游 worker 可读取产物。
   - 失败时也会尽量写出结构化 `desktop_intake_result.json`，便于桌面端登记 job 状态和日志路径。
 
 - `voah_run_intake_compat.py`
-  - repo 内兼容入口，加载 `voah-video-intake` skill 的 `run_intake.py` 并复用其主逻辑。
+  - repo 内兼容入口，默认加载 `runtime/skills/voah-video-intake/scripts/run_intake.py` 并复用其主逻辑。
   - 由 wrapper 通过 `--skill-runner` 显式传入实际 skill runner 路径，避免校验路径和运行路径不一致。
   - 仅增强 Omni 返回 JSON 的尾部补全/修复能力，避免流式响应少一个 `}` 导致整条 CLI 入库失败。
 
@@ -84,6 +85,7 @@ python3 -m pip install -r requirements.txt
 - `voah_retrieve_fill_from_audio_sections.py`
   - 读取 `audio_sections.json` 和入库索引。
   - 按每段口播语义召回候选素材，并生成最终选片计划。
+  - 默认复用 repo 内置 `runtime/skills/voah-shot-retrieval/scripts/search.py` 做查询向量和多通道粗召回；可用 `VOAH_SHOT_RETRIEVAL_SEARCH_SCRIPT` 临时覆盖。
   - 默认使用文本 LLM MiniMax M3 在 embedding 候选池内选片；embedding 只负责粗召回，不直接等于最终选片。
   - worker 会读取本地 `.env` / `~/.voah/video_intake/.env` 注入 `MINIMAX_API_KEY` 和 `DASHSCOPE_API_KEY`，不把 key 写入产物。
   - `selection_overrides.json` 只作为人工锁片输入。

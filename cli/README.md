@@ -7,9 +7,9 @@ Voah CLI 是当前生产内核入口。它负责调度本地 worker、ffmpeg、H
 ## 常用命令
 
 ```bash
-node cli/src/bin/voah.js doctor --workspace /Users/noah/混剪
+node cli/src/bin/voah.js doctor --workspace .
 node cli/src/bin/voah.js config get
-node cli/src/bin/voah.js intake run --product huaxizi-qidian --source-dir /Users/noah/混剪/原片/气垫 --limit 6 --label selected6_cli_v1
+node cli/src/bin/voah.js intake run --product huaxizi-qidian --source-dir ./原片/气垫 --limit 6 --label selected6_cli_v1
 node cli/src/bin/voah.js task create --product huaxizi-qidian --intake-run /path/to/intake_run --target-duration 45 --label 45秒抖音投放版
 node cli/src/bin/voah.js task run /path/to/task_dir
 node cli/src/bin/voah.js task run /path/to/task_dir --from retrieve

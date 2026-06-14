@@ -25,6 +25,8 @@ AGENTS.md
 .env.example
 docs/
 scripts/
+runtime/skills/voah-video-intake/
+runtime/skills/voah-shot-retrieval/
 cache/README.md
 原片/README.md
 口红/README.md
@@ -37,6 +39,7 @@ ohmycrab/README.md
 
 - 上传工程规则、架构、流程文档。
 - 上传可复用脚本和后续桌面 worker 雏形。
+- `runtime/skills/voah-video-intake/` 和 `runtime/skills/voah-shot-retrieval/` 是当前入库/召回链路的应急运行时 bundle，用于让干净机器不依赖 Codex/Crab harness 也能跑主流程。
 - 上传轻量目录说明，保留本地目录语义。
 - 上传 `.env.example`，只放变量名，不放真实 key。
 
@@ -64,6 +67,15 @@ ohmycrab/*.json           # Crab 自动索引
 ## 4. Skills 的处理
 
 历史 `voah-*` skills 是研发过程中的方法论和流程沉淀，不作为仓库运行入口上传。
+
+当前例外：
+
+```text
+runtime/skills/voah-video-intake/
+runtime/skills/voah-shot-retrieval/
+```
+
+这不是上传个人 `.codex/skills` 或 `.agents/skills` 目录，而是将已验证且当前代码真实调用的 skill scripts 作为 repo 内置运行时副本临时随仓库分发。默认入口仍是 `voah` CLI / `scripts/` worker：入库通过 `runtime/skills/voah-video-intake/scripts`，召回检索通过 `runtime/skills/voah-shot-retrieval/scripts/search.py`；后续稳定后再把这些脚本彻底 repo 化为一等 worker。
 
 仓库里的真源应逐步转成：
 

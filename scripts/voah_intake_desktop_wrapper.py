@@ -25,11 +25,12 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_WORKSPACE = Path("/Users/noah/混剪")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_WORKSPACE = REPO_ROOT
 DEFAULT_INTAKE_SCRIPTS_DIR = Path(
     os.environ.get(
         "VOAH_VIDEO_INTAKE_SCRIPTS_DIR",
-        "/Users/noah/.codex/skills/voah-video-intake/scripts",
+        str(REPO_ROOT / "runtime" / "skills" / "voah-video-intake" / "scripts"),
     )
 )
 REPO_SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -2126,7 +2127,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Voah video intake for the desktop app.")
     parser.add_argument("--job-input", help="Optional desktop worker job input JSON.")
     parser.add_argument("--job-id", help="Worker job id; defaults to a UUID.")
-    parser.add_argument("--workspace", help="Workspace root; defaults to /Users/noah/混剪.")
+    parser.add_argument("--workspace", help=f"Workspace root; defaults to repo root: {DEFAULT_WORKSPACE}.")
     parser.add_argument("--product-slug", help="Product slug, e.g. fangshai-qidian.")
     parser.add_argument("--product-name", help="Product display name.")
     parser.add_argument("--source-dir", help="Directory containing source videos.")

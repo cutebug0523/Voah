@@ -1,0 +1,4 @@
+interface:
+  display_name: "Voah Video Intake"
+  short_description: "视频素材入库、结构化理解、层级切分与向量化前置流程"
+  default_prompt: "Use $voah-video-intake to ingest a product video folder, derive product metadata from paths, understand segments, and prepare vectorization-ready records."

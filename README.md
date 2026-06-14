@@ -144,6 +144,7 @@ python3 -m unittest discover -s tests -p 'test_voah_*.py'
 cli/        voah CLI（命令骨架 + 核心编排 + 服务层 + schema）
 scripts/    Python worker（入库/文案/TTS/召回/字幕/渲染/QA）
 desktop/    voah-studio 桌面工作台（Electron + React）
+runtime/    repo 内置运行时 bundle（当前含入库和召回必需 skill 脚本）
 docs/       工程文档、设计方案、方法论
 tests/      测试
 ```

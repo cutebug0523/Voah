@@ -11,8 +11,8 @@
 - Electron + React 桌面端。
 - Voah CLI。
 - repo 内 `scripts/` worker。
-- 入库阶段仍依赖的 `voah-video-intake` skill 脚本。
-- 召回阶段仍依赖的 `voah-shot-retrieval` skill 脚本。
+- 入库阶段当前随 repo 分发的 `runtime/skills/voah-video-intake` 脚本。
+- 召回阶段当前随 repo 分发的 `runtime/skills/voah-shot-retrieval` 脚本。
 - ffmpeg / ffprobe Windows 静态二进制。
 - HyperFrames CLI 及其 Node 依赖。
 - 默认字幕字体。
@@ -185,8 +185,8 @@ runtime_root/python/
 
 - `desktop/voah-studio/electron/voahService.js` 不应静态 import `../../../cli/...`，打包后应从 runtime 动态加载，或只通过 CLI 子进程通信。
 - CLI 不应把 `workspace/scripts` 当作唯一 worker 位置，需要支持 `VOAH_RUNTIME_ROOT` 或 `VOAH_SCRIPTS_DIR`。
-- `voah_intake_desktop_wrapper.py` 目前会调用 `voah-video-intake` skill 脚本，打包时必须把该 skill 的 `scripts/` 纳入 runtime。
-- `voah_retrieve_fill_from_audio_sections.py` 仍引用 `voah-shot-retrieval/scripts/search.py`，打包时也必须纳入 runtime 或搬进 repo。
+- `voah_intake_desktop_wrapper.py` 默认调用 repo 内 `runtime/skills/voah-video-intake/scripts`；打包时必须把该 runtime bundle 纳入安装包资源。
+- `voah_retrieve_fill_from_audio_sections.py` 默认调用 repo 内 `runtime/skills/voah-shot-retrieval/scripts/search.py`；打包时必须把该 runtime bundle 纳入安装包资源。
 - HyperFrames 不能依赖 `npx` 现场下载。
 - 字体应随包复制到 runtime，再在用户目录生成可写副本用于预览和渲染。
 

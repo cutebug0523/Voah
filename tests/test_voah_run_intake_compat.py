@@ -16,6 +16,12 @@ SPEC.loader.exec_module(compat)
 
 
 class RunIntakeCompatJsonRepairTest(unittest.TestCase):
+    def test_default_skill_runner_uses_repo_runtime_bundle(self):
+        expected = ROOT / "runtime" / "skills" / "voah-video-intake" / "scripts" / "run_intake.py"
+        self.assertEqual(compat.DEFAULT_SKILL_RUNNER, expected)
+        self.assertTrue(compat.DEFAULT_SKILL_RUNNER.exists())
+        self.assertNotIn("/Users/noah/.codex", str(compat.DEFAULT_SKILL_RUNNER))
+
     def test_repairs_missing_tail_braces_from_streamed_json(self):
         parsed = compat.parse_json_with_repairs(
             '{"story_units":[{"id":"u1","scene_segment_ids":["s1"],"visual_summary":"上脸拍打"}]'

@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Any
 
 
-SEARCH_SCRIPT = Path("/Users/noah/.codex/skills/voah-shot-retrieval/scripts/search.py")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SEARCH_SCRIPT = Path(
+    os.environ.get(
+        "VOAH_SHOT_RETRIEVAL_SEARCH_SCRIPT",
+        str(REPO_ROOT / "runtime" / "skills" / "voah-shot-retrieval" / "scripts" / "search.py"),
+    )
+)
 DEFAULT_MAX_CHILD_CLIPS_PER_STORY_UNIT_PER_SECTION = 2
 DEFAULT_MIN_CLIP_DURATION_S = 2.5
 SHORT_CLIP_TOLERANCE_S = 0.08

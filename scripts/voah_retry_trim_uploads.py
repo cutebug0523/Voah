@@ -17,10 +17,11 @@ from typing import Any
 
 
 DASHSCOPE_CLI = os.path.expanduser("~/Library/Python/3.9/bin/dashscope")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INTAKE_SCRIPTS_DIR = Path(
     os.environ.get(
         "VOAH_VIDEO_INTAKE_SCRIPTS_DIR",
-        "/Users/noah/.codex/skills/voah-video-intake/scripts",
+        str(REPO_ROOT / "runtime" / "skills" / "voah-video-intake" / "scripts"),
     )
 )
 UPLOAD_MODEL = "qwen3-vl-embedding"

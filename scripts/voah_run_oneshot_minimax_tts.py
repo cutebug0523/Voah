@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Any
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def iso_now() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
 
@@ -690,7 +693,7 @@ def main() -> int:
     task_dir = as_abs(args.task_dir) if args.task_dir else voice_script_path.parent
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    load_env_files([Path("/Users/noah/混剪/.env"), Path("/Users/noah/.voah/video_intake/.env")])
+    load_env_files([REPO_ROOT / ".env", Path.home() / ".voah" / "video_intake" / ".env"])
     provider = args.provider or os.environ.get("VOAH_TTS_PROVIDER", "minimax-official")
     if provider == "vectorengine-minimax":
         base_url = os.environ.get("VECTORENGINE_BASE_URL", "https://api.vectorengine.ai")

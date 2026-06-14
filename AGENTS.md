@@ -88,6 +88,15 @@ schema_version
 /Users/noah/.codex/skills/voah-tts/SKILL.md
 ```
 
+仓库内置应急运行时：
+
+```text
+runtime/skills/voah-video-intake/SKILL.md
+runtime/skills/voah-video-intake/scripts/
+```
+
+`scripts/voah_intake_desktop_wrapper.py` 默认调用这份 repo bundle；只有显式设置 `VOAH_VIDEO_INTAKE_SCRIPTS_DIR` 或 `--intake-scripts-dir` 时才使用外部 skill scripts。其它历史 skill 仍只作为方法论参考，不作为员工机器运行前置。
+
 ## 阶段规则
 
 - `voah-video-intake`：只做常驻入库，不写本次文案，不渲染成片。
