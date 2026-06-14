@@ -85,6 +85,24 @@ class PhysicalShotDedupeTest(unittest.TestCase):
         self.assertEqual(updated[1]["duplicate_role"], "canonical")
         self.assertEqual(updated[1]["duplicate_policy"], "prefer_canonical")
 
+    def test_mixed_group_does_not_promote_every_member_to_strong(self):
+        records = [
+            record("p00", "asset_a", [0] * 5, [0] * 5, 1.0),
+            record("p01", "asset_b", [0] * 5, [0] * 5, 1.1),
+            record(
+                "p02",
+                "asset_c",
+                [0, 0, 0, 0x000000000000FFFF, 0x000000000000FFFF],
+                [0, 0, 0, 0x000000000000FFFF, 0x000000000000FFFF],
+                1.2,
+            ),
+        ]
+
+        groups = dedupe.build_duplicate_groups(records, dedupe.find_duplicate_pairs(records))
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["status"], "near_duplicate_candidate")
+
 
 if __name__ == "__main__":
     unittest.main()

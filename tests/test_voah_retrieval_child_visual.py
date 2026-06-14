@@ -427,6 +427,32 @@ class ChildVisualSelectionTest(unittest.TestCase):
         self.assertEqual(selected["duplicate_group_id"], "dup_001")
         self.assertEqual(selected["duplicate_role"], "canonical")
 
+    def test_llm_preferred_duplicate_child_yields_to_canonical(self):
+        section = opening_section(duration=1.5)
+        candidate = parent_candidate(
+            [
+                {
+                    **child("dup_child", 0.0, 1.5, ["粉扑", "轻拍", "上脸"], "粉扑轻拍脸颊"),
+                    "duplicate_group_id": "dup_001",
+                    "duplicate_status": "strong_duplicate",
+                    "duplicate_role": "duplicate",
+                    "canonical_physical_shot_id": "canonical_child",
+                },
+                {
+                    **child("canonical_child", 1.5, 3.0, ["粉扑", "轻拍", "上脸"], "粉扑轻拍脸颊"),
+                    "duplicate_group_id": "dup_001",
+                    "duplicate_status": "strong_duplicate",
+                    "duplicate_role": "canonical",
+                    "canonical_physical_shot_id": "canonical_child",
+                },
+            ]
+        )
+        candidate["llm_preferred_child_physical_shot_ids"] = ["dup_child"]
+
+        selected = voah.select_child_physical_shot(candidate, section)
+
+        self.assertEqual(selected["child_physical_shot_id"], "canonical_child")
+
     def test_duplicate_child_metadata_reaches_timeline_segment(self):
         section = opening_section(duration=1.5)
         candidate = parent_candidate(

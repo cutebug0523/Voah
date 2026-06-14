@@ -1669,6 +1669,12 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
                     and best_scored_child_id != str(child.get("shot_id") or "")
                 ):
                     break
+                if (
+                    child_is_strong_duplicate(child)
+                    and best_scored_child_id
+                    and best_scored_child_id != str(child.get("shot_id") or "")
+                ):
+                    break
                 base = {
                     "target_visual_terms": target_terms,
                     "semantic_hits": hits,

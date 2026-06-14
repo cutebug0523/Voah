@@ -433,7 +433,11 @@ def build_duplicate_groups(records: list[dict[str, Any]], pairs: list[dict[str, 
             for key in pair_lookup
             if key[0] in member_ids and key[1] in member_ids
         ]
-        status = "strong_duplicate" if any(pair.get("status") == "strong_duplicate" for pair in group_pairs) else "near_duplicate_candidate"
+        status = (
+            "strong_duplicate"
+            if group_pairs and all(pair.get("status") == "strong_duplicate" for pair in group_pairs)
+            else "near_duplicate_candidate"
+        )
         canonical = choose_canonical(members)
         canonical_id = str(canonical.get("shot_id") or "")
         assets = sorted({str(member.get("asset_id") or "") for member in members if member.get("asset_id")})
