@@ -46,6 +46,12 @@ python3 -m pip install -r requirements.txt
   - `video_chunk` 使用裁切片段原生 video embedding；child 完成 VLM 细化后恢复 `visual_summary`、`source_meaning`、`asr`、`ocr`、`tags` 文本通道。
   - `tags` 会包含 child `visual_actions`，供召回阶段识别泼水、开盖、轻拍等硬画面动作。
 
+- `voah_dedupe_physical_shots.py`
+  - 入库后重复片段标记 worker。
+  - 读取 `physical_shots.json` 和 `trimmed_physical/*.mp4`，用本地多帧 pHash/dHash 找出跨原片重复或近似重复片段。
+  - 输出 `shot_dedupe.json`，并可回写 `physical_shots.json` 的 `duplicate_group_id`、`duplicate_status`、`duplicate_role`、`canonical_physical_shot_id`、`duplicate_policy` 字段。
+  - 只标记，不删除；强重复默认召回时优先 canonical，近似重复只轻量降权。
+
 ### 视频理解
 
 - `aliyun_qwen_omni_analyze.py`
@@ -84,6 +90,7 @@ python3 -m pip install -r requirements.txt
   - 输出 `candidate_sections.json`、`timeline_selection.json`、`timeline_fill.json`、`preview_no_subtitles.mp4`。
   - 默认禁止 loop；素材不足时记录 `missing_duration_s` 并进入人工复核。
   - 对 `parent_context_only` child，父级 context hit 只是弱证据；若 child 本身未验证硬画面词，会标记 `requires_visual_review`，等待 Omni 或人工复核。
+  - 会消费入库阶段的 duplicate 字段：强重复 child 默认优先 canonical，近似重复 child 只轻量降权，并把 duplicate group 信息写入 timeline 产物。
 
 - `voah_fill_video_from_audio_sections.py`
   - legacy/回归工具。

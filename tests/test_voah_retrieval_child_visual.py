@@ -400,6 +400,54 @@ class ChildVisualSelectionTest(unittest.TestCase):
         self.assertNotIn("unit_current", scoring_state["opening_story_unit_counts"])
         self.assertEqual(scoring_state["opening_story_unit_counts"], {"unit_other": 1})
 
+    def test_duplicate_child_prefers_canonical_over_duplicate(self):
+        section = opening_section(duration=1.5)
+        candidate = parent_candidate(
+            [
+                {
+                    **child("dup_child", 0.0, 1.5, ["粉扑", "轻拍", "上脸"], "粉扑轻拍脸颊"),
+                    "duplicate_group_id": "dup_001",
+                    "duplicate_status": "strong_duplicate",
+                    "duplicate_role": "duplicate",
+                    "canonical_physical_shot_id": "canonical_child",
+                },
+                {
+                    **child("canonical_child", 1.5, 3.0, ["粉扑", "轻拍", "上脸"], "粉扑轻拍脸颊"),
+                    "duplicate_group_id": "dup_001",
+                    "duplicate_status": "strong_duplicate",
+                    "duplicate_role": "canonical",
+                    "canonical_physical_shot_id": "canonical_child",
+                },
+            ]
+        )
+
+        selected = voah.select_child_physical_shot(candidate, section)
+
+        self.assertEqual(selected["child_physical_shot_id"], "canonical_child")
+        self.assertEqual(selected["duplicate_group_id"], "dup_001")
+        self.assertEqual(selected["duplicate_role"], "canonical")
+
+    def test_duplicate_child_metadata_reaches_timeline_segment(self):
+        section = opening_section(duration=1.5)
+        candidate = parent_candidate(
+            [
+                {
+                    **child("dup_child", 0.0, 1.5, ["粉扑", "轻拍", "上脸"], "粉扑轻拍脸颊"),
+                    "duplicate_group_id": "dup_001",
+                    "duplicate_status": "strong_duplicate",
+                    "duplicate_role": "duplicate",
+                    "canonical_physical_shot_id": "canonical_child",
+                }
+            ]
+        )
+
+        segment = voah.candidate_clip_segments(candidate, section, 1.2)[0]
+
+        self.assertEqual(segment["child_physical_shot_id"], "dup_child")
+        self.assertEqual(segment["duplicate_group_id"], "dup_001")
+        self.assertEqual(segment["duplicate_role"], "duplicate")
+        self.assertTrue(any("重复片段" in item for item in segment["selection_risks"]))
+
 
 if __name__ == "__main__":
     unittest.main()

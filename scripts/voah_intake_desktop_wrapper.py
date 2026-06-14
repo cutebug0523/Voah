@@ -47,6 +47,7 @@ STAGE_LABELS = {
     "trim_upload": "裁切上传",
     "refine_child_vlm": "画面校准",
     "vectorize": "素材向量",
+    "dedupe_physical_shots": "重复片段",
     "build_shot_index": "整理素材",
     "merge_index": "更新素材库",
     "done": "已完成",
@@ -1106,7 +1107,7 @@ def append_step(
 def normalize_child_record(physical: dict[str, Any]) -> dict[str, Any]:
     start, end = time_range_of(physical)
     usable_start, usable_end = usable_range_of(physical)
-    return {
+    child = {
         "shot_id": shot_id_of(physical),
         "parent_shot_id": str(first(physical, "parent_shot_id", "semantic_shot_id", default="")),
         "story_unit_id": str(first(physical, "story_unit_id", "parent_shot_id", default="")),
@@ -1142,6 +1143,16 @@ def normalize_child_record(physical: dict[str, Any]) -> dict[str, Any]:
         "trimmed_clip_path": str(first(physical, "trimmed_clip_path", default="")),
         "trimmed_oss_url": str(first(physical, "trimmed_oss_url", default="")),
     }
+    for key in (
+        "duplicate_group_id",
+        "duplicate_status",
+        "duplicate_role",
+        "canonical_physical_shot_id",
+        "duplicate_policy",
+    ):
+        if physical.get(key) not in (None, ""):
+            child[key] = physical.get(key)
+    return child
 
 
 def mean_vectors(vectors: list[list[float]]) -> list[float]:
@@ -1331,7 +1342,13 @@ def update_run_manifest(
         if (run_dir / "child_vlm_refine_results.json").exists()
         else {}
     )
+    dedupe_results = (
+        load_json(run_dir / "shot_dedupe.json")
+        if (run_dir / "shot_dedupe.json").exists()
+        else {}
+    )
     refine_summary = refine_results.get("summary") if isinstance(refine_results, dict) else {}
+    dedupe_summary = dedupe_results.get("summary") if isinstance(dedupe_results, dict) else {}
     uploaded_count = sum(1 for item in trim_results if isinstance(item, dict) and item.get("uploaded"))
     trim_ok = sum(1 for item in trim_results if isinstance(item, dict) and item.get("status") == "ok")
     qa_warnings = list(shot_index.get("warnings") or [])
@@ -1368,6 +1385,7 @@ def update_run_manifest(
             "trimmed_physical": "trimmed_physical/",
             "trim_upload_results_physical": "trim_upload_results_physical.json",
             "child_vlm_refine_results": "child_vlm_refine_results.json",
+            "shot_dedupe": "shot_dedupe.json",
             "vectorization_inputs": "vectorization_inputs.json",
             "embedding_results": "embedding_results.json",
             "shot_index": "shot_index.json",
@@ -1390,6 +1408,7 @@ def update_run_manifest(
             "child_vlm_refined_count": int(refine_summary.get("refined_count") or 0),
             "child_vlm_refine_failed_count": refine_failed,
             "child_vlm_remaining_needs_refine_count": remaining_refine,
+            "dedupe": dedupe_summary,
             "embedding_result_count": len(embedding_results),
             "embedding_channel_ok_count": ok_channels,
             "embedding_channel_failed_count": failed_channels,
@@ -1430,6 +1449,7 @@ def build_success_result(
         "trimmed_physical_dir": str(run_dir / "trimmed_physical"),
         "trim_upload_results": str(run_dir / "trim_upload_results_physical.json"),
         "child_vlm_refine_results": str(run_dir / "child_vlm_refine_results.json"),
+        "shot_dedupe": str(run_dir / "shot_dedupe.json"),
         "vectorization_inputs": str(run_dir / "vectorization_inputs.json"),
         "embedding_results": str(run_dir / "embedding_results.json"),
         "shot_index": str(run_dir / "shot_index.json"),
@@ -1478,6 +1498,7 @@ def build_success_result(
             artifact("physical_shots", run_dir / "physical_shots.json"),
             artifact("trim_upload_results", run_dir / "trim_upload_results_physical.json"),
             artifact("child_vlm_refine_results", run_dir / "child_vlm_refine_results.json"),
+            artifact("shot_dedupe", run_dir / "shot_dedupe.json", "voah.shot_dedupe.v1"),
             artifact("vectorization_inputs", run_dir / "vectorization_inputs.json"),
             artifact("embedding_results", run_dir / "embedding_results.json"),
             artifact("shot_index", run_dir / "shot_index.json", "1.3.0"),
@@ -1494,6 +1515,7 @@ def build_success_result(
             "child_vlm_refined_count": qa.get("child_vlm_refined_count"),
             "child_vlm_refine_failed_count": qa.get("child_vlm_refine_failed_count"),
             "child_vlm_remaining_needs_refine_count": qa.get("child_vlm_remaining_needs_refine_count"),
+            "dedupe": qa.get("dedupe"),
             "embedding_channel_ok_count": qa.get("embedding_channel_ok_count"),
             "embedding_channel_failed_count": qa.get("embedding_channel_failed_count"),
             "shot_index_record_count": qa.get("shot_index_record_count"),
@@ -2005,6 +2027,35 @@ def run_intake_job(config: dict[str, Any]) -> dict[str, Any]:
 
         if config["skip_vectorize"]:
             raise WorkerError("vectorization_skipped", "shot_index requires embedding_results.json")
+
+        write_status(config, "running", "dedupe_physical_shots", run_dir, stdout_path, stderr_path, incremental=incremental)
+        dedupe_cmd = [
+            sys.executable,
+            str(REPO_SCRIPTS_DIR / "voah_dedupe_physical_shots.py"),
+            "--run-dir",
+            str(run_dir),
+            "--write-back",
+        ]
+        run_command(
+            dedupe_cmd,
+            stdout_path,
+            stderr_path,
+            workspace,
+            heartbeat=lambda: write_status(config, "running", "dedupe_physical_shots", run_dir, stdout_path, stderr_path, incremental=incremental),
+        )
+        commands_for_log.append({"name": "dedupe_physical_shots", "argv": dedupe_cmd})
+        dedupe_summary = load_json_safe(run_dir / "shot_dedupe.json", {}).get("summary", {})
+        append_step(
+            run_manifest,
+            "dedupe_physical_shots",
+            "ok",
+            outputs={"shot_dedupe": "shot_dedupe.json", "physical_shots": "physical_shots.json"},
+            qa={
+                "status": "ok",
+                "summary": dedupe_summary,
+            },
+        )
+        write_json(run_dir / "run_manifest.json", run_manifest)
 
         write_status(config, "running", "build_shot_index", run_dir, stdout_path, stderr_path, incremental=incremental)
         shot_index_path, shot_index = build_shot_index(

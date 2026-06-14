@@ -494,6 +494,44 @@ def child_key(record: dict[str, Any]) -> str:
     return str(record.get("child_physical_shot_id") or "")
 
 
+def child_duplicate_status(record: dict[str, Any]) -> str:
+    return str(record.get("duplicate_status") or "").strip()
+
+
+def child_duplicate_role(record: dict[str, Any]) -> str:
+    return str(record.get("duplicate_role") or "").strip()
+
+
+def child_duplicate_group_id(record: dict[str, Any]) -> str:
+    return str(record.get("duplicate_group_id") or "").strip()
+
+
+def child_is_strong_duplicate(record: dict[str, Any]) -> bool:
+    return child_duplicate_status(record) == "strong_duplicate" and child_duplicate_role(record) == "duplicate"
+
+
+def child_is_near_duplicate(record: dict[str, Any]) -> bool:
+    return child_duplicate_status(record) == "near_duplicate_candidate" and child_duplicate_role(record) == "duplicate"
+
+
+def candidate_duplicate_summary(record: dict[str, Any]) -> dict[str, Any]:
+    children = [child for child in record.get("child_physical_shots") or [] if isinstance(child, dict)]
+    strong_duplicates = [child for child in children if child_is_strong_duplicate(child)]
+    near_duplicates = [child for child in children if child_is_near_duplicate(child)]
+    groups = sorted(
+        {
+            child_duplicate_group_id(child)
+            for child in [*strong_duplicates, *near_duplicates]
+            if child_duplicate_group_id(child)
+        }
+    )
+    return {
+        "strong_duplicate_child_count": len(strong_duplicates),
+        "near_duplicate_child_count": len(near_duplicates),
+        "duplicate_group_ids": groups,
+    }
+
+
 def opening_first_clip_key(clip: dict[str, Any]) -> str:
     start_offset = (
         clip.get("source_start_offset_s")
@@ -789,6 +827,11 @@ def normalize_child_physical_shot(record: dict[str, Any]) -> dict[str, Any]:
         "can_standalone": bool(record.get("can_standalone")),
         "trimmed_clip_path": str(record.get("trimmed_clip_path") or record.get("source_clip_path") or ""),
         "trimmed_oss_url": str(record.get("trimmed_oss_url") or ""),
+        "duplicate_group_id": str(record.get("duplicate_group_id") or ""),
+        "duplicate_status": str(record.get("duplicate_status") or ""),
+        "duplicate_role": str(record.get("duplicate_role") or ""),
+        "canonical_physical_shot_id": str(record.get("canonical_physical_shot_id") or ""),
+        "duplicate_policy": str(record.get("duplicate_policy") or ""),
     }
 
 
@@ -1576,6 +1619,10 @@ def ranked_child_physical_shots(candidate: dict[str, Any], section: dict[str, An
             opening_child_reuse = count_map_from(candidate.get("batch_opening_child_counts")).get(child_id, 0)
             if opening_child_reuse:
                 score -= min(1.4, opening_child_reuse * 0.72)
+        if child_is_strong_duplicate(child):
+            score -= 0.22 if hard_hits else 0.86
+        elif child_is_near_duplicate(child):
+            score -= 0.08 if hard_hits else 0.24
         if child.get("hard_subtitle_risk") == "high":
             score -= 0.35
         elif child.get("hard_subtitle_risk") == "medium":
@@ -1700,6 +1747,8 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
             f"{'；按父级证明动作顺序定位' if child_proof_action_order_score(best_child, section, _child_index, len([child for child in candidate.get('child_physical_shots') or [] if isinstance(child, dict) and is_child_renderable(child)])) else ''}"
             f"{'；使用 story 文本顺序定位' if term_positions else ''}"
             f"{'；同批 opening 已用过该 child，素材少时允许复用' if opening_child_reuse_count else ''}"
+            f"{'；重复片段候选，优先使用 canonical' if child_is_strong_duplicate(best_child) else ''}"
+            f"{'；近似重复候选，轻量降权' if child_is_near_duplicate(best_child) else ''}"
         ),
         "source_clip_path": source_path,
         "source_duration_s": source_duration,
@@ -1712,6 +1761,10 @@ def select_child_physical_shot(candidate: dict[str, Any], section: dict[str, Any
         "source_meaning": best_child.get("source_meaning") or candidate.get("source_meaning"),
         "hard_subtitle_risk": best_child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
         "voiceover_fit": best_child.get("voiceover_fit") or candidate.get("voiceover_fit"),
+        "duplicate_group_id": child_duplicate_group_id(best_child),
+        "duplicate_status": child_duplicate_status(best_child),
+        "duplicate_role": child_duplicate_role(best_child),
+        "canonical_physical_shot_id": str(best_child.get("canonical_physical_shot_id") or ""),
         "batch_opening_child_reuse_count": opening_child_reuse_count,
         "requires_review": requires_review,
     }
@@ -1860,6 +1913,10 @@ def clip_segment_from_parent_story_unit(
             selection_risks.append("目标视觉词只在父级 story unit 命中，未找到 child 级硬画面命中，需抽帧或 Omni 复核")
         else:
             selection_risks.append("目标视觉词未能在 story unit 父级文本中明确命中，需抽帧或 Omni 复核")
+    if intra.get("duplicate_status") == "strong_duplicate" and intra.get("duplicate_role") == "duplicate":
+        selection_risks.append("使用了重复片段非 canonical 成员作为父级定位证据，建议优先替换为 canonical 或人工复核")
+    elif intra.get("duplicate_status") == "near_duplicate_candidate" and intra.get("duplicate_role") == "duplicate":
+        selection_risks.append("使用了近似重复候选片段作为父级定位证据，已保留为可用但需留意画面重复")
     return {
         "shot_id": candidate.get("shot_id"),
         "story_unit_id": candidate.get("story_unit_id") or candidate.get("shot_id"),
@@ -1894,6 +1951,10 @@ def clip_segment_from_parent_story_unit(
         "child_required_visual_hits": intra.get("child_required_visual_hits", []),
         "hard_visual_fallback": hard_visual_fallback,
         "child_metadata_precision": intra.get("child_metadata_precision", ""),
+        "duplicate_group_id": intra.get("duplicate_group_id", ""),
+        "duplicate_status": intra.get("duplicate_status", ""),
+        "duplicate_role": intra.get("duplicate_role", ""),
+        "canonical_physical_shot_id": intra.get("canonical_physical_shot_id", ""),
         "semantic_score": candidate.get("semantic_score"),
         "batch_opening_child_reuse_count": intra.get("batch_opening_child_reuse_count", 0),
         "requires_visual_review": requires_review,
@@ -1951,6 +2012,8 @@ def select_child_metadata_from_child(
             f"{'；硬词仅见于父级上下文：' + '、'.join(parent_context_hits[:6]) if inherited_only_hits else ''}"
             f"{'；未找到 child 硬画面命中，回退软评分' if hard_visual_fallback else ''}"
             f"{'；同批 opening 已用过该 child，素材少时允许复用' if opening_child_reuse_count else ''}"
+            f"{'；重复片段候选，优先使用 canonical' if child_is_strong_duplicate(child) else ''}"
+            f"{'；近似重复候选，轻量降权' if child_is_near_duplicate(child) else ''}"
         ),
         "source_clip_path": child.get("trimmed_clip_path") or child.get("source_clip_path") or "",
         "source_duration_s": duration,
@@ -1963,6 +2026,10 @@ def select_child_metadata_from_child(
         "source_meaning": child.get("source_meaning") or candidate.get("source_meaning"),
         "hard_subtitle_risk": child.get("hard_subtitle_risk") or candidate.get("hard_subtitle_risk"),
         "voiceover_fit": child.get("voiceover_fit") or candidate.get("voiceover_fit"),
+        "duplicate_group_id": child_duplicate_group_id(child),
+        "duplicate_status": child_duplicate_status(child),
+        "duplicate_role": child_duplicate_role(child),
+        "canonical_physical_shot_id": str(child.get("canonical_physical_shot_id") or ""),
         "batch_opening_child_reuse_count": opening_child_reuse_count,
         "requires_review": requires_review,
     }
@@ -1985,6 +2052,10 @@ def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], pl
             selection_risks.append("目标视觉词只在父级 story unit 上下文命中，child 未验证，需抽帧或 Omni 复核")
         else:
             selection_risks.append("目标视觉词未能在 child physical shot 文本中明确命中，需抽帧或 Omni 复核")
+    if intra.get("duplicate_status") == "strong_duplicate" and intra.get("duplicate_role") == "duplicate":
+        selection_risks.append("使用了重复片段非 canonical 成员，建议优先替换为 canonical 或人工复核")
+    elif intra.get("duplicate_status") == "near_duplicate_candidate" and intra.get("duplicate_role") == "duplicate":
+        selection_risks.append("使用了近似重复候选片段，已保留为可用但需留意画面重复")
     return {
         "shot_id": candidate.get("shot_id"),
         "story_unit_id": candidate.get("story_unit_id") or candidate.get("shot_id"),
@@ -2019,6 +2090,10 @@ def clip_segment_from_intra(candidate: dict[str, Any], intra: dict[str, Any], pl
         "child_required_visual_hits": intra.get("child_required_visual_hits", []),
         "hard_visual_fallback": bool(intra.get("hard_visual_fallback")),
         "child_metadata_precision": intra.get("child_metadata_precision", ""),
+        "duplicate_group_id": intra.get("duplicate_group_id", ""),
+        "duplicate_status": intra.get("duplicate_status", ""),
+        "duplicate_role": intra.get("duplicate_role", ""),
+        "canonical_physical_shot_id": intra.get("canonical_physical_shot_id", ""),
         "semantic_score": intra.get("semantic_score") if intra.get("semantic_score") is not None else candidate.get("semantic_score"),
         "batch_opening_child_reuse_count": intra.get("batch_opening_child_reuse_count", 0),
         "requires_visual_review": bool(intra.get("requires_review")),
@@ -2150,6 +2225,14 @@ def adjusted_candidate(
     else:
         score -= 1.6
         risks.append(f"视觉主题合同不通过：{visual_theme_reason(theme_eval)}")
+    duplicate_summary = candidate_duplicate_summary(candidate)
+    duplicate_penalty = (
+        duplicate_summary["strong_duplicate_child_count"] * 0.035
+        + duplicate_summary["near_duplicate_child_count"] * 0.012
+    )
+    if duplicate_penalty:
+        score -= min(0.18, duplicate_penalty)
+        risks.append("候选包含重复片段成员，已轻量降权")
     output = dict(candidate)
     output["adjusted_score"] = round(score, 6)
     output["fill_reasons"] = reasons
@@ -2170,6 +2253,7 @@ def adjusted_candidate(
     output["visual_theme_forbidden_hits"] = theme_eval.get("forbidden_hits")
     output["visual_theme_missing"] = theme_eval.get("missing_themes")
     output["visual_theme_allowed"] = bool(theme_eval.get("allowed"))
+    output["duplicate_summary"] = duplicate_summary
     return output
 
 
